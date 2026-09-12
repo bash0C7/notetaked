@@ -8,6 +8,7 @@ import Testing
         try Command.renameSpeaker(id: "g3", name: "田中").encodedLine()
             == "{\"cmd\":\"rename_speaker\",\"name\":\"田中\",\"speaker\":\"g3\"}"
     )
+    #expect(try Command.rotate.encodedLine() == "{\"cmd\":\"rotate\"}")
 }
 
 @Test func commandRoundTrip() throws {
@@ -15,6 +16,7 @@ import Testing
         .start,
         .stop,
         .renameSpeaker(id: "g3", name: "田中"),
+        .rotate,
         .quit,
     ]
     for command in commands {

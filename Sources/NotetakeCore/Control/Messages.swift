@@ -9,6 +9,7 @@ public enum Command: Codable, Sendable, Equatable {
     case start
     case stop
     case renameSpeaker(id: String, name: String)
+    case rotate
     case quit
 
     enum CodingKeys: String, CodingKey {
@@ -29,6 +30,8 @@ public enum Command: Codable, Sendable, Equatable {
             let speaker = try container.decode(String.self, forKey: .speaker)
             let name = try container.decode(String.self, forKey: .name)
             self = .renameSpeaker(id: speaker, name: name)
+        case "rotate":
+            self = .rotate
         case "quit":
             self = .quit
         default:
@@ -47,6 +50,8 @@ public enum Command: Codable, Sendable, Equatable {
             try container.encode("rename_speaker", forKey: .cmd)
             try container.encode(id, forKey: .speaker)
             try container.encode(name, forKey: .name)
+        case .rotate:
+            try container.encode("rotate", forKey: .cmd)
         case .quit:
             try container.encode("quit", forKey: .cmd)
         }

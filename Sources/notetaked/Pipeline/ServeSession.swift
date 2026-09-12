@@ -40,6 +40,9 @@ actor ServeSession {
     private var seq = 0
     private var streams: [RunningStream] = []
     private var recording = false
+    /// 直前に使ったprefix。同一秒内でのstart/rotateがprefixを衝突させないよう、
+    /// startCaptureで開始日時をずらすのに使う
+    private var lastPrefix: String?
 
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
@@ -61,6 +64,8 @@ actor ServeSession {
             await stop()
         case .renameSpeaker(let id, let name):
             await renameSpeaker(id: id, name: name)
+        case .rotate:
+            await rotate()
         case .quit:
             await quit()
         }
@@ -74,7 +79,23 @@ actor ServeSession {
             return
         }
 
-        let startDate = Date()
+        if await startCapture(), let store {
+            await control.send(
+                .status(
+                    StatusEvent(
+                        recording: true, prefix: store.prefix,
+                        sources: streams.map(\.source), outputDirectory: outputDirectory.path)))
+        }
+    }
+
+    /// storeの作成・session/deviceレコード書き込み・CaptureStream起動までを行い、
+    /// 成功時は`store` / `reconciler` / `seq` / `streams` / `recording` / `lastPrefix`を更新する。
+    /// 失敗時は今までと同じ`.error(...)`を送って`false`を返す（呼び出し元がstatusを出す）
+    private func startCapture() async -> Bool {
+        var startDate = Date()
+        while SessionStore.prefix(for: startDate, timeZone: .current) == lastPrefix {
+            startDate.addTimeInterval(1)
+        }
         let store = SessionStore(directory: outputDirectory, start: startDate)
         do {
             try await store.append(
@@ -91,7 +112,7 @@ actor ServeSession {
         } catch {
             await store.close()
             await control.send(.error("failed to start session: \(error)"))
-            return
+            return false
         }
 
         var started: [RunningStream] = []
@@ -134,7 +155,7 @@ actor ServeSession {
             }
             await store.close()
             await control.send(.error("failed to start capture: \(startError)"))
-            return
+            return false
         }
 
         self.store = store
@@ -142,12 +163,9 @@ actor ServeSession {
         self.seq = 0
         self.streams = started
         self.recording = true
+        self.lastPrefix = store.prefix
 
-        await control.send(
-            .status(
-                StatusEvent(
-                    recording: true, prefix: store.prefix,
-                    sources: started.map(\.source), outputDirectory: outputDirectory.path)))
+        return true
     }
 
     // MARK: - stream events
@@ -222,10 +240,23 @@ actor ServeSession {
     // MARK: - stop
 
     private func stop() async {
-        guard recording, let store else {
+        guard recording, store != nil else {
             await control.send(.error("not recording"))
             return
         }
+
+        await stopCapture()
+
+        await control.send(
+            .status(
+                StatusEvent(
+                    recording: false, prefix: nil, sources: [],
+                    outputDirectory: outputDirectory.path)))
+    }
+
+    /// streamsの停止・final書き出し・storeのcloseを行い、`store` / `recording`をリセットする
+    private func stopCapture() async {
+        guard let store else { return }
 
         for running in streams {
             do {
@@ -251,12 +282,35 @@ actor ServeSession {
 
         self.store = nil
         recording = false
+    }
 
-        await control.send(
-            .status(
-                StatusEvent(
-                    recording: false, prefix: nil, sources: [],
-                    outputDirectory: outputDirectory.path)))
+    // MARK: - rotate
+
+    /// 収録を止めて新しいprefixで直ちに開始し直す。中間の`recording:false`statusは出さない
+    /// （appの`restartPending`再起動と競合しないため）
+    private func rotate() async {
+        guard recording, let store else {
+            await control.send(.error("not recording"))
+            return
+        }
+        let oldPrefix = store.prefix
+
+        await stopCapture()
+
+        if await startCapture(), let store {
+            await control.send(
+                .status(
+                    StatusEvent(
+                        recording: true, prefix: store.prefix,
+                        sources: streams.map(\.source), outputDirectory: outputDirectory.path)))
+            await control.send(.log("rotated \(oldPrefix) -> \(store.prefix)"))
+        } else {
+            await control.send(
+                .status(
+                    StatusEvent(
+                        recording: false, prefix: nil, sources: [],
+                        outputDirectory: outputDirectory.path)))
+        }
     }
 
     // MARK: - quit
