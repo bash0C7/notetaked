@@ -12,7 +12,7 @@ public enum TranscriptRenderer {
         var result = ""
         for utterance in utterances {
             let time = formatter.string(from: Date(timeIntervalSince1970: Double(utterance.start) / 1000))
-            let text = utterance.text.replacingOccurrences(of: "\n", with: " ")
+            let text = String(utterance.text.map { $0.isNewline ? " " : $0 })
             result += "\(time) **\(utterance.speaker)**: \(text)\n"
         }
         return result

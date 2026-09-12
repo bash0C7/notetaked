@@ -66,3 +66,13 @@ private func utterance(
     let tokyo = TimeZone(identifier: "Asia/Tokyo")!
     #expect(TranscriptRenderer.markdown([], timeZone: tokyo) == "")
 }
+
+@Test func replacesCRLFAndCR() {
+    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+    let start = epochMS(year: 2026, month: 9, day: 12, hour: 14, minute: 30, second: 5, timeZone: tokyo)
+    let u = utterance(start: start, speaker: "小芝", text: "a\r\nb\rc")
+
+    let result = TranscriptRenderer.markdown([u], timeZone: tokyo)
+
+    #expect(result == "14:30:05 **小芝**: a b c\n")
+}
