@@ -26,6 +26,9 @@ actor CaptureStream {
     private let converter: AudioConverter
     private var sampleTime: AVAudioFramePosition = 0
     private var levels: [LevelSample] = []
+    /// 無音が続くとfinalが来ずlevelForPieceでlevelsが刈られないため、時間で刈る
+    /// （直近2分だけ保持）。
+    private static let levelRetentionMS: Int64 = 120_000
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var feedTask: Task<Void, Never>?
     private var forwardTask: Task<Void, Never>?
@@ -113,6 +116,7 @@ actor CaptureStream {
         let endMS = originMS + Int64((Double(sampleTime + frames) / sampleRate * 1000).rounded())
         let dbfs = AudioLevel.dbfs(buffer)
         levels.append(LevelSample(startMS: startMS, endMS: endMS, dbfs: dbfs))
+        levels.removeAll { $0.endMS < startMS - Self.levelRetentionMS }
         await transcriber.feed(buffer, at: sampleTime)
         sampleTime += frames
     }

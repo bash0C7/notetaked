@@ -65,7 +65,9 @@ public actor Transcriber {
     /// フィードされたフレーム数。0のままfinish()が呼ばれた場合、
     /// finalizeAndFinishThroughEndOfInput()は無音入力に対してハングするため、
     /// cancelAndFinishNow()で即座に終わらせる。
-    private var fedFrames: AVAudioFrameCount = 0
+    /// UInt64（AVAudioFrameCountはUInt32のため、48kHzで約24.8時間の収録で
+    /// overflowしうる。複数日にまたがる長時間収録に対応するためUInt64にする）。
+    private var fedFrames: UInt64 = 0
     /// start()が返すAsyncStream<TranscriptPiece>を消費するresults-consumption task。
     /// cancelAndFinishNow()を呼んでも transcriber.results シーケンスが自然には終わらない
     /// ケースがあるため、finish()が強制終了経路を取った際にpiecesContinuationを直接finish
@@ -128,7 +130,7 @@ public actor Transcriber {
     public func feed(_ buffer: sending AVAudioPCMBuffer, at sampleTime: AVAudioFramePosition) {
         let bufferStartTime = CMTime(
             value: sampleTime, timescale: Int32(inputFormat.sampleRate))
-        fedFrames += buffer.frameLength
+        fedFrames += UInt64(buffer.frameLength)
         inputContinuation?.yield(AnalyzerInput(buffer: buffer, bufferStartTime: bufferStartTime))
     }
 
