@@ -1,8 +1,8 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-09-13 進行中）
+## 状態（2026-09-13 user確認待ち）
 
-- **進行中**。作業branch `m0-m2-mac-core`。Task 15まで完了（mac app・ライブパネルまでビルド済み、commit `f5abef3`）。最終whole-branch review（Fable）完了、fix wave（commit `2e0f173`）まで再review clean。残り: 無音stopで`finish()`が固まる既存欠陥の単発fix（実施中）、Task 16（userのダイアログ観察待ち）
+- **待機（user確認）**。作業branch `m0-m2-mac-core`。コード側はHEAD `4eda1ec`で完了（Task 1〜15 + 最終review fix wave + 無音stop hang fix、すべて再review clean、`swift test` 49/49）。残りはuserの実機確認とTask 16のspec更新のみ
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
