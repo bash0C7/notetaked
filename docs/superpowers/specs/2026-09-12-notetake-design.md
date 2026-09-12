@@ -184,16 +184,16 @@ Mac側が一次のリアルタイムtranscript（コピペ可能なライブパ�
 
 - 音声: Mic = `AVAudioEngine.inputNode` tap。System = process tap（自processを除外した全体tap）。両方を`AVAudioConverter`でTranscriber形式と16kHz mono float（話者分離用）に変換。bufferごとにRMS(dBFS)を計算しsegの`level_dbfs`へ
 - 時刻: capture開始の`Date`を原点に、累積sample数から絶対時刻を算出
-- 制御: `notetaked serve --output <dir> --owner <name> --control stdio`（`--output`はappの設定値。単体起動時は必須引数）。stdin: `{"cmd":"start"|"stop"|"rename_speaker"|"polish"|"pair_code"}`。`start`で開始時刻の接頭辞を決めてlive.txt / timed.jsonlを開き、`stop`でfinal.mdを書く。stdout: `{"ev":"status"|"utterance"|"volatile"|"device"|"speaker"|"error",...}`。ログはstderr + `os.Logger`
+- 制御: `notetaked serve --output <dir> --owner <name> --control stdio`（`--output`はappの設定値。単体起動時は必須引数）。stdin: `{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"polish"|"pair_code"}`。`start`で開始時刻の接頭辞を決めてlive.txt / timed.jsonlを開き、`stop`でfinal.mdを書く。`rotate`（区切る）は収録中に`stop`→`start`をactor内で一括して行い、中間の停止statusは出さず新しい接頭辞の`status`だけを出す（直前と同じ秒の接頭辞になる場合は開始日時を1秒進める）。stdout: `{"ev":"status"|"utterance"|"volatile"|"device"|"speaker"|"error",...}`。ログはstderr + `os.Logger`
 - 収録外の受信: 停止後に届いたiPhone / Watchのsegは該当収録のtimed.jsonlへ追記し、final.mdを再生成する（daemonは常駐しているので収録中でなくても受け付ける）
 - 権限: CLIに`-sectcreate __TEXT __info_plist`でInfo.plist（`NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `CFBundleIdentifier`）を埋め込み、Apple Development identityで署名（ad-hoc署名だとビルドごとにTCC再許可になる）。appは子processとして起動する。権限がapp側に帰属するか、CLI自身に帰属するかはM2で実機確認し、どちらでも動く構成にする
 - 常駐: appが`Process`で起動し、終了を検知したら再起動（再起動後は同じ接頭辞のlive.txt / timed.jsonlへ追記を続ける）
 
 ## Mac appの詳細
 
-- `MenuBarExtra`: 開始/停止、ライブパネルを開く、フォルダを開く、整形、設定
-- 設定Window: **保存先ディレクトリ**（`NSOpenPanel`で選択、UserDefaultsに保存。未設定なら開始ボタンを無効化して設定を促す）・自分の名前・ペアリングコード表示。daemon起動時に`--output`として渡す
-- ライブパネル（SwiftUI `Window`、常に前面トグルあり）: utterance一覧（時刻・話者名・本文、`.textSelection(.enabled)`）、末尾に認識中のvolatile行、「全文コピー」、話者名クリックで改名、接続デバイスとoutbox残数の表示
+- `MenuBarExtra`: 開始/停止/区切る、ライブパネルを開く、フォルダを開く、整形、設定。区切る = 収録を終了して新しい接頭辞で作り直す（daemonの`rotate`）
+- 設定Window: **保存先ディレクトリ**（`NSOpenPanel`で選択、UserDefaultsに保存。未設定なら開始ボタンを無効化して設定を促す）・自分の名前・**自動で区切る間隔**（時間、小数可、既定24、0で区切らない。常駐で収録し続けた時に収録単位で溜まる状態（Reconciler / パネルのutterance / SpeechAnalyzer）を解放するため、appが収録開始からの経過で`rotate`を送る。タイマーはapp側なので設定変更は即時反映）・ペアリングコード表示。daemon起動時に`--output`として渡す
+- ライブパネル（SwiftUI `Window`、常に前面トグルあり）: utterance一覧（時刻・話者名・本文、`.textSelection(.enabled)`）、末尾に認識中のvolatile行、「収録開始」「収録停止」「区切る」、「全文コピー」、話者名クリックで改名、状態行に次の自動区切り時刻、接続デバイスとoutbox残数の表示
 - 状態はdaemonのstdout eventをそのままViewModelに反映（utterance idでupsert）
 
 ## リポジトリ構成とビルド
