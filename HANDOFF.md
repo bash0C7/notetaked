@@ -1,75 +1,65 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-09-13 user確認待ち）
+## 状態（2026-09-13）
 
-- **完了**。作業branch `m0-m2-mac-core`。Task 1〜16すべてcomplete、最終whole-branch review + fix wave + hang fix まで再review clean、`swift test` 49/49。userの実機確認済み（mac appで収録開始→say→停止→final.md生成、renderで同一再生成、TCC帰属はNotetake.app）。次はbranchの仕上げ（merge / PR はuser判断）
-- `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
+- **M0〜M2完了、`main`にmerge・push済み**（fast-forward、HEAD `a1a7f91`時点）。作業branch `m0-m2-mac-core`はローカル削除済み（GitHubには残っている）
+- Mac単体の製品として動く: メニューバーapp（Notetake.app）がdaemon（notetaked）を子processで起動し、mic + システム音声をリアルタイムに文字起こしして`<保存先>/<yyyy-MM-dd_HHmmss>.live.txt / .timed.jsonl / .final.md`を出す。ライブパネルでコピー・話者改名ができる
+- userの実機確認済み: appで収録開始→`say`→停止→final.md生成、`notetaked render`で同一再生成、mic／system両経路のsegが記録される
+- `swift test` 49/49。build warningなし（Swift 6 strict concurrency）
+- **次にやること: M3以降の計画の検討**（下記「次フェーズの検討」）
 
 ## ドキュメント
 
-- 設計spec: `docs/superpowers/specs/2026-09-12-notetake-design.md`
-- 実装計画（M0〜M2、16 task）: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`
-- SDD ledger（git管理外、このMacのみ）: `.superpowers/sdd/2026-09-12-m0-m2-mac-core/progress.md` — rulings・deferred minors・各taskの状態・review packageとreportの置き場。task briefは同dirの`task-N-brief.md`、implementer reportは`task-N-report.md`
+- 設計spec（M0〜M6の全体設計、binding authority）: `docs/superpowers/specs/2026-09-12-notetake-design.md`
+- M0〜M2の実装計画（完了。Task構成・interface・検証コマンドの記録として参照）: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`
+- project instructions（モデル分担・SDDの手順・署名の注意）: `CLAUDE.md`
 
-## 進捗
+## いま動くもの（使い方）
 
-| Task | 内容 | 状態 |
-|---|---|---|
-| 1〜3 | M0 bootstrap（SwiftPM / XcodeGen / mac・iOS・watchOS skeleton） | complete |
-| 4〜8 | M1 NotetakeCore（モデル・NDJSON・TextSimilarity・Reconciler・Renderer・SessionStore） | complete |
-| 9 | 制御メッセージ Command / Event | complete |
-| 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | complete（fix round 1済み、commit `2283309`） |
-| 11〜13 | MicCapture / SystemAudioCapture(process tap) / serve・render（stdio制御、e2e済み） | complete |
-| 14〜15 | mac app（DaemonClient / AppModel / 設定 / メニュー）・ライブパネル | complete（user画面確認済み） |
-| 16 | TCC帰属確認とspec更新 | complete（許可は親app Notetake.app に帰属、spec更新 `9f1dd04`） |
+- app: `make app` → `.build/DerivedData/Build/Products/Debug/Notetake.app`。設定Windowで保存先と自分の名前を指定（UserDefaults `io.github.bash0c7.notetake` の `outputDirectory` / `ownerName`）。daemonは`serve --output <dir> --owner <name> --source both --control stdio`で起動される
+- CLI: `make daemon` → `.build/release/notetaked`。subcommand: `serve`（stdin `{"cmd":"start"|"stop"|"rename_speaker"|"quit"}`、stdout `{"ev":"status"|"utterance"|"volatile"|"error"|"log",...}`）/ `render <timed.jsonl>` / `transcribe <audio file>` / `capture --source mic|system --seconds N`
+- e2e（system音声のみ）:
+  ```bash
+  make daemon && rm -rf /tmp/nt && mkdir -p /tmp/nt
+  ( sleep 3; say -v Kyoko "明日の会議は十時からです。" ) &
+  ( sleep 12; echo '{"cmd":"stop"}'; sleep 2; echo '{"cmd":"quit"}' ) | .build/release/notetaked serve --output /tmp/nt --owner 小芝 --source system --start
+  cat /tmp/nt/*.final.md
+  ```
 
-`swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
+## 次フェーズの検討（着手前に`superpowers:brainstorming`→`writing-plans`→`subagent-driven-development`）
 
-## Task 10 fix round 1 の指摘と裁定（完了済み。記録として残す）
+specのマイルストーン順は M3 話者分離 → M4 polish → M5 iPhone → M6 Watch。検討時の論点:
 
-1. [Important, plan-mandated] `Sources/NotetakeCore/Audio/AudioConverter.swift:35-44` の block-based `convert(to:error:withInputFrom:)` closure が Swift 6 の `@Sendable` capture warning を出し build 出力が非pristine。裁定: 入力bufferを`let`で束縛し、供給済みflagは`nonisolated(unsafe) var`のlocal等で持ち、warningを0件にする。`-suppress-warnings` / `@unchecked` / 包括的な`@preconcurrency`で隠さない
-2. [Important] `Sources/NotetakeCore/Transcribe/Transcriber.swift:107-113` の results 消費 loop が `catch` で error を捨て `continuation.finish()` だけ行う。裁定: interface（`start() async throws -> AsyncStream<TranscriptPiece>` / `finish() async throws`）は維持し、errorをactor内に保持して`finish()`がrethrowする（finalize自体のerrorも先に起きた方を伝播）。`transcribe` subcommand は非0 exit になる
+- **M3 話者分離（Mac）**: FluidAudio v0.15.7（`https://github.com/FluidInference/FluidAudio.git`、Apache-2.0、SPM）を`NotetakeDiarization` targetにのみ追加。モデル`FluidInference/speaker-diarization-coreml`は初回にHugging Faceから取得（オフライン化のためapp同梱にするかを決める）。`Diarizer` actor（16kHz mono、10秒chunk、閾値0.7、256次元埋め込み）→ `Aligner`（final結果を話者turn境界で分割、保留上限chunk長+2秒）→ `SpeakerRegistry`（cosine最近傍、閾値0.7、命名済みcentroidを`~/Library/Application Support/Notetake/speakers.json`に永続化）→ `<prefix>.speakers.json` → パネルの命名UI。実機確認は2話者の日本語音源をsystem音声で再生
+- **M4 polish**: Foundation Models（`SystemLanguageModel.default.availability`を最初に確認、sessionあたり4096 token）。turn単位で約1500 token chunk、`@Generable struct PolishedTurn`、失敗chunkは原文採用、`notetaked polish <timed.jsonl>` → `<prefix>.polished.md`。appの「整形」ボタンは子processで同subcommand
+- **M5 iPhone**: Bonjour `_notetake._tcp` + `NWListener(includePeerToPeer)`、TLS PSK（appが表示する6桁コード）、NDJSON `hello`/`ping`/`seg`/`ack`、iPhone側`Outbox`（未ack再送、`(device, seq)`で冪等）、Macの`clock_offset_ms`付与とReconcilerのデバイス横断統合。**Apple Development証明書の再発行が前提**（下記）
+- **M6 Watch**: 前面録音→20秒AAC小片→`WCSession.transferFile`→iPhoneの専用Transcriber stream。`NotetakeWatch` targetは現状`NotetakeCore`に依存していない（M6で追加し、watchOSでCoreがコンパイルできることを初めて確認する）
+- **横断**: 停止後に届いたiPhone／Watchのsegを該当収録のtimed.jsonlへ追記しfinal.mdを再生成する経路（spec「収録の対応付け」「orphans.jsonl」）はM5で実装。daemon再起動後に同じ接頭辞で収録を再開する要件（spec）は未実装で、M3〜M5のどこで拾うか決める
 
-確認コマンド: `swift build 2>&1 | grep -i warning`（出力なし）/ `rm -rf .build && swift test`（45/45、warningなし）/ `make daemon && say -v Kyoko -o /tmp/nt/test.aiff "明日の会議は十時からです" && .build/release/notetaked transcribe /tmp/nt/test.aiff`（`明日の会議`を含む行、exit 0）。commit subject: `fix(core): silence Sendable warnings in AudioConverter and surface transcriber failures`。deferred minor（最終reviewで判断）: convert毎の`reset()`によるchunk境界の不連続 / `start()`前の`feed`が黙ってno-op / `start()`二重呼び出しでcontinuationが漏れる
+## M0〜M2の最終reviewで持ち越した項目（次の計画で扱うか判断する）
 
-## 再開手順
-
-1. `git switch m0-m2-mac-core`（再開時にcheckoutが`main`へ移っていたことがある）
-2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。ledgerの最終行が示すtaskから再開する（implementer dispatch中に中断した場合は、そのtaskのreport fileの有無でDONEかを判断し、無ければfresh implementerへ再dispatch）
-3. モデル分担（user指定、token効率のため）: 全体検討・制御・統合=Fable（controller本体）、コード記述=Sonnet subagent、決定論的コマンド実行（build / test / xcodegen / xcodebuild / devicectl / git read系）=Haiku subagent、task review=Sonnet、小さなfix再review=Haiku、最終whole-branch review=Fable。repo直下の`CLAUDE.md`にも同じ分担を記載（毎セッション自動読込）
-5. ledger（`.superpowers/sdd/...`）は`.git/info/exclude`で除外された機械ローカルのfile。無ければSDD skillの手順で新規作成し、本HANDOFFの進捗表を初期状態にする
-4. commit trailer: `Co-Authored-By: <model名> <noreply@anthropic.com>` + `Claude-Session: <session URL>`
+- CaptureStream: `AVAudioConverter.convert`をIOProc（real-time thread）で実行し、失敗を`try?`で捨てている → `ingest`側（actor）へ移してEvent.errorで報告
+- CaptureStream: `levels`が長い無音で無制限に増える → 時間で刈る。system最初のsegの`level_dbfs`が-120になる（pieceの時間範囲にbufferが無い時のfallback）
+- ServeSession: capture開始失敗時に`session`/`device`だけの`timed.jsonl`が残る
+- DaemonClient: stdout chunkごとのTask hopがFIFO前提 → AsyncStreamで直列化
+- SettingsView: focusしたまま設定windowを閉じると名前の編集が落ちる → `onDisappear`でもcommit
+- Transcriber: `fedFrames`がUInt32で約24.8時間の連続収録でoverflow → UInt64へ。変換ごとの`AudioConverter.reset()`が認識品質に与える影響をM3前にA/B
+- LivePanel: 「常に前面」toggleはwindowを開き直すと初期値に戻る（userは「だいじょうぶ」と判断）
+- spec追記候補: `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り、同一deviceなので統合されず重複する
 
 ## 環境の注意
 
-- **Apple Development証明書が失効**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。失効証明書で署名したバイナリはmacOSがマルウェア警告を出して起動を止める（既知・無害）。daemonとmac appはad-hoc署名で進めている（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行（M5のiPhone実機ビルドまでに必須）。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を戻す
-- Bash sandboxで`~/.gitconfig`と`~/.config/gh`が読めないことがある（stow経由のiCloud dotfiles）。gitは`GIT_CONFIG_GLOBAL=/dev/null`で回避、repo localにuser.name/email設定済み。`gh`はsandbox無効化が必要
+- **Apple Development証明書が失効中**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。daemonとmac appはad-hoc署名（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行（M5のiPhone実機ビルドまでに必須）。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を`Automatic` + Team `SM5792D355`へ戻す
+- **TCC帰属（M2で実測）**: appが子processで起動したdaemonのマイク／システム音声録音の許可は親app（Notetake.app）に帰属する。usage stringはappのInfo.plist（project.yml）に必要。daemonの`io.github.bash0c7.notetaked`はLaunchServices未登録で`tccutil reset`は効かない。terminalから単体起動した場合はterminal appに帰属。ad-hoc署名でrebuildした後に再許可が要るかは未確認
+- **system音声tapの特性**: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
+- git push / ghはBash sandboxでは資格情報が読めない → sandboxを無効にして実行。sandbox内で`~/.gitconfig`が読めない時は`GIT_CONFIG_GLOBAL=/dev/null`（repo localにuser.name/email設定済み）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
-- TCC: Task 11（マイク）とTask 12（システム音声）の初回実行で許可ダイアログが出る。Claude Codeを動かしているterminal appに対して出るのでuserが許可する
 
 ## 検証コマンド
 
 - `make test` / `make daemon` / `make project` / `make app`
-- `.build/release/notetaked transcribe /tmp/nt/test.aiff`（`say -v Kyoko -o /tmp/nt/test.aiff "明日の会議は十時からです"`で生成）
-
-## 次にやること
-
-`finishing-a-development-branch`（merge / PR はuser判断） → M3以降は`writing-plans`で再計画
+- `swift build 2>&1 | grep -i warning`（出力なしが正常）
 
 ## GitHub
 
-- public repo: https://github.com/bash0C7/notetaked（default `main`、作業branch `m0-m2-mac-core` もpush済み）
-
-## 最終reviewで持ち越した項目（M3計画時に再評価）
-
-- CaptureStream: convertをIOProc（real-time thread）で実行し失敗をtry?で捨てる → ingest側（actor）へ移してEvent.errorで報告
-- CaptureStream: levelsが長い無音で無制限に増える → 時間で刈る
-- ServeSession: capture開始失敗時にsession/deviceだけのtimed.jsonlが残る
-- DaemonClient: stdout chunkごとのTask hopの順序がFIFO前提 → AsyncStreamで直列化
-- SettingsView: focusしたまま設定windowを閉じると名前の編集が落ちる → onDisappearでもcommit
-- project.yml: NotetakeWatchがNotetakeCoreに依存しておらず、watchOSでCoreがコンパイルされたことがない → M6で依存追加
-- spec乖離: daemon再起動後に同じ接頭辞で収録を再開する要件が未実装（appは再起動後idle）
-- spec追記候補: `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り同一deviceなので統合されず重複する
-- Transcriber: 変換ごとの`reset()`が認識品質に与える影響をM3前にA/B
-- Task 15: 「常に前面」toggleの状態はwindowを開き直すと初期値に戻る（userの画面確認で実挙動を見る）
-- Transcriber: `fedFrames`がUInt32で約24.8時間の連続収録でoverflow → UInt64へ
+- public repo: https://github.com/bash0C7/notetaked（default `main`）
