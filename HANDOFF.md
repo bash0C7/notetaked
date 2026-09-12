@@ -2,7 +2,7 @@
 
 ## 状態（2026-09-12 中断）
 
-- **中断**。作業branch `m0-m2-mac-core`、HEAD `360482d`（Task 10まで実装・commit済み。Task 10はreview済み、fix round 1未実施）
+- **中断**。作業branch `m0-m2-mac-core`。実装のHEADは`360482d`（Task 10まで実装・commit済み、以後はdocs commitのみ）。Task 10はreview済み、fix round 1未実施
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
@@ -23,11 +23,19 @@
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
 
+## Task 10 fix round 1 の指摘と裁定（ledgerが無くてもこれで着手できる）
+
+1. [Important, plan-mandated] `Sources/NotetakeCore/Audio/AudioConverter.swift:35-44` の block-based `convert(to:error:withInputFrom:)` closure が Swift 6 の `@Sendable` capture warning を出し build 出力が非pristine。裁定: 入力bufferを`let`で束縛し、供給済みflagは`nonisolated(unsafe) var`のlocal等で持ち、warningを0件にする。`-suppress-warnings` / `@unchecked` / 包括的な`@preconcurrency`で隠さない
+2. [Important] `Sources/NotetakeCore/Transcribe/Transcriber.swift:107-113` の results 消費 loop が `catch` で error を捨て `continuation.finish()` だけ行う。裁定: interface（`start() async throws -> AsyncStream<TranscriptPiece>` / `finish() async throws`）は維持し、errorをactor内に保持して`finish()`がrethrowする（finalize自体のerrorも先に起きた方を伝播）。`transcribe` subcommand は非0 exit になる
+
+確認コマンド: `swift build 2>&1 | grep -i warning`（出力なし）/ `rm -rf .build && swift test`（45/45、warningなし）/ `make daemon && say -v Kyoko -o /tmp/nt/test.aiff "明日の会議は十時からです" && .build/release/notetaked transcribe /tmp/nt/test.aiff`（`明日の会議`を含む行、exit 0）。commit subject: `fix(core): silence Sendable warnings in AudioConverter and surface transcriber failures`。deferred minor（最終reviewで判断）: convert毎の`reset()`によるchunk境界の不連続 / `start()`前の`feed`が黙ってno-op / `start()`二重呼び出しでcontinuationが漏れる
+
 ## 再開手順
 
 1. `git switch m0-m2-mac-core`（再開時にcheckoutが`main`へ移っていたことがある）
 2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。Task 10のfix round 1から再開: implementer（Sonnet）にledger記載のImportant 2件と裁定を渡す → `scripts/review-package <plan> 360482d HEAD` → 再review（Haiku）→ complete → Task 11へ
-3. モデル分担（user指定）: 実装=Sonnet、task review=Sonnet、小さなfix再review=Haiku、最終whole-branch review=Fable、決定論的コマンドはHaiku
+3. モデル分担（user指定、token効率のため）: 全体検討・制御・統合=Fable（controller本体）、コード記述=Sonnet subagent、決定論的コマンド実行（build / test / xcodegen / xcodebuild / devicectl / git read系）=Haiku subagent、task review=Sonnet、小さなfix再review=Haiku、最終whole-branch review=Fable。repo直下の`CLAUDE.md`にも同じ分担を記載（毎セッション自動読込）
+5. ledger（`.superpowers/sdd/...`）は`.git/info/exclude`で除外された機械ローカルのfile。無ければSDD skillの手順で新規作成し、本HANDOFFの進捗表を初期状態にする
 4. commit trailer: `Co-Authored-By: <model名> <noreply@anthropic.com>` + `Claude-Session: <session URL>`
 
 ## 環境の注意
