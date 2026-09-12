@@ -32,10 +32,13 @@ final class AppModel {
 
     private var client: DaemonClient?
     private var launchedArguments: [String]?
-    private var suppressNextExitHandling = false
     private var restartTimestamps: [Date] = []
-    /// 録音中に設定が変わり再起動が必要になったが、録音終了まで延期している状態。
+    /// 録音中である、または再起動処理が進行中であるために延期している再起動要求がある状態。
     private var restartPending = false
+    /// 旧daemonの`terminate()`待ち〜新daemon起動までの間、再起動処理が同時に2つ走らないようにする排他フラグ。
+    private var restartInFlight = false
+    /// アプリ終了処理中は新規daemonを起動しない。
+    private var isShuttingDown = false
 
     init() {
         let defaults = UserDefaults.standard
@@ -69,10 +72,19 @@ final class AppModel {
     }
 
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
-    /// 引数が変わっていれば旧daemonを終了して新daemonを起動するが、録音中は録音終了まで延期する
-    /// （`handle(_:)`の`.status`で`recording == false`を受け取った時に自動的に適用される）。
+    /// 引数が変わっていれば旧daemonを終了して新daemonを起動するが、次のいずれかの場合は延期し、
+    /// `restartPending`を立てて後で再度`ensureDaemon()`が呼ばれた時に適用する:
+    /// - 録音中（`handle(_:)`の`.status`で`recording == false`を受け取った時に自動適用）
+    /// - 既に再起動処理が進行中（`performRestart()`完了時に自動適用）
+    /// 再起動が実際に走る時点の設定を反映するため、引数は要求時ではなく起動直前（`launchLatest()`内）で
+    /// 都度計算し直す。
     func ensureDaemon() {
+        guard !isShuttingDown else { return }
         guard let outputDirectory else { return }
+        if restartInFlight {
+            restartPending = true
+            return
+        }
         let arguments = desiredArguments(outputDirectory: outputDirectory)
         if daemonRunning, launchedArguments == arguments {
             restartPending = false
@@ -83,23 +95,35 @@ final class AppModel {
             return
         }
         restartPending = false
-        performRestart(arguments: arguments)
+        performRestart()
     }
 
-    private func performRestart(arguments: [String]) {
-        if let client {
-            suppressNextExitHandling = true
-            self.client = nil
-            Task { @MainActor [weak self] in
-                await client.terminate()
-                guard let self else { return }
-                self.launchedArguments = arguments
-                self.startClient(arguments: arguments)
+    /// 旧daemon（あれば）を終了してから、その時点の最新設定で新daemonを起動する。
+    /// `restartInFlight`により、この処理が完了するまで新たな再起動は`ensureDaemon()`側で延期される。
+    private func performRestart() {
+        restartInFlight = true
+        let oldClient = client
+        client = nil
+        Task { @MainActor [weak self] in
+            if let oldClient {
+                await oldClient.terminate()
             }
-        } else {
-            launchedArguments = arguments
-            startClient(arguments: arguments)
+            guard let self else { return }
+            self.restartInFlight = false
+            guard !self.isShuttingDown else { return }
+            self.launchLatest()
+            if self.restartPending {
+                self.restartPending = false
+                self.ensureDaemon()
+            }
         }
+    }
+
+    private func launchLatest() {
+        guard let outputDirectory else { return }
+        let arguments = desiredArguments(outputDirectory: outputDirectory)
+        launchedArguments = arguments
+        startClient(arguments: arguments)
     }
 
     private func startClient(arguments: [String]) {
@@ -114,7 +138,7 @@ final class AppModel {
             executable: executable,
             arguments: arguments,
             onEvent: { [weak self] event in self?.handle(event) },
-            onExit: { [weak self] code in self?.handleExit(code) }
+            onExit: { [weak self] exitedClient, code in self?.handleExit(exitedClient, code) }
         )
         do {
             try newClient.start()
@@ -126,13 +150,14 @@ final class AppModel {
         }
     }
 
-    private func handleExit(_ code: Int32) {
+    /// 終了したclientが現在`self.client`が保持しているものと一致する場合のみ処理する。
+    /// 置き換え済み（`performRestart()`で`client = nil`にした後の旧client）や意図的に終了させた
+    /// （`shutdownDaemon()`で`client = nil`にした後の）clientのexitは、その時点で既に`self.client`と
+    /// 一致しなくなっているため自動的に無視され、誤った再起動カウントやクラッシュ扱いを防げる。
+    private func handleExit(_ exitedClient: DaemonClient, _ code: Int32) {
+        guard exitedClient === client else { return }
         client = nil
         daemonRunning = false
-        if suppressNextExitHandling {
-            suppressNextExitHandling = false
-            return
-        }
         // 予期せぬ終了でdaemonが持っていた録音状態は失われるため、UI側もリセットする。
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
@@ -158,9 +183,10 @@ final class AppModel {
     }
 
     /// アプリ終了時にdaemonを止める（再起動はしない）。MainActorをブロックせず、quit送信〜終了待ちを待機できる。
+    /// `isShuttingDown`を立てることで、進行中の`performRestart()`が完了しても新daemonを起動しないようにする。
     func shutdownDaemon() async {
+        isShuttingDown = true
         guard let client else { return }
-        suppressNextExitHandling = true
         self.client = nil
         await client.terminate()
         daemonRunning = false

@@ -9,14 +9,17 @@ final class DaemonClient {
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
     private let onEvent: @MainActor (Event) -> Void
-    private let onExit: @MainActor (Int32) -> Void
+    /// 終了したclient自身を第一引数で渡す。呼び出し側（AppModel）が「自分が現在保持しているclientか」を
+    /// 識別してexitを取り扱うかどうか判断できるようにするため（置き換え済み/意図的終了させたclientのexitと、
+    /// 現在稼働中clientの予期せぬexitを取り違えないようにする）。
+    private let onExit: @MainActor (DaemonClient, Int32) -> Void
     private var stdoutBuffer = Data()
 
     init(
         executable: URL,
         arguments: [String],
         onEvent: @escaping @MainActor (Event) -> Void,
-        onExit: @escaping @MainActor (Int32) -> Void
+        onExit: @escaping @MainActor (DaemonClient, Int32) -> Void
     ) {
         self.onEvent = onEvent
         self.onExit = onExit
@@ -31,7 +34,8 @@ final class DaemonClient {
         process.terminationHandler = { [weak self] finishedProcess in
             let status = finishedProcess.terminationStatus
             Task { @MainActor in
-                self?.onExit(status)
+                guard let self else { return }
+                self.onExit(self, status)
             }
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
