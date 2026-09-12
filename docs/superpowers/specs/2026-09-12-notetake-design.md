@@ -237,7 +237,7 @@ M2完了時点でMac単体の製品として使え、M4までで整形も揃う�
 
 ## リスクと対処
 
-- **子process起動時のTCC帰属が未確認**: M2の最初に実機確認。CLI自身への帰属なら埋め込みInfo.plist + 安定署名で対応済み。app帰属ならappのInfo.plistに同じkeyを持たせる（両方入れておく）
+- **子process起動時のTCC帰属（M2で実機確認済み）**: appが`Process`で起動したdaemonのマイク・システム音声録音の許可は**親appのNotetake.appに帰属する**。確認方法: `tccutil reset Microphone/AudioCapture io.github.bash0c7.notetake`でリセット後、appから収録開始すると許可ダイアログがマイク・システム音声で別々に出て、システム設定 > プライバシーとセキュリティ の両欄に「Notetake.app」が並ぶ（2026-09-13、macOS 26.5、ad-hoc署名）。daemon側のbundle id `io.github.bash0c7.notetaked`はLaunchServicesに登録されないため`tccutil reset`は「No such bundle identifier」を返す。対処: appのInfo.plistに`NSMicrophoneUsageDescription`と`NSAudioCaptureUsageDescription`を持たせる（`Apps/project.yml`で設定済み）。daemonに埋め込んだInfo.plistは、terminalから単体起動した場合にterminal appへ帰属する際の説明文として残す
 - **話者分離モデルの初回ダウンロード**: Core MLモデルは初回にネット取得が要る可能性 → appに同梱して完全オフライン化する選択肢を調査結果で判断
 - **話者分離の遅延**: chunk長ぶん話者名の確定が遅れる。本文は即時表示し話者名だけ後から差し替える設計で吸収
 - **Foundation Modelsのguardrail / context超過**: chunk単位のfallbackで原文を残す
