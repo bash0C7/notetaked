@@ -31,13 +31,21 @@ struct Capture: AsyncParsableCommand {
         let capture = MicCapture()
         let counter = BufferCounter()
 
+        let (dbfsStream, dbfsContinuation) = AsyncStream<Double>.makeStream()
         try capture.start { buffer in
-            let dbfs = AudioLevel.dbfs(buffer)
-            Task { await counter.record(dbfs) }
+            dbfsContinuation.yield(AudioLevel.dbfs(buffer))
+        }
+
+        let recordTask = Task {
+            for await dbfs in dbfsStream {
+                await counter.record(dbfs)
+            }
         }
 
         try await Task.sleep(for: .seconds(seconds))
         capture.stop()
+        dbfsContinuation.finish()
+        await recordTask.value
 
         let (count, maxDBFS) = await counter.summary()
         print("buffers=\(count) max_dbfs=\(maxDBFS)")
