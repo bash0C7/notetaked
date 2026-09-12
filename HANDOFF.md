@@ -2,7 +2,7 @@
 
 ## 状態（2026-09-13 user確認待ち）
 
-- **待機（user確認）**。作業branch `m0-m2-mac-core`。コード側はHEAD `4eda1ec`で完了（Task 1〜15 + 最終review fix wave + 無音stop hang fix、すべて再review clean、`swift test` 49/49）。残りはuserの実機確認とTask 16のspec更新のみ
+- **完了**。作業branch `m0-m2-mac-core`。Task 1〜16すべてcomplete、最終whole-branch review + fix wave + hang fix まで再review clean、`swift test` 49/49。userの実機確認済み（mac appで収録開始→say→停止→final.md生成、renderで同一再生成、TCC帰属はNotetake.app）。次はbranchの仕上げ（merge / PR はuser判断）
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
