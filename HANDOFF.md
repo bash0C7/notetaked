@@ -2,7 +2,7 @@
 
 ## 状態（2026-09-12 中断）
 
-- **中断**。作業branch `m0-m2-mac-core`、HEAD `360482d`（Task 10まで実装・commit済み。Task 10のレビュー判定は未取得）
+- **中断**。作業branch `m0-m2-mac-core`、HEAD `360482d`（Task 10まで実装・commit済み。Task 10はreview済み、fix round 1未実施）
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
