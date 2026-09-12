@@ -1,8 +1,8 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-09-12 中断）
+## 状態（2026-09-13 進行中）
 
-- **中断**。作業branch `m0-m2-mac-core`。実装のHEADは`360482d`（Task 10まで実装・commit済み、以後はdocs commitのみ）。Task 10はreview済み、fix round 1未実施
+- **進行中**。作業branch `m0-m2-mac-core`。Task 10まで完了（fix round 1済み、commit `2283309`）。Task 11を実装中
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
@@ -18,12 +18,13 @@
 | 1〜3 | M0 bootstrap（SwiftPM / XcodeGen / mac・iOS・watchOS skeleton） | complete |
 | 4〜8 | M1 NotetakeCore（モデル・NDJSON・TextSimilarity・Reconciler・Renderer・SessionStore） | complete |
 | 9 | 制御メッセージ Command / Event | complete |
-| 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | commit `360482d`、**review済み・fix round 1未実施**（Important 2件: AudioConverterの@Sendable warning、Transcriberのresults loopでerror握り潰し。詳細と裁定はledger） |
-| 11〜16 | MicCapture → SystemAudioCapture → serve/render → mac app → ライブパネル → TCC確認 | 未着手 |
+| 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | complete（fix round 1済み、commit `2283309`） |
+| 11 | MicCapture / CaptureStream / `capture` subcommand | 実装中 |
+| 12〜16 | SystemAudioCapture → serve/render → mac app → ライブパネル → TCC確認 | 未着手 |
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
 
-## Task 10 fix round 1 の指摘と裁定（ledgerが無くてもこれで着手できる）
+## Task 10 fix round 1 の指摘と裁定（完了済み。記録として残す）
 
 1. [Important, plan-mandated] `Sources/NotetakeCore/Audio/AudioConverter.swift:35-44` の block-based `convert(to:error:withInputFrom:)` closure が Swift 6 の `@Sendable` capture warning を出し build 出力が非pristine。裁定: 入力bufferを`let`で束縛し、供給済みflagは`nonisolated(unsafe) var`のlocal等で持ち、warningを0件にする。`-suppress-warnings` / `@unchecked` / 包括的な`@preconcurrency`で隠さない
 2. [Important] `Sources/NotetakeCore/Transcribe/Transcriber.swift:107-113` の results 消費 loop が `catch` で error を捨て `continuation.finish()` だけ行う。裁定: interface（`start() async throws -> AsyncStream<TranscriptPiece>` / `finish() async throws`）は維持し、errorをactor内に保持して`finish()`がrethrowする（finalize自体のerrorも先に起きた方を伝播）。`transcribe` subcommand は非0 exit になる
@@ -33,7 +34,7 @@
 ## 再開手順
 
 1. `git switch m0-m2-mac-core`（再開時にcheckoutが`main`へ移っていたことがある）
-2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。Task 10のfix round 1から再開: implementer（Sonnet）にledger記載のImportant 2件と裁定を渡す → `scripts/review-package <plan> 360482d HEAD` → 再review（Haiku）→ complete → Task 11へ
+2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。ledgerの最終行が示すtaskから再開する（implementer dispatch中に中断した場合は、そのtaskのreport fileの有無でDONEかを判断し、無ければfresh implementerへ再dispatch）
 3. モデル分担（user指定、token効率のため）: 全体検討・制御・統合=Fable（controller本体）、コード記述=Sonnet subagent、決定論的コマンド実行（build / test / xcodegen / xcodebuild / devicectl / git read系）=Haiku subagent、task review=Sonnet、小さなfix再review=Haiku、最終whole-branch review=Fable。repo直下の`CLAUDE.md`にも同じ分担を記載（毎セッション自動読込）
 5. ledger（`.superpowers/sdd/...`）は`.git/info/exclude`で除外された機械ローカルのfile。無ければSDD skillの手順で新規作成し、本HANDOFFの進捗表を初期状態にする
 4. commit trailer: `Co-Authored-By: <model名> <noreply@anthropic.com>` + `Claude-Session: <session URL>`
@@ -52,7 +53,7 @@
 
 ## 次にやること
 
-Task 10 fix round 1 → 再review → Task 11（MicCapture / CaptureStream / `capture`。user: マイク許可）→ Task 12（system audio tap。user: 許可）→ Task 13（serve / render、`say`によるe2e）→ Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+Task 11（MicCapture / CaptureStream / `capture`。user: マイク許可）→ Task 12（system audio tap。user: 許可）→ Task 13（serve / render、`say`によるe2e）→ Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
 
 ## GitHub
 
