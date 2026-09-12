@@ -18,7 +18,8 @@ let package = Package(
             dependencies: [
                 "NotetakeCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
+            ],
+            exclude: ["Info.plist"]
         ),
         .testTarget(name: "NotetakeCoreTests", dependencies: ["NotetakeCore"]),
     ]

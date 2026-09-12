@@ -1,4 +1,5 @@
-DAEMON_IDENTITY ?= $(shell security find-identity -v -p codesigning | grep -v REVOKED | grep 'Apple Development' | head -1 | awk '{print $$2}')
+# set DAEMON_IDENTITY=<SHA-1 of a valid "Apple Development" identity> once the certificate is renewed
+DAEMON_IDENTITY ?= -
 DERIVED := .build/DerivedData
 
 .PHONY: test daemon project app clean
