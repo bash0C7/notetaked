@@ -17,6 +17,13 @@ struct LivePanelView: View {
         return formatter
     }()
 
+    private static let nextRotationFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        formatter.timeZone = .current
+        return formatter
+    }()
+
     /// mic → system → watchの順で並べたvolatile行。
     private var orderedVolatile: [(source: Source, text: String)] {
         [Source.mic, .system, .watch].compactMap { source in
@@ -55,6 +62,18 @@ struct LivePanelView: View {
                     .foregroundStyle(.secondary)
             }
             ToolbarItem(placement: .automatic) {
+                Button("収録開始") { appModel.startRecording() }
+                    .disabled(appModel.outputDirectory == nil || appModel.isRecording)
+            }
+            ToolbarItem(placement: .automatic) {
+                Button("収録停止") { appModel.stopRecording() }
+                    .disabled(!appModel.isRecording)
+            }
+            ToolbarItem(placement: .automatic) {
+                Button("区切る") { appModel.rotateRecording() }
+                    .disabled(!appModel.isRecording)
+            }
+            ToolbarItem(placement: .automatic) {
                 Toggle("常に前面", isOn: $floating)
                     .onChange(of: floating) {
                         applyFloating(floating)
@@ -71,6 +90,9 @@ struct LivePanelView: View {
         var text = "収録中 \(appModel.prefix ?? "")"
         if !appModel.sources.isEmpty {
             text += " " + appModel.sources.map(\.rawValue).joined(separator: "/")
+        }
+        if let nextRotationAt = appModel.nextRotationAt {
+            text += " 次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt)
         }
         return text
     }

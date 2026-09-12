@@ -3,12 +3,14 @@ import Foundation
 import NotetakeCore
 
 /// メニューバーアプリ全体の状態と、daemonプロセスのsupervision（起動・再起動・設定反映）を担う。
+/// 収録中は「自動で区切る」タイマー（`rotationIntervalHours`）も管理し、期限が来ると`rotate`を送る。
 @MainActor
 @Observable
 final class AppModel {
     private enum DefaultsKey {
         static let outputDirectory = "outputDirectory"
         static let ownerName = "ownerName"
+        static let rotationIntervalHours = "rotationIntervalHours"
     }
 
     private static let maxRestartsPerWindow = 5
@@ -23,6 +25,13 @@ final class AppModel {
         didSet { UserDefaults.standard.set(ownerName, forKey: DefaultsKey.ownerName) }
     }
 
+    var rotationIntervalHours: Double {
+        didSet {
+            UserDefaults.standard.set(rotationIntervalHours, forKey: DefaultsKey.rotationIntervalHours)
+            scheduleRotation()
+        }
+    }
+
     var daemonRunning = false
     var isRecording = false
     var prefix: String?
@@ -30,8 +39,14 @@ final class AppModel {
     var volatile: [Source: String] = [:]
     var sources: [Source] = []
     var lastError: String?
+    /// 自動区切りの予定時刻。表示用。自動区切りが無効（間隔0、または未収録）ならnil。
+    var nextRotationAt: Date?
 
     private var client: DaemonClient?
+    /// 現在の収録（`prefix`）が開始した時刻。自動区切りの期限計算の起点。
+    private var recordingStartedAt: Date?
+    /// 自動区切りを待機している`Task`。設定変更・収録状態の変化のたびに取り消して張り直す。
+    private var rotationTask: Task<Void, Never>?
     private var launchedArguments: [String]?
     private var restartTimestamps: [Date] = []
     /// 録音中である、または再起動処理が進行中であるために延期している再起動要求がある状態。
@@ -51,6 +66,15 @@ final class AppModel {
             outputDirectory = nil
         }
         ownerName = defaults.string(forKey: DefaultsKey.ownerName) ?? "私"
+        // didSetはinit中は発火しないため、ここでは正規化のみ行い、scheduleRotation()は呼ばない
+        // （収録中でない起動直後は呼んでも何もしない）。
+        if defaults.object(forKey: DefaultsKey.rotationIntervalHours) == nil {
+            rotationIntervalHours = RotationSchedule.defaultIntervalHours
+        } else {
+            rotationIntervalHours = RotationSchedule.normalizedIntervalHours(
+                defaults.double(forKey: DefaultsKey.rotationIntervalHours)
+            )
+        }
     }
 
     private func persistOutputDirectory() {
@@ -167,6 +191,7 @@ final class AppModel {
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
         prefix = nil
+        clearRotation()
         if code != 0 {
             lastError = "daemonが予期せず終了しました (code \(code))"
         }
@@ -193,6 +218,7 @@ final class AppModel {
     /// まず`restartTask`の完了を待ってから、その時点で残っている`client`（あれば）を終了させる。
     /// こうしないと、旧daemonがまだforce-terminateされる前にアプリが終了し、孤児daemonが残る。
     func shutdownDaemon() async {
+        clearRotation()
         isShuttingDown = true
         await restartTask?.value
         restartInFlight = false
@@ -214,6 +240,11 @@ final class AppModel {
         client?.send(.stop)
     }
 
+    func rotateRecording() {
+        lastError = nil
+        client?.send(.rotate)
+    }
+
     func renameSpeaker(id: String, name: String) {
         client?.send(.renameSpeaker(id: id, name: name))
     }
@@ -230,12 +261,46 @@ final class AppModel {
         NSWorkspace.shared.open(outputDirectory)
     }
 
+    // MARK: - Auto rotation
+
+    /// 収録開始時刻（`recordingStartedAt`）と設定間隔（`rotationIntervalHours`）から次の区切り期限を計算し、
+    /// 期限まで待ってから`rotateRecording()`を呼ぶ`Task`を張り直す。
+    /// `ContinuousClock`で待つため、Macがスリープしている間も時間は経過し続け、
+    /// スリープ復帰時点で既に期限を過ぎていればその直後に区切られる（`Task.sleep`はほぼ即座に返る）。
+    /// 設定変更（`rotationIntervalHours`のdidSet）や収録状態の変化のたびに呼ばれ、
+    /// 同じ`recordingStartedAt`からの再計算になるため、間隔の変更は次の区切り予定に即座に反映される。
+    private func scheduleRotation() {
+        rotationTask?.cancel()
+        rotationTask = nil
+        guard isRecording, let start = recordingStartedAt,
+              let due = RotationSchedule.nextRotation(recordingStartedAt: start, intervalHours: rotationIntervalHours)
+        else {
+            nextRotationAt = nil
+            return
+        }
+        nextRotationAt = due
+        rotationTask = Task { @MainActor [weak self] in
+            let delay = max(0, due.timeIntervalSinceNow)
+            try? await Task.sleep(until: .now + .seconds(delay), clock: .continuous)
+            guard !Task.isCancelled, let self, self.isRecording, self.nextRotationAt == due else { return }
+            self.rotateRecording()
+        }
+    }
+
+    private func clearRotation() {
+        rotationTask?.cancel()
+        rotationTask = nil
+        recordingStartedAt = nil
+        nextRotationAt = nil
+    }
+
     // MARK: - Event handling
 
     private func handle(_ event: Event) {
         switch event {
         case .status(let status):
-            if status.recording, status.prefix != prefix {
+            let isNewRecording = status.recording && status.prefix != prefix
+            if isNewRecording {
                 utterances = []
                 volatile = [:]
             }
@@ -247,6 +312,13 @@ final class AppModel {
             isRecording = status.recording
             prefix = status.prefix
             sources = status.sources
+            if isNewRecording {
+                recordingStartedAt = Date()
+                scheduleRotation()
+            }
+            if !status.recording {
+                clearRotation()
+            }
             if !isRecording, restartPending {
                 ensureDaemon()
             }

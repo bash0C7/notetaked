@@ -5,8 +5,19 @@ struct MenuContent: View {
     let appModel: AppModel
     @Environment(\.openWindow) private var openWindow
 
+    private static let nextRotationFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm"
+        formatter.timeZone = .current
+        return formatter
+    }()
+
     var body: some View {
         Text(statusText)
+        if let nextRotationAt = appModel.nextRotationAt {
+            Text("次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt))
+                .foregroundStyle(.secondary)
+        }
         if let lastError = appModel.lastError {
             Text(lastError)
                 .foregroundStyle(.red)
@@ -16,6 +27,8 @@ struct MenuContent: View {
             .disabled(appModel.outputDirectory == nil || appModel.isRecording)
         Button("収録停止") { appModel.stopRecording() }
             .disabled(appModel.outputDirectory == nil || !appModel.isRecording)
+        Button("収録を区切る") { appModel.rotateRecording() }
+            .disabled(!appModel.isRecording)
         Divider()
         Button("ライブパネルを開く") {
             NSApp.activate()
