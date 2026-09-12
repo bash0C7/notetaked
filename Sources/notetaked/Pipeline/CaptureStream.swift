@@ -33,7 +33,7 @@ actor CaptureStream {
     let origin: Date
 
     init(source: Source, capture: any AudioCapture, locale: Locale) async throws {
-        guard source == .mic else {
+        guard source != .watch else {
             throw CaptureStreamError.sourceNotImplemented(source)
         }
         self.capture = capture
