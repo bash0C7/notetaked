@@ -1,7 +1,7 @@
 import Foundation
 
 /// Reconcilerが生成する統合済み発話。同一の発話に属する複数device由来segを1件へまとめたもの。
-public struct Utterance: Sendable, Equatable, Identifiable {
+public struct Utterance: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID            // 最初に受け取ったsegのid（安定）
     public var start: Int64        // 正規化後 epoch ms
     public var end: Int64
@@ -13,4 +13,18 @@ public struct Utterance: Sendable, Equatable, Identifiable {
     public var ownerLabel: String  // 採用本文segのowner
     public var sources: [UUID]     // 統合したseg id（受信順）
     public var devices: [String]   // 統合したdevice id
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case start
+        case end
+        case speakerID = "speaker_id"
+        case speaker
+        case text
+        case confidence
+        case source
+        case ownerLabel = "owner_label"
+        case sources
+        case devices
+    }
 }
