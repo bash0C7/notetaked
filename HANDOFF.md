@@ -18,7 +18,7 @@
 | 1〜3 | M0 bootstrap（SwiftPM / XcodeGen / mac・iOS・watchOS skeleton） | complete |
 | 4〜8 | M1 NotetakeCore（モデル・NDJSON・TextSimilarity・Reconciler・Renderer・SessionStore） | complete |
 | 9 | 制御メッセージ Command / Event | complete |
-| 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | commit `360482d`、**review未**（実機で`say`音声の文字起こし成功済み） |
+| 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | commit `360482d`、**review済み・fix round 1未実施**（Important 2件: AudioConverterの@Sendable warning、Transcriberのresults loopでerror握り潰し。詳細と裁定はledger） |
 | 11〜16 | MicCapture → SystemAudioCapture → serve/render → mac app → ライブパネル → TCC確認 | 未着手 |
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
@@ -26,7 +26,7 @@
 ## 再開手順
 
 1. `git switch m0-m2-mac-core`（再開時にcheckoutが`main`へ移っていたことがある）
-2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。Task 10のreviewから再開: `scripts/review-package <plan> 451ec80 360482d` → task reviewer（Sonnet）dispatch → fix loop → complete → Task 11へ
+2. `superpowers:subagent-driven-development`を起動し、ledger先頭行がこのplanを指すことを確認。Task 10のfix round 1から再開: implementer（Sonnet）にledger記載のImportant 2件と裁定を渡す → `scripts/review-package <plan> 360482d HEAD` → 再review（Haiku）→ complete → Task 11へ
 3. モデル分担（user指定）: 実装=Sonnet、task review=Sonnet、小さなfix再review=Haiku、最終whole-branch review=Fable、決定論的コマンドはHaiku
 4. commit trailer: `Co-Authored-By: <model名> <noreply@anthropic.com>` + `Claude-Session: <session URL>`
 
@@ -44,7 +44,7 @@
 
 ## 次にやること
 
-Task 10 review → Task 11（MicCapture / CaptureStream / `capture`。user: マイク許可）→ Task 12（system audio tap。user: 許可）→ Task 13（serve / render、`say`によるe2e）→ Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+Task 10 fix round 1 → 再review → Task 11（MicCapture / CaptureStream / `capture`。user: マイク許可）→ Task 12（system audio tap。user: 許可）→ Task 13（serve / render、`say`によるe2e）→ Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
 
 ## 未完了のuser作業
 
