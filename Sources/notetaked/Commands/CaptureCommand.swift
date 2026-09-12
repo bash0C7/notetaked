@@ -18,17 +18,15 @@ struct Capture: AsyncParsableCommand {
     func run() async throws {
         switch source {
         case "mic":
-            try await runMicCapture()
+            try await runCapture(MicCapture())
         case "system":
-            FileHandle.standardError.write(Data("not implemented\n".utf8))
-            throw ExitCode(2)
+            try await runCapture(SystemAudioCapture())
         default:
             throw ValidationError("source must be mic or system")
         }
     }
 
-    private func runMicCapture() async throws {
-        let capture = MicCapture()
+    private func runCapture(_ capture: some AudioCapture) async throws {
         let counter = BufferCounter()
 
         let (dbfsStream, dbfsContinuation) = AsyncStream<Double>.makeStream()
