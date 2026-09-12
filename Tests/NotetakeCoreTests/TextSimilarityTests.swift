@@ -27,3 +27,11 @@ import Testing
     #expect(TextSimilarity.bigramDice("あ", "い") == 0.0)
     #expect(TextSimilarity.bigramDice("", "") == 1.0)
 }
+
+@Test func countAwareIntersection() {
+    #expect(TextSimilarity.bigramDice("ああああ", "ああ") == 0.5)
+}
+
+@Test func normalizedRemovesSymbols() {
+    #expect(TextSimilarity.normalized("価格は¥100♪") == "価格は100")
+}
