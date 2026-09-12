@@ -8,8 +8,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appModel.ensureDaemon()
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        appModel.shutdownDaemon()
+    /// daemonへの`quit`送信〜最大2秒の終了待ちはmainスレッドをブロックできないため、
+    /// `.terminateLater`で終了を保留し、非同期の`shutdownDaemon()`完了後に終了を再開する。
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            await appModel.shutdownDaemon()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 

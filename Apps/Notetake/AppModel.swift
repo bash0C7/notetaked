@@ -34,6 +34,8 @@ final class AppModel {
     private var launchedArguments: [String]?
     private var suppressNextExitHandling = false
     private var restartTimestamps: [Date] = []
+    /// 録音中に設定が変わり再起動が必要になったが、録音終了まで延期している状態。
+    private var restartPending = false
 
     init() {
         let defaults = UserDefaults.standard
@@ -56,27 +58,48 @@ final class AppModel {
 
     // MARK: - Daemon lifecycle
 
-    /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
-    /// 引数が変わっていれば旧daemonを終了して新daemonを起動する。
-    func ensureDaemon() {
-        guard let outputDirectory else { return }
-        let arguments = [
+    private func desiredArguments(outputDirectory: URL) -> [String] {
+        [
             "serve",
             "--output", outputDirectory.path,
             "--owner", ownerName,
             "--source", "both",
             "--control", "stdio",
         ]
+    }
+
+    /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
+    /// 引数が変わっていれば旧daemonを終了して新daemonを起動するが、録音中は録音終了まで延期する
+    /// （`handle(_:)`の`.status`で`recording == false`を受け取った時に自動的に適用される）。
+    func ensureDaemon() {
+        guard let outputDirectory else { return }
+        let arguments = desiredArguments(outputDirectory: outputDirectory)
         if daemonRunning, launchedArguments == arguments {
+            restartPending = false
             return
         }
+        if isRecording {
+            restartPending = true
+            return
+        }
+        restartPending = false
+        performRestart(arguments: arguments)
+    }
+
+    private func performRestart(arguments: [String]) {
         if let client {
             suppressNextExitHandling = true
-            client.terminate()
+            self.client = nil
+            Task { @MainActor [weak self] in
+                await client.terminate()
+                guard let self else { return }
+                self.launchedArguments = arguments
+                self.startClient(arguments: arguments)
+            }
+        } else {
+            launchedArguments = arguments
+            startClient(arguments: arguments)
         }
-        client = nil
-        launchedArguments = arguments
-        startClient(arguments: arguments)
     }
 
     private func startClient(arguments: [String]) {
@@ -110,6 +133,10 @@ final class AppModel {
             suppressNextExitHandling = false
             return
         }
+        // 予期せぬ終了でdaemonが持っていた録音状態は失われるため、UI側もリセットする。
+        // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
+        isRecording = false
+        prefix = nil
         if code != 0 {
             lastError = "daemonが予期せず終了しました (code \(code))"
         }
@@ -130,12 +157,12 @@ final class AppModel {
         }
     }
 
-    /// アプリ終了時にdaemonを止める（再起動はしない）。
-    func shutdownDaemon() {
+    /// アプリ終了時にdaemonを止める（再起動はしない）。MainActorをブロックせず、quit送信〜終了待ちを待機できる。
+    func shutdownDaemon() async {
         guard let client else { return }
         suppressNextExitHandling = true
-        client.terminate()
         self.client = nil
+        await client.terminate()
         daemonRunning = false
     }
 
@@ -176,6 +203,9 @@ final class AppModel {
             }
             isRecording = status.recording
             prefix = status.prefix
+            if !isRecording, restartPending {
+                ensureDaemon()
+            }
         case .utterance(let utterance):
             if let index = utterances.firstIndex(where: { $0.id == utterance.id }) {
                 utterances[index] = utterance
