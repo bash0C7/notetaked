@@ -39,6 +39,8 @@ final class AppModel {
     private var restartInFlight = false
     /// アプリ終了処理中は新規daemonを起動しない。
     private var isShuttingDown = false
+    /// 進行中の`performRestart()`のTask。`shutdownDaemon()`が旧daemonの終了完了を待つために保持する。
+    private var restartTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -104,12 +106,13 @@ final class AppModel {
         restartInFlight = true
         let oldClient = client
         client = nil
-        Task { @MainActor [weak self] in
+        restartTask = Task { @MainActor [weak self] in
             if let oldClient {
                 await oldClient.terminate()
             }
             guard let self else { return }
             self.restartInFlight = false
+            self.restartTask = nil
             guard !self.isShuttingDown else { return }
             self.launchLatest()
             if self.restartPending {
@@ -184,8 +187,14 @@ final class AppModel {
 
     /// アプリ終了時にdaemonを止める（再起動はしない）。MainActorをブロックせず、quit送信〜終了待ちを待機できる。
     /// `isShuttingDown`を立てることで、進行中の`performRestart()`が完了しても新daemonを起動しないようにする。
+    /// 再起動が進行中（`client == nil`だが旧daemonの`terminate()`をまだ待っている状態）の場合に備えて、
+    /// まず`restartTask`の完了を待ってから、その時点で残っている`client`（あれば）を終了させる。
+    /// こうしないと、旧daemonがまだforce-terminateされる前にアプリが終了し、孤児daemonが残る。
     func shutdownDaemon() async {
         isShuttingDown = true
+        await restartTask?.value
+        restartInFlight = false
+        restartPending = false
         guard let client else { return }
         self.client = nil
         await client.terminate()
