@@ -89,8 +89,9 @@ final class SystemAudioCapture: AudioCapture, @unchecked Sendable {
 
         let startStatus = AudioDeviceStart(aggregateDeviceID, newIOProcID)
         guard startStatus == noErr else {
-            AudioDeviceDestroyIOProcID(aggregateDeviceID, newIOProcID)
-            ioProcID = nil
+            // ioProcIDはまだ破棄していないのでstop()の通常teardown経路
+            // (IOProc破棄 → aggregate device破棄 → tap破棄)にそのまま乗せる
+            stop()
             throw SystemAudioCaptureError.osStatus("AudioDeviceStart", startStatus)
         }
     }
