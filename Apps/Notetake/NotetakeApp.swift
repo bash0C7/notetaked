@@ -1,13 +1,28 @@
 import SwiftUI
 
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let appModel = AppModel()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        appModel.ensureDaemon()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appModel.shutdownDaemon()
+    }
+}
+
 @main
 struct NotetakeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         MenuBarExtra("Notetake", systemImage: "waveform") {
-            Text("Notetake").font(.headline)
-            Divider()
-            Button("終了") { NSApplication.shared.terminate(nil) }
-                .keyboardShortcut("q")
+            MenuContent(appModel: appDelegate.appModel)
+        }
+        Settings {
+            SettingsView(appModel: appDelegate.appModel)
         }
     }
 }
