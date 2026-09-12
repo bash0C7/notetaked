@@ -38,7 +38,15 @@ public final class AudioConverter: @unchecked Sendable {
         }
 
         var conversionError: NSError?
-        var provided = false
+        // AVAudioConverter invokes this block synchronously and repeatedly
+        // within the `convert(to:error:withInputFrom:)` call below, on
+        // whatever thread that call executes on. It never escapes past
+        // that single call, so the block's own execution is never
+        // concurrent with itself; `nonisolated(unsafe)` documents that the
+        // compiler's generic "concurrently-executing code" warning does
+        // not apply to this specific, single-threaded, synchronous usage.
+        nonisolated(unsafe) var provided = false
+        let inputBuffer = buffer
         let status = converter.convert(to: outputBuffer, error: &conversionError) {
             _, inputStatus in
             if provided {
@@ -47,7 +55,7 @@ public final class AudioConverter: @unchecked Sendable {
             }
             provided = true
             inputStatus.pointee = .haveData
-            return buffer
+            return inputBuffer
         }
 
         if let conversionError {

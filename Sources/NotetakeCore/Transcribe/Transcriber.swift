@@ -58,6 +58,10 @@ public actor Transcriber {
     private let analyzer: SpeechAnalyzer
     private let origin: Date
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
+    /// The error (if any) that ended the results-consumption loop in
+    /// `start()`. Recorded here so `finish()` can surface it instead of
+    /// silently swallowing it.
+    private var resultsLoopError: Error?
 
     /// SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
     public nonisolated let inputFormat: AVAudioFormat
@@ -92,11 +96,19 @@ public actor Transcriber {
                         continuation.yield(Self.makePiece(from: result, origin: origin))
                     }
                 } catch {
-                    // results sequence ended with an error; end the stream
+                    // results sequence ended with an error; record it so
+                    // finish() can surface it, then end the stream.
+                    self.recordResultsLoopError(error)
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func recordResultsLoopError(_ error: Error) {
+        if resultsLoopError == nil {
+            resultsLoopError = error
         }
     }
 
@@ -107,10 +119,20 @@ public actor Transcriber {
         inputContinuation?.yield(AnalyzerInput(buffer: buffer, bufferStartTime: bufferStartTime))
     }
 
-    /// 入力を閉じ finalizeAndFinishThroughEndOfInput() まで待つ
+    /// 入力を閉じ finalizeAndFinishThroughEndOfInput() まで待つ。
+    /// results消費loopで失敗が記録されていればそれをrethrowする。finalize自体が
+    /// 失敗した場合は、loopの失敗（先に発生している）を優先してrethrowし、
+    /// loopの失敗が無ければfinalizeの失敗をrethrowする。
     public func finish() async throws {
         inputContinuation?.finish()
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
+        do {
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+        } catch {
+            throw resultsLoopError ?? error
+        }
+        if let resultsLoopError {
+            throw resultsLoopError
+        }
     }
 
     private static func makePiece(from result: SpeechTranscriber.Result, origin: Date) -> TranscriptPiece {
