@@ -2,7 +2,7 @@
 
 ## 状態（2026-09-13 進行中）
 
-- **進行中**。作業branch `m0-m2-mac-core`。Task 13まで完了（daemonは`serve`/`render`まで動作、e2e済み、commit `1200f3e`）。Task 14（mac app）を実装中
+- **進行中**。作業branch `m0-m2-mac-core`。Task 15まで完了（mac app・ライブパネルまでビルド済み、commit `f5abef3`）。Task 16（TCC帰属確認）はuser報告待ち、最終whole-branch reviewを並行実行中
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
@@ -20,8 +20,8 @@
 | 9 | 制御メッセージ Command / Event | complete |
 | 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | complete（fix round 1済み、commit `2283309`） |
 | 11〜13 | MicCapture / SystemAudioCapture(process tap) / serve・render（stdio制御、e2e済み） | complete |
-| 14 | mac app（DaemonClient / AppModel / 設定 / メニュー） | 実装中 |
-| 15〜16 | ライブパネル → TCC帰属確認 | 未着手 |
+| 14〜15 | mac app（DaemonClient / AppModel / 設定 / メニュー）・ライブパネル | complete（user画面確認待ち） |
+| 16 | TCC帰属確認とspec更新 | 許可リセット済み、userのダイアログ観察待ち |
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
 
@@ -54,7 +54,7 @@
 
 ## 次にやること
 
-Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → 最終whole-branch review（Fable、並行実行中）の指摘対応→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
 
 ## GitHub
 
