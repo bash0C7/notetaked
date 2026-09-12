@@ -45,3 +45,14 @@
 ## 次にやること
 
 Task 10 review → Task 11（MicCapture / CaptureStream / `capture`。user: マイク許可）→ Task 12（system audio tap。user: 許可）→ Task 13（serve / render、`say`によるe2e）→ Task 14〜15（mac app / ライブパネル。user: 画面確認）→ Task 16（TCC帰属確認。user: ダイアログ主体の報告）→ 最終whole-branch review（Fable）→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+
+## 未完了のuser作業
+
+- **GitHub public repoの作成とpush**: このセッションのprocessはiCloud Drive配下（stow経由の`~/.gitconfig`と`~/.config/gh`）を読めず（macOSの「ファイルとフォルダ」権限）、`gh`が起動できない。userが自分のTerminalで次を実行する:
+  ```bash
+  cd ~/dev/src/github.com/bash0C7/notetaked
+  gh repo create bash0C7/notetaked --public --source=. --remote=origin \
+    --description "常駐マルチデバイス文字起こし: macOS menu bar app + daemon / iPhone / Watch, Apple on-device Speech"
+  git push -u origin main && git push -u origin m0-m2-mac-core
+  ```
+  または、Claude Codeを動かすterminal appにSystem設定 > プライバシーとセキュリティ > ファイルとフォルダ > iCloud Drive の許可を与えれば、次回セッションでClaudeが実行できる
