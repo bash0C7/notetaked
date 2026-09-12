@@ -1,11 +1,15 @@
 import ArgumentParser
 
 @main
-struct Notetaked: ParsableCommand {
+struct Notetaked: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "notetaked",
         abstract: "Notetake transcription daemon",
         version: "0.1.0",
-        subcommands: []
+        subcommands: [Transcribe.self]
     )
+
+    func run() async throws {
+        throw CleanExit.helpRequest(self)
+    }
 }
