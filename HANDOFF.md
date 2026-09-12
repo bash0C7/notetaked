@@ -20,8 +20,8 @@
 | 9 | 制御メッセージ Command / Event | complete |
 | 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | complete（fix round 1済み、commit `2283309`） |
 | 11〜13 | MicCapture / SystemAudioCapture(process tap) / serve・render（stdio制御、e2e済み） | complete |
-| 14〜15 | mac app（DaemonClient / AppModel / 設定 / メニュー）・ライブパネル | complete（user画面確認待ち） |
-| 16 | TCC帰属確認とspec更新 | 許可リセット済み、userのダイアログ観察待ち（tccutil: app id はreset成功、daemon id `io.github.bash0c7.notetaked` はLaunchServices未登録で「No such bundle identifier」） |
+| 14〜15 | mac app（DaemonClient / AppModel / 設定 / メニュー）・ライブパネル | complete（user画面確認済み） |
+| 16 | TCC帰属確認とspec更新 | complete（許可は親app Notetake.app に帰属、spec更新 `9f1dd04`） |
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
 
@@ -54,7 +54,7 @@
 
 ## 次にやること
 
-user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+`finishing-a-development-branch`（merge / PR はuser判断） → M3以降は`writing-plans`で再計画
 
 ## GitHub
 
