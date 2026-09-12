@@ -6,3 +6,4 @@ Apps/*.xcworkspace/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+Apps/*/Info.plist

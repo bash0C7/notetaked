@@ -1,0 +1,48 @@
+name: Notetake
+options:
+  bundleIdPrefix: io.github.bash0c7
+  deploymentTarget:
+    macOS: "26.0"
+    iOS: "26.0"
+    watchOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: SM5792D355
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+packages:
+  NotetakeCore:
+    path: ..
+targets:
+  Notetake:
+    type: application
+    platform: macOS
+    sources: [Notetake]
+    dependencies:
+      - package: NotetakeCore
+        product: NotetakeCore
+    info:
+      path: Notetake/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleDisplayName: Notetake
+        NSMicrophoneUsageDescription: 会議の音声を文字起こしするためにマイクを使います。
+        NSAudioCaptureUsageDescription: ビデオ会議などMac上で再生される音声を文字起こしするために使います。
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.bash0c7.notetake
+        ENABLE_HARDENED_RUNTIME: false
+        ENABLE_APP_SANDBOX: false
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+    postBuildScripts:
+      - name: Embed notetaked
+        script: |
+          set -e
+          SRC="$SRCROOT/../.build/release/notetaked"
+          if [ ! -x "$SRC" ]; then echo "error: run 'make daemon' first ($SRC missing)"; exit 1; fi
+          cp "$SRC" "$BUILT_PRODUCTS_DIR/$EXECUTABLE_FOLDER_PATH/notetaked"
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/notetaked
