@@ -21,7 +21,7 @@
 | 10 | AudioLevel / AudioConverter / Transcriber(SpeechAnalyzer) / `transcribe` subcommand | complete（fix round 1済み、commit `2283309`） |
 | 11〜13 | MicCapture / SystemAudioCapture(process tap) / serve・render（stdio制御、e2e済み） | complete |
 | 14〜15 | mac app（DaemonClient / AppModel / 設定 / メニュー）・ライブパネル | complete（user画面確認待ち） |
-| 16 | TCC帰属確認とspec更新 | 許可リセット済み、userのダイアログ観察待ち |
+| 16 | TCC帰属確認とspec更新 | 許可リセット済み、userのダイアログ観察待ち（tccutil: app id はreset成功、daemon id `io.github.bash0c7.notetaked` はLaunchServices未登録で「No such bundle identifier」） |
 
 `swift test`は45/45通過。`make app`でNotetake.appにnotetakedを内包したビルドが通る。
 
@@ -54,7 +54,7 @@
 
 ## 次にやること
 
-hang fix → Haiku再review → user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
 
 ## GitHub
 
@@ -72,3 +72,4 @@ hang fix → Haiku再review → user確認（Task 14〜15の画面操作、Task 
 - spec追記候補: `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り同一deviceなので統合されず重複する
 - Transcriber: 変換ごとの`reset()`が認識品質に与える影響をM3前にA/B
 - Task 15: 「常に前面」toggleの状態はwindowを開き直すと初期値に戻る（userの画面確認で実挙動を見る）
+- Transcriber: `fedFrames`がUInt32で約24.8時間の連続収録でoverflow → UInt64へ
