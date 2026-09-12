@@ -2,7 +2,7 @@
 
 ## 状態（2026-09-13 進行中）
 
-- **進行中**。作業branch `m0-m2-mac-core`。Task 15まで完了（mac app・ライブパネルまでビルド済み、commit `f5abef3`）。Task 16（TCC帰属確認）はuser報告待ち、最終whole-branch reviewを並行実行中
+- **進行中**。作業branch `m0-m2-mac-core`。Task 15まで完了（mac app・ライブパネルまでビルド済み、commit `f5abef3`）。最終whole-branch review（Fable）完了、fix wave（commit `2e0f173`）まで再review clean。残り: 無音stopで`finish()`が固まる既存欠陥の単発fix（実施中）、Task 16（userのダイアログ観察待ち）
 - `main`はdocs（spec / plan）のみ。実装は全て`m0-m2-mac-core`にある
 
 ## ドキュメント
@@ -54,8 +54,21 @@
 
 ## 次にやること
 
-user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → 最終whole-branch review（Fable、並行実行中）の指摘対応→ `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
+hang fix → Haiku再review → user確認（Task 14〜15の画面操作、Task 16のダイアログ主体名）→ Task 16のspec更新 → `finishing-a-development-branch` → M3以降は`writing-plans`で再計画
 
 ## GitHub
 
 - public repo: https://github.com/bash0C7/notetaked（default `main`、作業branch `m0-m2-mac-core` もpush済み）
+
+## 最終reviewで持ち越した項目（M3計画時に再評価）
+
+- CaptureStream: convertをIOProc（real-time thread）で実行し失敗をtry?で捨てる → ingest側（actor）へ移してEvent.errorで報告
+- CaptureStream: levelsが長い無音で無制限に増える → 時間で刈る
+- ServeSession: capture開始失敗時にsession/deviceだけのtimed.jsonlが残る
+- DaemonClient: stdout chunkごとのTask hopの順序がFIFO前提 → AsyncStreamで直列化
+- SettingsView: focusしたまま設定windowを閉じると名前の編集が落ちる → onDisappearでもcommit
+- project.yml: NotetakeWatchがNotetakeCoreに依存しておらず、watchOSでCoreがコンパイルされたことがない → M6で依存追加
+- spec乖離: daemon再起動後に同じ接頭辞で収録を再開する要件が未実装（appは再起動後idle）
+- spec追記候補: `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り同一deviceなので統合されず重複する
+- Transcriber: 変換ごとの`reset()`が認識品質に与える影響をM3前にA/B
+- Task 15: 「常に前面」toggleの状態はwindowを開き直すと初期値に戻る（userの画面確認で実挙動を見る）
