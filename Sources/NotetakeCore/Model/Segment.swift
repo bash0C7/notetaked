@@ -1,10 +1,10 @@
 import Foundation
 
-public enum Platform: String, Codable, Sendable, Equatable {
+public enum Platform: String, Codable, Sendable {
     case mac, ios, watchos
 }
 
-public enum Source: String, Codable, Sendable, Equatable {
+public enum Source: String, Codable, Sendable {
     case mic, system, watch
 }
 
