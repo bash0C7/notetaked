@@ -28,6 +28,7 @@ final class AppModel {
     var prefix: String?
     var utterances: [Utterance] = []
     var volatile: [Source: String] = [:]
+    var sources: [Source] = []
     var lastError: String?
 
     private var client: DaemonClient?
@@ -238,6 +239,7 @@ final class AppModel {
             }
             isRecording = status.recording
             prefix = status.prefix
+            sources = status.sources
             if !isRecording, restartPending {
                 ensureDaemon()
             }

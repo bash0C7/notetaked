@@ -3,6 +3,7 @@ import SwiftUI
 /// メニューバーアイコンをクリックした時に表示するメニュー内容。
 struct MenuContent: View {
     let appModel: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Text(statusText)
@@ -12,9 +13,10 @@ struct MenuContent: View {
         Button("収録停止") { appModel.stopRecording() }
             .disabled(appModel.outputDirectory == nil || !appModel.isRecording)
         Divider()
-        // ライブパネルはTask 15で実装。ここではメニュー項目のみ用意する。
-        Button("ライブパネルを開く") {}
-            .disabled(true)
+        Button("ライブパネルを開く") {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "live")
+        }
         Button("フォルダを開く") { appModel.openOutputFolder() }
             .disabled(appModel.outputDirectory == nil)
         Divider()

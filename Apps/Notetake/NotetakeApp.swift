@@ -30,5 +30,9 @@ struct NotetakeApp: App {
         Settings {
             SettingsView(appModel: appDelegate.appModel)
         }
+        Window("ライブ", id: "live") {
+            LivePanelView(appModel: appDelegate.appModel)
+        }
+        .defaultSize(width: 640, height: 480)
     }
 }
