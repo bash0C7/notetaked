@@ -107,9 +107,10 @@ final class AppModel {
         restartInFlight = true
         let oldClient = client
         client = nil
+        let wasRecording = isRecording
         restartTask = Task { @MainActor [weak self] in
             if let oldClient {
-                await oldClient.terminate()
+                await oldClient.terminate(wasRecording: wasRecording)
             }
             guard let self else { return }
             self.restartInFlight = false
@@ -198,13 +199,14 @@ final class AppModel {
         restartPending = false
         guard let client else { return }
         self.client = nil
-        await client.terminate()
+        await client.terminate(wasRecording: isRecording)
         daemonRunning = false
     }
 
     // MARK: - Commands
 
     func startRecording() {
+        lastError = nil
         client?.send(.start)
     }
 
@@ -237,6 +239,11 @@ final class AppModel {
                 utterances = []
                 volatile = [:]
             }
+            if status.recording {
+                lastError = nil
+            } else {
+                volatile = [:]
+            }
             isRecording = status.recording
             prefix = status.prefix
             sources = status.sources
@@ -244,6 +251,7 @@ final class AppModel {
                 ensureDaemon()
             }
         case .utterance(let utterance):
+            volatile[utterance.source] = nil
             if let index = utterances.firstIndex(where: { $0.id == utterance.id }) {
                 utterances[index] = utterance
             } else {

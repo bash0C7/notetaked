@@ -29,6 +29,7 @@ actor CaptureStream {
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var feedTask: Task<Void, Never>?
     private var forwardTask: Task<Void, Never>?
+    private var eventContinuation: AsyncStream<StreamEvent>.Continuation?
 
     let origin: Date
 
@@ -51,9 +52,15 @@ actor CaptureStream {
         let (bufferStream, bufferContinuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
         self.bufferContinuation = bufferContinuation
         let converter = self.converter
-        try capture.start { buffer in
-            guard let converted = try? converter.convert(buffer) else { return }
-            bufferContinuation.yield(converted)
+        do {
+            try capture.start { buffer in
+                guard let converted = try? converter.convert(buffer) else { return }
+                bufferContinuation.yield(converted)
+            }
+        } catch {
+            bufferContinuation.finish()
+            try? await transcriber.finish()
+            throw error
         }
 
         feedTask = Task {
@@ -63,6 +70,7 @@ actor CaptureStream {
         }
 
         let (eventStream, eventContinuation) = AsyncStream<StreamEvent>.makeStream()
+        self.eventContinuation = eventContinuation
         forwardTask = Task {
             for await piece in pieces {
                 if piece.isFinal {
@@ -78,12 +86,22 @@ actor CaptureStream {
         return eventStream
     }
 
-    /// capture.stop() → transcriber.finish()。残りのfinalはstreamに流れてから終了
+    /// capture.stop() → transcriber.finish()。残りのfinalはstreamに流れてから終了。
+    /// finish()がthrowした場合もforwardTaskは必ずawaitする（未awaitのままだとevent streamが
+    /// 終わるまで呼び出し側がwedgeしうる）: forwardTaskをcancelしeventContinuationをfinishしてから
+    /// awaitし、rethrowする
     func stop() async throws {
         capture.stop()
         bufferContinuation?.finish()
         await feedTask?.value
-        try await transcriber.finish()
+        do {
+            try await transcriber.finish()
+        } catch {
+            forwardTask?.cancel()
+            eventContinuation?.finish()
+            await forwardTask?.value
+            throw error
+        }
         await forwardTask?.value
     }
 

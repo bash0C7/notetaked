@@ -7,6 +7,10 @@ struct MenuContent: View {
 
     var body: some View {
         Text(statusText)
+        if let lastError = appModel.lastError {
+            Text(lastError)
+                .foregroundStyle(.red)
+        }
         Divider()
         Button("収録開始") { appModel.startRecording() }
             .disabled(appModel.outputDirectory == nil || appModel.isRecording)
@@ -14,7 +18,7 @@ struct MenuContent: View {
             .disabled(appModel.outputDirectory == nil || !appModel.isRecording)
         Divider()
         Button("ライブパネルを開く") {
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
             openWindow(id: "live")
         }
         Button("フォルダを開く") { appModel.openOutputFolder() }

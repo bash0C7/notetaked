@@ -1,6 +1,8 @@
 import AVFoundation
 
-/// AVAudioEngine.inputNode に tap を付けてマイク入力を配信する
+/// AVAudioEngine.inputNode に tap を付けてマイク入力を配信する。
+/// `@unchecked Sendable`の根拠: `start`/`stop`は所有actor（CaptureStream）からのみ呼ばれ、
+/// engineのtap callbackはAVAudioEngineが管理する単一のaudioスレッド上でしか実行されない。
 final class MicCapture: AudioCapture, @unchecked Sendable {
     private let engine = AVAudioEngine()
 

@@ -141,6 +141,49 @@ private func seg(
     #expect(r.utterances[0].start == 1000)
 }
 
+@Test func toleranceMergeWithinGapButNotBeyond() {
+    var withinTolerance = Reconciler()
+    withinTolerance.apply(seg(device: "mac1", start: 0, end: 3000, text: "明日の会議は十時からです"))
+    let merged = withinTolerance.apply(seg(device: "iphone1", start: 2000, end: 5000, text: "明日の会議は十時からです"))
+    #expect(merged.count == 1)
+    #expect(withinTolerance.utterances.count == 1)
+    #expect(merged[0].start == 0)
+    #expect(merged[0].end == 5000)
+
+    var beyondTolerance = Reconciler()
+    beyondTolerance.apply(seg(device: "mac1", start: 0, end: 3000, text: "明日の会議は十時からです"))
+    beyondTolerance.apply(seg(device: "iphone1", start: 3600, end: 6600, text: "明日の会議は十時からです"))
+    #expect(beyondTolerance.utterances.count == 2)
+}
+
+@Test func mergesIntoCandidateWithLargestOverlap() {
+    var r = Reconciler()
+    let macID = UUID()
+    let iphoneID = UUID()
+    r.apply(seg(id: macID, device: "mac1", start: 0, end: 3000, text: "明日の会議は十時からです"))
+    r.apply(seg(id: iphoneID, device: "iphone1", start: 3200, end: 6200, text: "明日の会議は十時からです"))
+    #expect(r.utterances.count == 2)
+
+    let result = r.apply(
+        seg(device: "watch1", source: .watch, start: 1000, end: 5000, text: "明日の会議は10時からです"))
+    #expect(result.count == 1)
+    #expect(result[0].id == macID)
+    #expect(r.utterances.count == 2)
+    #expect(r.utterances.first { $0.id == iphoneID }?.sources.count == 1)
+}
+
+@Test func losingSegmentStillSuppliesSpeakerID() {
+    var r = Reconciler()
+    r.apply(seg(device: "mac1", source: .mic, start: 0, end: 3000, text: "明日の会議は十時からです", confidence: 0.9))
+    let result = r.apply(
+        seg(
+            device: "iphone1", source: .mic, start: 200, end: 3100, text: "明日の会議は10時からです",
+            confidence: 0.1, global: "話者1"))
+    #expect(result.count == 1)
+    #expect(result[0].text == "明日の会議は十時からです")
+    #expect(result[0].speakerID == "話者1")
+}
+
 @Test func foldEqualsSequentialApply() {
     let macID = UUID()
     let records: [Record] = [

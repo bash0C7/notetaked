@@ -232,6 +232,10 @@ actor ServeSession {
                 try await running.stream.stop()
             } catch {
                 await control.send(.error("failed to stop capture: \(error)"))
+                // CaptureStream.stop()はfailure時もevent streamをfinishさせるが、
+                // 万一終わらなかった場合にconsumerのfor-awaitが無限にwedgeしないよう保険で
+                // cancelしてからawaitする
+                running.consumer.cancel()
             }
             await running.consumer.value
         }

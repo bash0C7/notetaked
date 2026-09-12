@@ -76,6 +76,18 @@ struct Serve: AsyncParsableCommand {
         signal(SIGINT, SIG_IGN)
         sigintSource.resume()
 
+        // アプリ側がterminate()の締め切りでProcess.terminate()（SIGTERM）に切り替えた場合も、
+        // SIGINTと同じ経路でcleanにstopしてからexitする
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        sigtermSource.setEventHandler {
+            Task {
+                await session.handle(.quit)
+                Foundation.exit(0)
+            }
+        }
+        signal(SIGTERM, SIG_IGN)
+        sigtermSource.resume()
+
         if startImmediately {
             await session.handle(.start)
         }

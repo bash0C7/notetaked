@@ -40,14 +40,20 @@ final class DaemonClient {
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             Task { @MainActor in
                 self?.consumeStdout(data)
             }
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             FileHandle.standardError.write(data)
         }
         try process.run()
@@ -79,11 +85,14 @@ final class DaemonClient {
         }
     }
 
-    /// `quit`を送り2秒待ってからProcessを強制終了する。MainActorをブロックしない非同期待ち。
-    func terminate() async {
+    /// `quit`を送りProcessの終了を待ってから、なお生きていれば強制終了する。MainActorをブロックしない非同期待ち。
+    /// `wasRecording`が真の場合は収録中の`SpeechAnalyzer`のfinalizationに時間がかかりうるため
+    /// 10秒、そうでなければ2秒を締め切りとする。
+    func terminate(wasRecording: Bool = false) async {
         guard process.isRunning else { return }
         send(.quit)
-        let deadline = Date().addingTimeInterval(2)
+        let timeout: TimeInterval = wasRecording ? 10 : 2
+        let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }

@@ -6,7 +6,9 @@ public enum AudioConverterError: Error {
     case conversionFailed
 }
 
-/// AVAudioConverterのwrapper。入力formatから出力formatへ、frame数を出力側rateに換算して変換する
+/// AVAudioConverterのwrapper。入力formatから出力formatへ、frame数を出力側rateに換算して変換する。
+/// `@unchecked Sendable`の根拠: `convert`は常に単一のaudio/captureスレッドから一度に1呼び出ししかされず、
+/// 呼び出しをまたいで共有される可変状態は自身が保持する`converter`以外に無い。
 public final class AudioConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat

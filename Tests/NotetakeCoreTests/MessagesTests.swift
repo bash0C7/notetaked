@@ -56,6 +56,13 @@ import Testing
     #expect(utteranceLine.contains("\"ev\":\"utterance\""))
 }
 
+@Test func statusEventNilPrefixOmitsKey() throws {
+    let event = Event.status(StatusEvent(recording: false, sources: [], outputDirectory: "/tmp/out"))
+    let line = try event.encodedLine()
+    #expect(!line.contains("\"prefix\""))
+    #expect(try Event.decode(line: line) == event)
+}
+
 @Test func unknownEventThrows() {
     #expect(throws: ControlError.unknownEvent("nope")) {
         try Event.decode(line: "{\"ev\":\"nope\"}")
