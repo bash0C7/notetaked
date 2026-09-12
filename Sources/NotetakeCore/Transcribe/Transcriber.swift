@@ -62,6 +62,16 @@ public actor Transcriber {
     /// `start()`. Recorded here so `finish()` can surface it instead of
     /// silently swallowing it.
     private var resultsLoopError: Error?
+    /// フィードされたフレーム数。0のままfinish()が呼ばれた場合、
+    /// finalizeAndFinishThroughEndOfInput()は無音入力に対してハングするため、
+    /// cancelAndFinishNow()で即座に終わらせる。
+    private var fedFrames: AVAudioFrameCount = 0
+    /// start()が返すAsyncStream<TranscriptPiece>を消費するresults-consumption task。
+    /// cancelAndFinishNow()を呼んでも transcriber.results シーケンスが自然には終わらない
+    /// ケースがあるため、finish()が強制終了経路を取った際にpiecesContinuationを直接finish
+    /// して確実にstreamを閉じる。
+    private var resultsTask: Task<Void, Never>?
+    private var piecesContinuation: AsyncStream<TranscriptPiece>.Continuation?
 
     /// SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
     public nonisolated let inputFormat: AVAudioFormat
@@ -89,21 +99,23 @@ public actor Transcriber {
 
         let results = transcriber.results
         let origin = self.origin
-        return AsyncStream { continuation in
-            let task = Task {
-                do {
-                    for try await result in results {
-                        continuation.yield(Self.makePiece(from: result, origin: origin))
-                    }
-                } catch {
-                    // results sequence ended with an error; record it so
-                    // finish() can surface it, then end the stream.
-                    self.recordResultsLoopError(error)
+        let (stream, continuation) = AsyncStream<TranscriptPiece>.makeStream()
+        self.piecesContinuation = continuation
+        let task = Task {
+            do {
+                for try await result in results {
+                    continuation.yield(Self.makePiece(from: result, origin: origin))
                 }
-                continuation.finish()
+            } catch {
+                // results sequence ended with an error; record it so
+                // finish() can surface it, then end the stream.
+                self.recordResultsLoopError(error)
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.finish()
         }
+        continuation.onTermination = { _ in task.cancel() }
+        self.resultsTask = task
+        return stream
     }
 
     private func recordResultsLoopError(_ error: Error) {
@@ -116,6 +128,7 @@ public actor Transcriber {
     public func feed(_ buffer: sending AVAudioPCMBuffer, at sampleTime: AVAudioFramePosition) {
         let bufferStartTime = CMTime(
             value: sampleTime, timescale: Int32(inputFormat.sampleRate))
+        fedFrames += buffer.frameLength
         inputContinuation?.yield(AnalyzerInput(buffer: buffer, bufferStartTime: bufferStartTime))
     }
 
@@ -123,12 +136,64 @@ public actor Transcriber {
     /// results消費loopで失敗が記録されていればそれをrethrowする。finalize自体が
     /// 失敗した場合は、loopの失敗（先に発生している）を優先してrethrowし、
     /// loopの失敗が無ければfinalizeの失敗をrethrowする。
+    ///
+    /// 一度もfeed()されていない場合、finalizeAndFinishThroughEndOfInput()は
+    /// 無音入力に対してハングしうるため呼ばずcancelAndFinishNow()で即終了する。
+    /// フレームが投入済みでも、finalizeが5秒以内に終わらなければタイムアウトとみなし
+    /// cancelAndFinishNow()で打ち切る（タイムアウト自体はエラーにしない — それまでの
+    /// finalは既にresultsループ経由で配送済みのため）。
+    ///
+    /// cancelAndFinishNow()を呼んでも transcriber.results シーケンスが自然には終わらない
+    /// ことがあるため、この2つの強制終了経路では results-consumption task をcancelし、
+    /// start()が返したAsyncStreamのcontinuationも直接finishして呼び出し側（CaptureStreamの
+    /// forwardTask）がwedgeしないようにする。
     public func finish() async throws {
         inputContinuation?.finish()
-        do {
-            try await analyzer.finalizeAndFinishThroughEndOfInput()
-        } catch {
-            throw resultsLoopError ?? error
+
+        if fedFrames == 0 {
+            await analyzer.cancelAndFinishNow()
+            resultsTask?.cancel()
+            piecesContinuation?.finish()
+            if let resultsLoopError {
+                throw resultsLoopError
+            }
+            return
+        }
+
+        // finalizeAndFinishThroughEndOfInput()自体がキャンセルに応答しない可能性があるため、
+        // TaskGroupのようにscope終了時に子taskの完了を暗黙に待つ構造は使わない。finalizeを
+        // 独立したTaskで走らせ、5秒のTask.sleepと「先に終わった方」だけをAsyncStreamで受け取る
+        // ことで、finalizeが残っていてもfinish()自体は5秒でreturnできるようにする。
+        let finalizeTask = Task<Void, Error> {
+            try await self.analyzer.finalizeAndFinishThroughEndOfInput()
+        }
+        let (signal, signalContinuation) = AsyncStream<Bool>.makeStream()
+        let watcherTask = Task {
+            _ = try? await finalizeTask.value
+            signalContinuation.yield(true)
+        }
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            signalContinuation.yield(false)
+        }
+
+        var iterator = signal.makeAsyncIterator()
+        let finishedInTime = await iterator.next() ?? false
+        timeoutTask.cancel()
+        watcherTask.cancel()
+
+        if finishedInTime {
+            do {
+                try await finalizeTask.value
+            } catch {
+                throw resultsLoopError ?? error
+            }
+        } else {
+            await analyzer.cancelAndFinishNow()
+            resultsTask?.cancel()
+            piecesContinuation?.finish()
+            FileHandle.standardError.write(
+                Data("transcriber: finalize timed out after 5s; cancelled\n".utf8))
         }
         if let resultsLoopError {
             throw resultsLoopError
