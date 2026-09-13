@@ -84,7 +84,7 @@ xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 
   - `enum InputDeviceProbe { static func current() -> InputDevice }`（notetaked）
   - test helper: `extension InputDevice { static let test: InputDevice }`
 
-- [ ] **Step 1: 型を追加する**
+- [x] **Step 1: 型を追加する**
 
 `Sources/NotetakeCore/Model/Location.swift`:
 
@@ -124,7 +124,7 @@ public struct Direction: Codable, Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 2: 失敗するテストを書く**
+- [x] **Step 2: 失敗するテストを書く**
 
 `Tests/NotetakeCoreTests/TestInputDevice.swift`:
 
@@ -206,12 +206,12 @@ extension InputDevice {
 }
 ```
 
-- [ ] **Step 3: テストが失敗（コンパイルエラー）することを確認する**
+- [ ] **Step 3: テストが失敗（コンパイルエラー）することを確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter segmentEncodesInputAndDirection 2>&1 | tail -20`
 Expected: `error: extra argument 'input' in call` 等のコンパイルエラー
 
-- [ ] **Step 4: Segment / Utterance / Reconciler を実装する**
+- [x] **Step 4: Segment / Utterance / Reconciler を実装する**
 
 `Segment.swift`: プロパティ `public var input: InputDevice`（`source`の次）と `public var direction: Direction?`（`speaker`の次）、CodingKeys に `case input` / `case direction`、init引数 `input: InputDevice`（`source:`の直後、既定値なし）と `direction: Direction? = nil`（`speaker:`の直後）。
 
@@ -229,7 +229,7 @@ if let candidate = seg.direction,
 }
 ```
 
-- [ ] **Step 5: daemon / app の生成箇所を直す**
+- [x] **Step 5: daemon / app の生成箇所を直す**
 
 `Sources/notetaked/Audio/InputDeviceProbe.swift`:
 
@@ -259,17 +259,17 @@ enum InputDeviceProbe {
 `Apps/NotetakeMobile/MobileModel.swift:186` の `Segment(...)` に `input: InputDevice(name: "iPhone", uid: settings.deviceID, spatial: false),`（Task 7でRecorderの判定結果に置き換える）。
 `Apps/NotetakeMobile/WatchRelay.swift:240` の `Segment(...)` に `input: InputDevice(name: "Apple Watch", uid: meta.device, spatial: false),`。
 
-- [ ] **Step 6: 既存テストのコンストラクタを直す**
+- [x] **Step 6: 既存テストのコンストラクタを直す**
 
 `Segment(` を呼ぶテスト（NDJSONTests / OutboxTests / PeerMessageTests / ReconcilerTests / SessionStoreTests）は `source: ...,` の直後に `input: .test,` を足す。`Utterance(` を呼ぶhelper（TranscriptRendererTests / PolishChunkerTests）は `source: source,` の直後に `platform: .mac,`、`ownerLabel: ...,` の直後に `input: "MacBook Airのマイク",` を足す（helperの引数に `platform: Platform = .mac` / `input: String = "MacBook Airのマイク"` / `direction: Direction? = nil` を追加して渡す）。
 
-- [ ] **Step 7: 全テストとビルドが通ることを確認する**
+- [ ] **Step 7: 全テストとビルドが通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS（既存 + 新規5件）
 Run: `swift build 2>&1 | grep -E "error|warning"` → 出力なし
 Run: iOS app のコンパイル（検証コマンド参照）→ `BUILD SUCCEEDED`。このbranchのiOS appは未コンパイルなので、本taskで触っていないファイルのエラーが出た場合はエラー行をそのまま報告し、修正はtouchしたファイルに限る
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**（commit c500029）
 
 ```bash
 git add Sources Apps Tests
@@ -291,7 +291,7 @@ git commit -m "feat(core): record input device and direction on segments and utt
   - `LocationLabel.text(inputName: String, platform: Platform, source: Source, direction: Direction?) -> String`（`"iPhone 2時"` / `"Mac"`）
   - `LocationLabel.text(for utterance: Utterance) -> String`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```swift
 import Testing
@@ -322,11 +322,11 @@ import Testing
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter shortLabelTable 2>&1 | tail -5` → コンパイルエラー（`LocationLabel` 未定義）
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 ```swift
 import Foundation
@@ -361,11 +361,11 @@ public enum LocationLabel {
 }
 ```
 
-- [ ] **Step 4: 通ることを確認する**
+- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter LocationLabel 2>&1 | tail -5` → PASS。`swift build 2>&1 | grep -i warning` → 出力なし
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/NotetakeCore/Render/LocationLabel.swift Tests/NotetakeCoreTests/LocationLabelTests.swift
@@ -384,7 +384,7 @@ git commit -m "feat(core): LocationLabel for input device and clock-position dis
 - Consumes: `LocationLabel.text(for:)`（Task 2）
 - Produces: 行書式 `HH:mm:ss **話者**（場所）: 本文`
 
-- [ ] **Step 1: 既存テストの期待値を新書式へ変え、場所付きのテストを足す**
+- [x] **Step 1: 既存テストの期待値を新書式へ変え、場所付きのテストを足す**
 
 既存テストの期待文字列中の `**話者**: ` を `**話者**（Mac）: ` に変える（helperの既定 `input: "MacBook Airのマイク"`, `platform: .mac`, `source: .mic` は `Mac` になる）。追加:
 
@@ -399,11 +399,11 @@ git commit -m "feat(core): LocationLabel for input device and clock-position dis
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter TranscriptRenderer 2>&1 | tail -10` → 期待値不一致でFAIL
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 `TranscriptRenderer.markdown` のループ内:
 
@@ -414,11 +414,11 @@ result += "\(time) **\(utterance.speaker)**（\(location)）: \(text)\n"
 
 doc commentの書式も `"HH:mm:ss **話者**（場所）: 本文\n"` に更新。
 
-- [ ] **Step 4: 通ることを確認する**
+- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/NotetakeCore/Render/TranscriptRenderer.swift Tests/NotetakeCoreTests/TranscriptRendererTests.swift
@@ -438,7 +438,7 @@ git commit -m "feat(core): show input device and direction in final.md speaker l
 - Produces: `StatusEvent.inputName: String?`（key `input_name`）、`StatusEvent.inputSpatial: Bool?`（key `input_spatial`）。init引数は `sources:` の直後に `inputName: String? = nil, inputSpatial: Bool? = nil`
 - ServeSession: `private var currentInput: InputDevice?`（mic streamの`input`。mic無しならnil。停止でnil）
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `MessagesTests.swift` に追加（既存のEvent round-tripテストの書き方に合わせる。`Event`のencode/decode関数名はファイル内の既存テストから取る）:
 
@@ -458,11 +458,11 @@ git commit -m "feat(core): show input device and direction in final.md speaker l
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter statusEventCarriesInputDevice 2>&1 | tail -5` → コンパイルエラー
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 `StatusEvent` にプロパティ `public var inputName: String?` / `public var inputSpatial: Bool?`、CodingKeys `case inputName = "input_name"` / `case inputSpatial = "input_spatial"`、init引数（既定nil）。
 
@@ -472,11 +472,11 @@ Run: `swift test --filter statusEventCarriesInputDevice 2>&1 | tail -5` → コ�
 - `stopCapture` の末尾（`self.store = nil` の隣）で `currentInput = nil`
 - `start()` / `rotate()` の `StatusEvent(recording: true, ...)` に `inputName: currentInput?.name, inputSpatial: currentInput?.spatial` を渡す（`stop()`の`recording: false`は既定nilのまま）
 
-- [ ] **Step 4: 通ることを確認する**
+- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test 2>&1 | tail -5` → PASS。`swift build 2>&1 | grep -E "error|warning"` → 出力なし
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/NotetakeCore/Control/Messages.swift Sources/notetaked/Pipeline/ServeSession.swift Tests/NotetakeCoreTests/MessagesTests.swift
@@ -555,7 +555,7 @@ git commit -m "feat(app): show input device and direction in the live panel"
   - `DirectionEstimator.frameEstimate(w: [Float], y: [Float], x: [Float]) -> (azimuthDeg: Double, confidence: Double)?`（static、`azimuthOffsetDeg`なしの生の値。`E = Σw² <= 0` ならnil）
   - `struct DirectionEstimator { init(azimuthOffsetDeg: Double = 0, minimumFrameConfidence: Double = 0.2); mutating func add(w:y:x:startMS:endMS:); mutating func direction(from startMS: Int64, to endMS: Int64) -> Direction? }`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```swift
 import Foundation
@@ -645,11 +645,11 @@ private func planeWave(thetaDeg: Double, frames: Int = 480, seed: UInt64 = 1) ->
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter DirectionEstimator 2>&1 | tail -5` → コンパイルエラー
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 ```swift
 import Foundation
@@ -723,11 +723,11 @@ public struct DirectionEstimator: Sendable {
 }
 ```
 
-- [ ] **Step 4: 通ることを確認する**
+- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter DirectionEstimator 2>&1 | tail -5` → 9件PASS。`swift build 2>&1 | grep -i warning` → 出力なし
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**（commit 42d3f44）
 
 ```bash
 git add Sources/NotetakeCore/Audio/DirectionEstimator.swift Tests/NotetakeCoreTests/DirectionEstimatorTests.swift
@@ -748,7 +748,7 @@ git commit -m "feat(core): DirectionEstimator for first-order ambisonics frames"
   - `Recorder.start(locale:onPiece:)` の `onPiece` が `(TranscriptPiece, Double, Direction?) -> Void` になる
   - `Recorder.currentInput() -> InputDevice`（開始後に有効。開始前は `InputDevice(name: "iPhone", uid: "", spatial: false)`）
 
-- [ ] **Step 1: Recorder を書き換える**
+- [x] **Step 1: Recorder を書き換える**
 
 方針: `AVAudioEngine`を`AVCaptureSession`に置き換える。対応・非対応で同じ経路。sample bufferのformatは最初のbufferで分かるので、converterは最初の`ingest`で作る。
 
@@ -979,7 +979,7 @@ actor Recorder {
 - `sampleTime`はTranscriberへ渡したフレーム数（変換後）で進める。`startMS` / `endMS`の計算は変換前のsample rateで行うため、`ingest`先頭で計算している
 - `AudioConverter`（NotetakeCore）が4ch→4ch Float32 / 1ch→Transcriber formatの両方を担う。FOAのchannel layoutを持つformatから`commonFormat`のformatへの変換が`AVAudioConverter`で拒否された場合は、`foaBuffer`を`AVAudioConverter`を使わず手でde-interleave（Int16→Float32）する実装に置き換える（実機で判明する事項。planではAudioConverter経由を第一候補とする）
 
-- [ ] **Step 2: MobileModel を直す**
+- [x] **Step 2: MobileModel を直す**
 
 `startRecording` の closure を `{ piece, dbfs, direction in ... await model.handleFinalPiece(piece, dbfs: dbfs, direction: direction, session: session) }` に。`handleFinalPiece(_:dbfs:direction:session:)` で:
 
@@ -994,11 +994,11 @@ let segment = Segment(
 )
 ```
 
-- [ ] **Step 3: コンパイルを通す**
+- [ ] **Step 3: コンパイルを通す**（Mac側で実行待ち）
 
 Run: iOS app のコンパイル（検証コマンド）→ `BUILD SUCCEEDED`。`swift build 2>&1 | grep -E "error|warning"` → 出力なし（Coreに変更が無いことの確認）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Apps/NotetakeMobile/Recorder.swift Apps/NotetakeMobile/MobileModel.swift
@@ -1022,7 +1022,7 @@ git commit -m "feat(ios): capture with AVCaptureSession, first-order ambisonics 
   - `PolishRenderer.markdown(_ turns: [PolishedTurn], recordedAt: Date, timeZone: TimeZone) -> String`
   - `PolishRenderer.participants(_ turns: [PolishedTurn]) -> [String]`（登場順・重複なし）
 
-- [ ] **Step 1: テストを新仕様に書き換える**
+- [x] **Step 1: テストを新仕様に書き換える**
 
 `PolishChunkerTests.swift`: `PolishTurn(...)` / `PolishedTurn(...)` から `startMS:` 引数を削除。`mergeExactCountAssignsStartMSAndPolishedTrue` を `mergeExactCountUsesOutputAndPolishedTrue` に改名し期待値から `startMS` を除く。`mergeCountMismatchAssignsNilStartMS` を `mergeCountMismatchStillAdoptsOutput` に改名し、件数不一致でも出力がそのまま `polished: true` で採用されることだけを確認する。
 
@@ -1075,11 +1075,11 @@ private let recordedAt = Date(timeIntervalSince1970: 1_789_300_000)   // 2026-09
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
 
 Run: `swift test --filter PolishRenderer 2>&1 | tail -5` → コンパイルエラー
 
-- [ ] **Step 3: 実装する**
+- [x] **Step 3: 実装する**
 
 `PolishChunker.swift`: `PolishTurn` / `PolishedTurn` から `startMS` を削除（init含む）。`turns(from:)` は `PolishTurn(speaker: utterance.speaker, text: utterance.text)`。`merge` は件数一致・不一致とも `PolishedTurn(speaker: item.speaker, text: item.text, polished: true)`、失敗は `PolishedTurn(speaker: $0.speaker, text: $0.text, polished: false)`。doc commentから `startMS` の記述を消す。
 
@@ -1136,12 +1136,12 @@ let recordedAt = Date(timeIntervalSince1970: Double(sessionRecord.started) / 100
 
 `PolishRenderer.markdown(polished, recordedAt: recordedAt, timeZone: .current)`。
 
-- [ ] **Step 4: 通ることを確認する**
+- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS。`swift build 2>&1 | grep -E "error|warning"` → 出力なし
 Run（Apple Intelligence有効なら）: `make daemon && .build/release/notetaked polish <保存先>/<prefix>.timed.jsonl` → `<prefix>.polished.md` の先頭が `# yyyy-MM-dd 名前` で、行に時刻が無いことを `head -3` で確認
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/NotetakeCore/Polish Sources/notetaked/Polish/Polisher.swift Sources/notetaked/Commands/PolishCommand.swift Tests/NotetakeCoreTests/PolishChunkerTests.swift Tests/NotetakeCoreTests/PolishRendererTests.swift
