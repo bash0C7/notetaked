@@ -3,9 +3,9 @@
 ## 状態（2026-09-13）
 
 - **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
-- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。`make test`と下記「Mac側で行う検証」の段階1〜5は未実施。iOS / watchOS targetはまだ一度もコンパイルしていない
-- **段階L（場所情報・対話整形）実装済み・Mac未検証**（2026-09-13、Claude Code on the webでTask 1〜8をSwiftツールチェーン無しで実装・commit。Task 9でこのHANDOFFを更新）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。**Mac側でまだ一度もビルドしていない** — `swift build` / `swift test` / `make app` / iOS `xcodebuild`が全て未実施。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`（Task 1〜9、コード付き）、ledger `.superpowers/sdd/2026-09-13-spatial-location-polish/progress.md`（git管理外）
-- **次: 下記「6. 場所情報 / 対話整形（L）」を含む「Mac側で行う検証」を段階順に実行**し、段階ごとにcommit。全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
+- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。**`make verify`通過**（2026-09-13: `swift build`警告ゼロ / テスト164件 / mac app / iOS + watchOSコンパイル）。下記「Mac側で行う検証」の段階1〜6（実機・手動）は未実施
+- **段階L（場所情報・対話整形）実装済み・`make verify`通過**（2026-09-13）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。iPhoneの実機検証（`input.spatial`の値、方位、FOA変換のチャンネル順）は証明書再発行後。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`。段階LのMac側検証で見つかった問題の全件・根本原因・是正はspec `docs/superpowers/specs/2026-09-13-stage-l-verification-remediation-design.md`、plan `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md`。web側のledger（`.superpowers/sdd/2026-09-13-spatial-location-polish/`）はMacからは読めない。Mac側のledgerは`.superpowers/sdd/2026-09-13-stage-l-verification-remediation/progress.md`（git管理外）
+- **次: 下記「Mac側で行う検証」の段階1〜6（実機・手動）を順に実行**し、段階ごとにcommit。実機（iPhone / Watch）は証明書再発行が前提
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -16,31 +16,25 @@
 | M4 polish | `notetaked polish <timed.jsonl>`（Foundation Models、2000文字chunk、失敗chunkは原文）、`<prefix>.polished.md`、app「直前の収録を整形」/ パネル「整形」 | `docs/superpowers/plans/2026-09-13-m4-polish.md` |
 | M5 iPhone | `PeerMessage`（hello/hello_ack/ping/pong/seg/ack）、`ClockOffset`、`SessionMatcher`、`Outbox`、daemon `PeerListener`（Bonjour `_notetake._tcp` + TLS PSK）、`pair_code` command / `peer` event、停止後segのfinal.md再生成、`orphans.jsonl`、Mac設定のペアリングコード、iOS app（Recorder / PeerClient / UI） | `docs/superpowers/plans/2026-09-13-m5-iphone.md` |
 | M6 Watch | `WatchChunkMetadata` / `WatchChunkSequencer`、Watch app（20秒AAC小片→`transferFile`）、iPhone `WatchRelay`（小片→専用Transcriber→seg→Outbox） | `docs/superpowers/plans/2026-09-13-m6-watch.md` |
-| L 場所情報 / 対話整形 | **実装済み・Mac未検証**。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、状態行とパネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
+| L 場所情報 / 対話整形 | `make verify`通過。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、状態行とパネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
+| V 検証ゲート | `make verify`、`ChunkWriter` init / `WatchRecorder`のbuffer受け渡し / `WatchRelay`の並行性修正、`SampleClock`（iPhone側の時刻基準） | `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md` |
 
 ## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`、上から順に）
 
-原則: **落ちたらまずテストの期待値ではなく実装を疑う（テストが仕様）**。ただしこのbranchは全てコンパイル未確認なので、Apple SDKのAPI名の取り違えは実装側を直す。段階ごとに`git commit`（trailer付き）。
+原則: **落ちたらまずテストの期待値ではなく実装を疑う（テストが仕様）**。修正はゲート（`make verify`）の結果を全件受け取ってから行い、1件ずつ潰さない。段階ごとに`git commit`（trailer付き）。
 
 ### 0. 依存解決とビルド
 
 ```bash
-swift package resolve            # FluidAudio 0.15.7（binaryTarget NemoTextProcessing.xcframework.zipを取得する。ネット必須）
-swift build 2>&1 | grep -E "error|warning" # まずCoreとdaemonが通るまで直す
-make test                        # M2時点49件 + 新規（Messages / RotationSchedule / Aligner / SpeakerRegistry / SessionStore / PolishChunker / PolishRenderer / PeerMessage / ClockOffset / SessionMatcher / Outbox / PeerFraming / WatchChunk）
-swift build 2>&1 | grep -i warning   # 出力なしが正常
-make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存を追加済み。watchOSでCoreがコンパイルできるかはここで初めて分かる）
+swift package --disable-keychain --disable-netrc resolve   # 初回のみ。FluidAudio 0.15.7のbinaryTarget取得にネット必須
+make verify   # swift build（警告ゼロ）→ swift test → make app → iOS + watchOSコンパイル（CODE_SIGNING_ALLOWED=NO）。最終行 verify: OK
 ```
 
-**コンパイルエラーが出やすい（一次資料で未確認の）箇所**:
-- `Sources/notetaked/Polish/Polisher.swift`: Foundation Models（`SystemLanguageModel.default.availability`の`.unavailable(reason)`、`LanguageModelSession(instructions:)`、`respond(to:generating:)`→`.content`、`@Generable`/`@Guide`、`LanguageModelSession.GenerationError`）
-- `Sources/notetaked/Peer/PeerListener.swift`、`Apps/NotetakeMobile/PeerClient.swift`: Network frameworkのTLS PSK（`sec_protocol_options_add_pre_shared_key(_:_:_:)`のDispatchData引数、`sec_protocol_options_append_tls_ciphersuite`と`tls_ciphersuite_t(rawValue:)`、`NWListener.Service(name:type:)`、`includePeerToPeer`）
-- `Sources/NotetakeCore/Transcribe/Transcriber.swift` `makePiece`: `run.audioTimeRange`（`AttributeScopes.SpeechAttributes`、`CMTimeRange`）
-- `Sources/NotetakeDiarization/Diarizer.swift`: FluidAudioの`DiarizerConfig(clusteringThreshold:chunkDuration:)`引数順、`DownloadProgress.fractionCompleted`（v0.15.7ソースで確認済みだが要ビルド）
-- `Sources/notetaked/Peer/PeerListener.swift`: `NWConnection`をactor境界越しに渡している（`accept` / `receiveLoop` / `sendLine`）。SDKで`NWConnection`がSendableでなければ引数に`sending`を付ける
-- strict concurrency: `CaptureStream.Converted`（非Sendableな`AVAudioPCMBuffer`を`sending`で渡す）、`WatchRecorder`/`WatchSessionDelegate`の`nonisolated`デリゲート、`MobileModel`の`WeakBox`、`AppModel.polishLastRecording`の`terminationHandler`
+`make verify`は全targetのコンパイルと全テストを機械的に見る。ログは`.build/logs/verify-*.log`。
+
+**実機でしか分からない箇所**（コンパイルは通っている）:
 - `Apps/NotetakeWatch/WatchRecorder.swift`: `AVAudioFile(forWriting:settings:commonFormat:interleaved:)`にAAC settingsでPCMを`write(from:)`できるか
-- `Apps/NotetakeMobile/Recorder.swift`（段階L）: `AVCaptureDeviceInput.multichannelAudioMode` / `isMultichannelAudioModeSupported(.firstOrderAmbisonics)`、`AVCaptureAudioDataOutput.spatialAudioChannelLayoutTag`、`kAudioChannelLayoutTag_HOA_ACN_SN3D | 4`（定数名・値、`AVAudioChannelLayout(layoutTag:)`が受け付けるか）、`CMSampleBufferCopyPCMDataIntoAudioBufferList(_:at:frameCount:into:)`の引数ラベル、FOA channel layout付きformatを`AudioConverter`（`AVAudioConverter`ベース）が受け付けるか（拒否されたら`foaBuffer(from:)`を手動de-interleaveへ差し替える。plan Task 7 Step 1の「注意」参照）
+- `Apps/NotetakeMobile/Recorder.swift`: `foaBuffer(from:)`がHOAタグ付き4chを無タグ4chへ`AVAudioConverter`で変換した時にW / Y / Z / Xの順序が保たれるか（崩れていれば手動de-interleaveへ差し替える。段階L plan Task 7 Step 1の「注意」参照）、`multichannelAudioMode`を`addInput`後に設定する順序で`startRunning()`後に4chが来るか
 
 ### 1. 区切る（R）
 
@@ -96,27 +90,6 @@ make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存
 3. `notetaked polish <prefix>.timed.jsonl` → 先頭 `# yyyy-MM-dd 参加者`、行に時刻無し
 4. iPhone（証明書後）: 初回起動で `input.spatial` を確認。true なら机に平置きし、上端側から `say` → `azimuth_deg ≈ 0`、右側から → `≈ 90`。ずれていれば `Recorder` の `DirectionEstimator(azimuthOffsetDeg:)` を決める。false なら `direction` 無し・`input.name` のみで完了
 
-未実行の検証コマンド（Claude Code on the webでは実行不可、上記の他に）:
-```bash
-swift test --filter segmentEncodesInputAndDirection
-swift test --filter segmentWithoutDirectionOmitsKey
-swift test --filter utteranceCarriesInputPlatformAndDirectionOfSegment
-swift test --filter mergeKeepsDirectionFromSpatialSegmentEvenWhenTextComesFromOther
-swift test --filter mergePrefersHigherConfidenceDirection
-swift test --filter LocationLabel        # shortLabelTable / clockPositionRoundsToNearestHour / textCombinesLabelAndClock
-swift test --filter TranscriptRenderer   # 既存4件の期待値変更 + rendersDirectionAsClockPosition
-swift test --filter statusEventCarriesInputDevice
-swift test --filter statusEventWithoutInputOmitsKeys
-swift test --filter DirectionEstimator   # 9件
-swift test --filter PolishRenderer       # 5件（rendersHeaderWithDateAndParticipantsThenDialogueの期待日付をreview時に修正済み）
-swift test --filter PolishChunker
-swift test                               # 全件
-swift build 2>&1 | grep -E "error|warning"
-make app 2>&1 | grep -E "error:|BUILD"
-xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' \
-  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E "error:|BUILD"
-```
-
 ## 申し送り（Mac必須・user作業を含む）
 
 - **Apple Development証明書が失効中**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。daemon / mac appはad-hoc署名（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を`Automatic` + Team `SM5792D355`へ戻す。iPhone / Watch実機ビルドに必須
@@ -143,7 +116,7 @@ xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 
 ## ドキュメント
 
 - 設計spec（M0〜M6の全体設計、binding authority）: `docs/superpowers/specs/2026-09-12-notetake-design.md`
-- 実装計画: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`（完了）/ `2026-09-13-rotation.md` / `2026-09-13-m3-diarization.md` / `2026-09-13-m4-polish.md` / `2026-09-13-m5-iphone.md` / `2026-09-13-m6-watch.md`（いずれも実装済み・Mac検証待ち）
+- 実装計画: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`（完了）/ `2026-09-13-rotation.md` / `2026-09-13-m3-diarization.md` / `2026-09-13-m4-polish.md` / `2026-09-13-m5-iphone.md` / `2026-09-13-m6-watch.md`（いずれも`make verify`通過・実機検証待ち）
 - project instructions（モデル分担・SDDの手順・署名の注意）: `CLAUDE.md`
 
 ## いま動くもの（使い方）
@@ -155,6 +128,7 @@ xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 
 ## 環境の注意
 
 - git push / ghはBash sandboxでは資格情報が読めない → sandboxを無効にして実行。sandbox内で`~/.gitconfig`が読めない時は`GIT_CONFIG_GLOBAL=/dev/null`（repo localにuser.name/email設定済み）
+- `make verify`はxcodebuildのpackage解決を含むため、DerivedDataにpackageが無い初回はBash sandbox内で止まることがある → sandbox外で実行。2回目以降はsandbox内で通る
 - system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
 - 実機probe（2026-09-13）: Macに繋がる機材（内蔵マイク / AirPods Pro 3 / ContinuityのiPhone）はいずれも`isMultichannelAudioModeSupported(.firstOrderAmbisonics)`がfalse、入力1ch。空間収録はiPhone本体でのみ試せる（iPhone 16eの対応可否は実機で判定）
@@ -163,6 +137,7 @@ xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 
 
 ## 検証コマンド
 
+- `make verify`（ゲート。全targetのビルド警告ゼロ・全テスト・mac app・iOS + watchOSコンパイル。最終行`verify: OK`）
 - `make test` / `make daemon` / `make project` / `make app`
 - `swift build 2>&1 | grep -i warning`（出力なしが正常）
 

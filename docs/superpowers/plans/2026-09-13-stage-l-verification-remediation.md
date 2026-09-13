@@ -15,7 +15,7 @@
 - 署名: daemon / mac appはad-hoc（`DAEMON_IDENTITY ?= -`、`CODE_SIGN_IDENTITY: "-"`）。iOS / watchOSは`CODE_SIGNING_ALLOWED=NO`でコンパイルのみ。失効証明書で署名しない
 - `-warnings-as-errors`は使わない。警告ゼロはgrep（`\.swift:[0-9]+:[0-9]+: (warning|error):`）で判定する
 - 修正はゲート（`make verify`、またはタスク内で指定した部分コマンド）の結果を全件受け取ってから行う。1件ずつ潰さない
-- `@unchecked Sendable`を新たに足さない
+- `WatchStream`に`@unchecked Sendable`を足さない。隔離境界を越える音声bufferの受け渡しは、既存の`Recorder.CapturedBuffer`（`@unchecked Sendable`の値型wrapper、根拠付き）に倣う
 - モデル分担: コード記述 = Sonnet、コマンド実行 = Haiku、task review = Sonnet。xcodebuildのpackage解決がBash sandbox内で止まる場合はsandbox外（controller本体）で実行する
 - commitはタスクごとに1つ、末尾に`Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` / `Claude-Session: https://claude.ai/code/session_01U7xtJbouFTgMnjJcgGfoM4`
 - 日本語と英数字の間に空白を入れない
@@ -40,7 +40,7 @@
 **Interfaces:**
 - Produces: `make verify`。成功時に最終行`verify: OK`、失敗時は非0で停止。ログは`.build/logs/verify-*.log`
 
-- [ ] **Step 1: Makefileに`verify`を足す**
+- [x] **Step 1: Makefileに`verify`を足す**
 
 `Makefile`全体を次にする（既存targetは据え置き、`SHELL` / `.SHELLFLAGS` / `LOGS` / `DIAG` / `verify`を追加）。
 
@@ -84,14 +84,17 @@ verify:
 	  -derivedDataPath $(DERIVED) CODE_SIGNING_ALLOWED=NO build 2>&1 | tee $(LOGS)/verify-ios.log
 	! grep -E $(DIAG) $(LOGS)/verify-ios.log
 	@echo "verify: OK"
+
+clean:
+	rm -rf .build Apps/Notetake.xcodeproj
 ```
 
-- [ ] **Step 2: ゲートが現状の失敗を出すことを確認する**
+- [x] **Step 2: ゲートが現状の失敗を出すことを確認する**
 
 Run: `make verify 2>&1 | tail -20; echo EXIT=$?`
 Expected: `swift build`は通り、`swift test`のコンパイルで落ちる（Task 2の差分がまだ未commitでworktreeに残っているなら、`swift test`は通り、iOSビルドの`WatchRecorder.swift:282`で落ちる）。いずれにせよ`verify: OK`は出ず、EXITは非0。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add Makefile
@@ -109,17 +112,17 @@ git commit -m "build: add make verify as the single verification gate (build war
 - Consumes: なし
 - Produces: `swift build`警告ゼロ、`swift test`全件通過
 
-- [ ] **Step 1: worktreeの差分が次の3点だけであることを確認する**
+- [x] **Step 1: worktreeの差分が次の3点だけであることを確認する**
 
 Run: `git diff --stat && git diff`
 Expected: 上記4ファイル。`CaptureStream.swift`は`await self.acceptFinal(piece)`→`self.acceptFinal(piece)`と`await self.drainPending()`→`self.drainPending()`。`PolishRendererTests.swift`は`@Test func emptyIsEmpty()`→`@Test func polishedMarkdownOfNoTurnsIsEmpty()`。`DirectionEstimatorTests.swift`は`return Float(Int64(bitPattern: state >> 11) % 2_000_000) / 1_000_000`→末尾に` - 1`。planは同じ2箇所。差分が無ければ（既に戻されていれば）この内容をそのまま適用する。
 
-- [ ] **Step 2: ビルドが警告ゼロ、テストが全件通ることを確認する**
+- [x] **Step 2: ビルドが警告ゼロ、テストが全件通ることを確認する**
 
 Run: `swift build 2>&1 | grep -E '\.swift:[0-9]+:[0-9]+: (warning|error):'; swift test 2>&1 | grep -E "Test run with|✘" | tail -5`
 Expected: grepは出力なし。`✔ Test run with 162 tests in 0 suites passed`（件数は162以上）。`✘`なし。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add Sources/notetaked/Pipeline/CaptureStream.swift Tests/NotetakeCoreTests/PolishRendererTests.swift Tests/NotetakeCoreTests/DirectionEstimatorTests.swift docs/superpowers/plans/2026-09-13-spatial-location-polish.md
@@ -137,12 +140,12 @@ git commit -m "fix(test,daemon): unique test name, zero-mean noise in DirectionE
 - Consumes: なし
 - Produces: `ChunkWriter.init(...)`のシグネチャは変更なし（呼び出し側`WatchRecorder.swift:76`はそのまま）
 
-- [ ] **Step 1: 現状のエラーを確認する**
+- [x] **Step 1: 現状のエラーを確認する**
 
 Run: `xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E '\.swift:[0-9]+:[0-9]+: (warning|error):' | sort -u`
 Expected: `Apps/NotetakeWatch/WatchRecorder.swift:282:13: error: call to actor-isolated instance method 'openNextFile()' in a synchronous nonisolated context` の1行。
 
-- [ ] **Step 2: ファイルを開く処理をnonisolatedなstatic関数に切り出す**
+- [x] **Step 2: ファイルを開く処理をnonisolatedなstatic関数に切り出す**
 
 `ChunkWriter`のinit末尾の`try openNextFile()`を次に置き換える。
 
@@ -180,12 +183,46 @@ Expected: `Apps/NotetakeWatch/WatchRecorder.swift:282:13: error: call to actor-i
     }
 ```
 
-- [ ] **Step 3: Watch targetが通り、次のエラーがWatchRelayだけになることを確認する**
+- [x] **Step 2b: tapからwriterへのbuffer受け渡しをwrapperで包む**
+
+型検査を通った先のregion isolation検査で `WatchRecorder.swift:98` `continuation.yield(buffer)` と `:116` `writer.append(buffer)` が `sending 'buffer' risks causing data races` になる（生の`AVAudioPCMBuffer`を`AsyncStream`に流しているため）。iPhone側`Apps/NotetakeMobile/Recorder.swift`の`CapturedBuffer`と同じ形にする。
+
+`final class WatchRecorder`の先頭（stored propertyの前）に追加:
+
+```swift
+    /// tap callback（audioスレッド）からfeedTaskへbufferを渡すための値型wrapper。
+    /// `@unchecked Sendable`の根拠: tapはyield後にbufferへ触れず、受け取ったfeedTaskだけが読む（`Recorder.CapturedBuffer`と同じ）
+    private struct CapturedBuffer: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+    }
+```
+
+`start`内を次に変える:
+
+```swift
+        let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream()
+        bufferContinuation = continuation
+        // このclosureはreal-time audio threadから呼ばれる。`continuation`はSendableな値型で、
+        // `self`やactorには触れないので、engineのtapとしてそのまま安全に使える。
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            continuation.yield(CapturedBuffer(buffer: buffer))
+        }
+```
+
+```swift
+        feedTask = Task { @MainActor [weak self] in
+            for await captured in stream {
+                let outcome = await writer.append(captured.buffer)
+```
+
+`bufferContinuation`のstored propertyの型を`AsyncStream<CapturedBuffer>.Continuation?`にする。他は変えない。
+
+- [x] **Step 3: Watch targetが通り、次のエラーがWatchRelayだけになることを確認する**
 
 Run: Step 1と同じコマンド
 Expected: `WatchRecorder.swift`の行は消える。残るのは`Apps/NotetakeMobile/WatchRelay.swift`の`WatchStream`のSendable違反（111 / 189 / 193 / 199行）と`Recorder.swift:73`（`builtInMicrophone` deprecated）、`Recorder.swift:130`（不要な`await`）の警告のみ。他にWatch側のエラー・警告が出たら全件を報告してから直す。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Apps/NotetakeWatch/WatchRecorder.swift
@@ -197,13 +234,13 @@ git commit -m "fix(watch): open the first chunk file via a static helper so Chun
 ### Task 4: `WatchRelay`の生成Taskからactor外へ`WatchStream`を出さない
 
 **Files:**
-- Modify: `Apps/NotetakeMobile/WatchRelay.swift`（`creating`の型、`streamFor(meta:orphanFileIfFailed:)`、`buildStream(meta:)`）
+- Modify: `Apps/NotetakeMobile/WatchRelay.swift`（`creating`の型、`streamFor(meta:orphanFileIfFailed:)`、`buildStream(meta:)`、init、`receive`、`ensureIdleLoop`）、`Apps/NotetakeMobile/MobileModel.swift:97`（コメント1行）
 
 **Interfaces:**
 - Consumes: なし
 - Produces: `streamFor`の戻り値`WatchStream?`は変更なし。`buildStream`は`async`（throwしない）で、完了時に自分で`streams`へ登録する
 
-- [ ] **Step 1: `creating`の型を変える**
+- [x] **Step 1: `creating`の型を変える**
 
 `WatchRelay.swift:111`を次にする。
 
@@ -213,7 +250,7 @@ git commit -m "fix(watch): open the first chunk file via a static helper so Chun
     private var creating: [String: Task<Void, Never>] = [:]
 ```
 
-- [ ] **Step 2: `streamFor`を書き換える**
+- [x] **Step 2: `streamFor`を書き換える**
 
 `private func streamFor(meta:orphanFileIfFailed:)`の本体を次にする（直前のdocコメントは据え置き）。
 
@@ -241,7 +278,7 @@ git commit -m "fix(watch): open the first chunk file via a static helper so Chun
     }
 ```
 
-- [ ] **Step 3: `buildStream`を書き換える**
+- [x] **Step 3: `buildStream`を書き換える**
 
 `private func buildStream(meta:) async throws -> WatchStream`を次にする。
 
@@ -273,12 +310,45 @@ git commit -m "fix(watch): open the first chunk file via a static helper so Chun
     }
 ```
 
-- [ ] **Step 4: iOS targetのエラーが消えることを確認する**
+- [x] **Step 3b: idle loopをinitではなく最初の`receive`で起動する**
+
+ゲートで `WatchRelay.swift:128:18: error: cannot access property 'idleTask' here in nonisolated initializer` が出る。非asyncなactor initは、`self`をclosureに捕捉させた後は隔離プロパティに触れない。initからTask生成を外し、最初の小片を受け取った時に起動する（`finishAll()`で止めた後に小片が来れば再び起動する）。
+
+initの末尾の次の4行を削除する:
+
+```swift
+        idleTask = Task { [weak self] in
+            await self?.runIdleLoop()
+        }
+```
+
+`receive(url:meta:)`の先頭（`guard let stream = await streamFor(...)`の前）に1行追加し、関数を1つ足す:
+
+```swift
+    func receive(url: URL, meta: WatchChunkMetadata) async {
+        ensureIdleLoop()
+        guard let stream = await streamFor(meta: meta, orphanFileIfFailed: url) else { return }
+```
+
+```swift
+    /// idle監視は最初の小片が届いてから始める（非asyncなactor initでは`self`を捕捉するTaskを作れないため）。
+    /// `finishAll()`で止めた後に小片が来れば再び起動する
+    private func ensureIdleLoop() {
+        guard idleTask == nil else { return }
+        idleTask = Task { [weak self] in
+            await self?.runIdleLoop()
+        }
+    }
+```
+
+`Apps/NotetakeMobile/MobileModel.swift:97`のコメント「（何も受信しないだけで無害。idleループが15秒おきに空のstreams辞書を見るだけ）」を「（何も受信しないだけで無害。idleループも最初の小片が届くまで動かない）」にする。
+
+- [x] **Step 4: iOS targetのエラーが消えることを確認する**
 
 Run: `xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E '\.swift:[0-9]+:[0-9]+: (warning|error):|BUILD' | sort -u`
 Expected: `error:`なし。`BUILD SUCCEEDED`。残る警告は`Recorder.swift:73`と`Recorder.swift:130`の2行のみ（Task 5で消す）。他に出たら全件を報告してから直す。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Apps/NotetakeMobile/WatchRelay.swift
@@ -297,7 +367,7 @@ git commit -m "fix(ios): keep WatchStream inside the WatchRelay actor; creation 
 **Interfaces:**
 - Produces: `SampleClock(originMS: Int64, sampleRate: Double)`、`ms(atFrame: AVAudioFramePosition) -> Int64`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `Tests/NotetakeCoreTests/SampleClockTests.swift`:
 
@@ -323,12 +393,12 @@ import Testing
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**
+- [x] **Step 2: 失敗を確認する**
 
 Run: `swift test --filter SampleClock 2>&1 | grep -E "error:|✘|✔ Test run" | head`
 Expected: `cannot find 'SampleClock' in scope`でコンパイルエラー。
 
-- [ ] **Step 3: `SampleClock`を実装する**
+- [x] **Step 3: `SampleClock`を実装する**
 
 `Sources/NotetakeCore/Audio/SampleClock.swift`:
 
@@ -353,12 +423,12 @@ public struct SampleClock: Sendable {
 }
 ```
 
-- [ ] **Step 4: 通ることを確認する**
+- [x] **Step 4: 通ることを確認する**
 
 Run: `swift test --filter SampleClock 2>&1 | grep -E "✘|✔ Test run"`
 Expected: `✔ Test run with 2 tests in 0 suites passed`
 
-- [ ] **Step 5: `Recorder`の時刻計算を`SampleClock`に統一し、警告2件を消す**
+- [x] **Step 5: `Recorder`の時刻計算を`SampleClock`に統一し、警告2件を消す**
 
 `Apps/NotetakeMobile/Recorder.swift`:
 
@@ -407,12 +477,12 @@ Expected: `✔ Test run with 2 tests in 0 suites passed`
     }
 ```
 
-- [ ] **Step 6: ゲート全体を通す**
+- [x] **Step 6: ゲート全体を通す**
 
 Run: `make verify 2>&1 | tail -5; echo EXIT=$?`
 Expected: 最終行`verify: OK`、EXIT=0。落ちたら`.build/logs/verify-*.log`から該当行を全件集めてから直す。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/NotetakeCore/Audio/SampleClock.swift Tests/NotetakeCoreTests/SampleClockTests.swift Apps/NotetakeMobile/Recorder.swift
@@ -426,7 +496,7 @@ git commit -m "fix(ios): derive direction frame times from the transcriber's sam
 **Files:**
 - Modify: `HANDOFF.md`、`CLAUDE.md`、`docs/superpowers/plans/2026-09-13-spatial-location-polish.md`、本plan
 
-- [ ] **Step 1: `CLAUDE.md`に規律2行を足す**
+- [x] **Step 1: `CLAUDE.md`に規律2行を足す**
 
 末尾に追加:
 
@@ -435,7 +505,7 @@ git commit -m "fix(ios): derive direction frame times from the transcriber's sam
 - `make verify`を通していないものをHANDOFFで「実装済み」と書かない（「未検証」と書く）
 ```
 
-- [ ] **Step 2: `HANDOFF.md`を事実に合わせる**
+- [x] **Step 2: `HANDOFF.md`を事実に合わせる**
 
 1. 「状態」: 段階Lの箇条書きを「段階L実装済み・`make verify`通過（2026-09-13）。iPhoneの実機検証（`input.spatial`、方位、FOA変換のチャンネル順）は証明書再発行後」に書き換える。2つ目の箇条書きの「`make test`と…段階1〜5は未実施」は「`make verify`通過。段階1〜5（実機・手動）は未実施」にする。「次:」は「段階1〜6の実機・手動検証を順に実行」にする。ledgerの記述は「web側のledgerはMacから読めない。Mac側のledgerは`.superpowers/sdd/2026-09-13-stage-l-verification-remediation/progress.md`」にする
 2. 「branchに入っているもの」の表に行を足す: `| V 検証ゲート | `make verify`、`ChunkWriter` init / `WatchRelay`の並行性修正、`SampleClock` | `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md` |`。段階Lの行の「**実装済み・Mac未検証**」を「`make verify`通過」に
@@ -452,19 +522,19 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 6. 「環境の注意」に「`make verify`はxcodebuildのpackage解決を含むためBash sandbox内では止まることがある。sandbox外で実行」を足す（既存のsandbox注記と統合してよい）
 7. 「検証コマンド」節: `make verify`を先頭に足す
 
-- [ ] **Step 3: 段階L planのMac側実行待ちチェックボックスを埋める**
+- [x] **Step 3: 段階L planのMac側実行待ちチェックボックスを埋める**
 
 `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`の`- [ ] ...（Mac側で実行待ち）`14箇所を`- [x]`にし、末尾の「（Mac側で実行待ち）」を「（2026-09-13 `make verify`で確認）」にする。
 
 Run: `grep -c '^\- \[ \]' docs/superpowers/plans/2026-09-13-spatial-location-polish.md`
 Expected: `0`
 
-- [ ] **Step 4: 本planのチェックボックスを埋め、ゲートを最終確認する**
+- [x] **Step 4: 本planのチェックボックスを埋め、ゲートを最終確認する**
 
 Run: `make verify 2>&1 | tail -3`
 Expected: `verify: OK`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add HANDOFF.md CLAUDE.md docs/superpowers/plans/2026-09-13-spatial-location-polish.md docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md

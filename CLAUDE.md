@@ -5,3 +5,5 @@
 - 実装は`superpowers:subagent-driven-development`で進める。ledger: `.superpowers/sdd/<plan名>/progress.md`（git管理外）。spec: `docs/superpowers/specs/`、plan: `docs/superpowers/plans/`
 - 署名: Apple Development証明書が失効中のため、daemon / mac appはad-hoc署名（詳細と復旧手順はHANDOFF.md）。失効証明書で署名しない
 - commit messageの末尾にCo-Authored-By / Claude-Session trailerを付ける
+- 検証ゲートは`make verify`（全targetのビルド警告ゼロ・全テスト・mac app・iOS / watchOSコンパイル）。修正はゲートの結果を全件受け取ってから行う。1件ずつ潰さない
+- `make verify`を通していないものをHANDOFFで「実装済み」と書かない（「未検証」と書く）

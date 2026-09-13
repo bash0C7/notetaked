@@ -206,7 +206,7 @@ extension InputDevice {
 }
 ```
 
-- [ ] **Step 3: テストが失敗（コンパイルエラー）することを確認する**（Mac側で実行待ち）
+- [x] **Step 3: テストが失敗（コンパイルエラー）することを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter segmentEncodesInputAndDirection 2>&1 | tail -20`
 Expected: `error: extra argument 'input' in call` 等のコンパイルエラー
@@ -263,7 +263,7 @@ enum InputDeviceProbe {
 
 `Segment(` を呼ぶテスト（NDJSONTests / OutboxTests / PeerMessageTests / ReconcilerTests / SessionStoreTests）は `source: ...,` の直後に `input: .test,` を足す。`Utterance(` を呼ぶhelper（TranscriptRendererTests / PolishChunkerTests）は `source: source,` の直後に `platform: .mac,`、`ownerLabel: ...,` の直後に `input: "MacBook Airのマイク",` を足す（helperの引数に `platform: Platform = .mac` / `input: String = "MacBook Airのマイク"` / `direction: Direction? = nil` を追加して渡す）。
 
-- [ ] **Step 7: 全テストとビルドが通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 7: 全テストとビルドが通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS（既存 + 新規5件）
 Run: `swift build 2>&1 | grep -E "error|warning"` → 出力なし
@@ -322,7 +322,7 @@ import Testing
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
+- [x] **Step 2: 失敗を確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter shortLabelTable 2>&1 | tail -5` → コンパイルエラー（`LocationLabel` 未定義）
 
@@ -361,7 +361,7 @@ public enum LocationLabel {
 }
 ```
 
-- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 4: 通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter LocationLabel 2>&1 | tail -5` → PASS。`swift build 2>&1 | grep -i warning` → 出力なし
 
@@ -399,7 +399,7 @@ git commit -m "feat(core): LocationLabel for input device and clock-position dis
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
+- [x] **Step 2: 失敗を確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter TranscriptRenderer 2>&1 | tail -10` → 期待値不一致でFAIL
 
@@ -414,7 +414,7 @@ result += "\(time) **\(utterance.speaker)**（\(location)）: \(text)\n"
 
 doc commentの書式も `"HH:mm:ss **話者**（場所）: 本文\n"` に更新。
 
-- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 4: 通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS
 
@@ -458,7 +458,7 @@ git commit -m "feat(core): show input device and direction in final.md speaker l
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
+- [x] **Step 2: 失敗を確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter statusEventCarriesInputDevice 2>&1 | tail -5` → コンパイルエラー
 
@@ -472,7 +472,7 @@ Run: `swift test --filter statusEventCarriesInputDevice 2>&1 | tail -5` → コ�
 - `stopCapture` の末尾（`self.store = nil` の隣）で `currentInput = nil`
 - `start()` / `rotate()` の `StatusEvent(recording: true, ...)` に `inputName: currentInput?.name, inputSpatial: currentInput?.spatial` を渡す（`stop()`の`recording: false`は既定nilのまま）
 
-- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 4: 通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test 2>&1 | tail -5` → PASS。`swift build 2>&1 | grep -E "error|warning"` → 出力なし
 
@@ -530,7 +530,7 @@ Text(LocationLabel.text(for: utterance))
     .foregroundStyle(.secondary)
 ```
 
-- [ ] **Step 3: ビルドして起動する**（Mac側で実行待ち）
+- [x] **Step 3: ビルドして起動する**（2026-09-13 `make verify`で確認）
 
 Run: `make app 2>&1 | grep -E "error:|BUILD"` → `BUILD SUCCEEDED`
 Run: 既存のNotetake.appを終了（`pkill -f "Notetake.app/Contents/MacOS/Notetake"`）してから `open .build/DerivedData/Build/Products/Debug/Notetake.app`。パネルで収録開始し、状態行に `入力: MacBook Airのマイク（空間: 非対応）`、発話行に `Mac` が出ることを確認（画面確認はuser）。保存先の`timed.jsonl`に `"input":{"name":"MacBook Airのマイク",...}` があることは `grep -c '"input"' <prefix>.timed.jsonl` で確認
@@ -645,7 +645,7 @@ private func planeWave(thetaDeg: Double, frames: Int = 480, seed: UInt64 = 1) ->
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
+- [x] **Step 2: 失敗を確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter DirectionEstimator 2>&1 | tail -5` → コンパイルエラー
 
@@ -723,7 +723,7 @@ public struct DirectionEstimator: Sendable {
 }
 ```
 
-- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 4: 通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter DirectionEstimator 2>&1 | tail -5` → 9件PASS。`swift build 2>&1 | grep -i warning` → 出力なし
 
@@ -994,7 +994,7 @@ let segment = Segment(
 )
 ```
 
-- [ ] **Step 3: コンパイルを通す**（Mac側で実行待ち）
+- [x] **Step 3: コンパイルを通す**（2026-09-13 `make verify`で確認）
 
 Run: iOS app のコンパイル（検証コマンド）→ `BUILD SUCCEEDED`。`swift build 2>&1 | grep -E "error|warning"` → 出力なし（Coreに変更が無いことの確認）
 
@@ -1075,7 +1075,7 @@ private let recordedAt = Date(timeIntervalSince1970: 1_789_300_000)   // 2026-09
 }
 ```
 
-- [ ] **Step 2: 失敗を確認する**（Mac側で実行待ち）
+- [x] **Step 2: 失敗を確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test --filter PolishRenderer 2>&1 | tail -5` → コンパイルエラー
 
@@ -1136,7 +1136,7 @@ let recordedAt = Date(timeIntervalSince1970: Double(sessionRecord.started) / 100
 
 `PolishRenderer.markdown(polished, recordedAt: recordedAt, timeZone: .current)`。
 
-- [ ] **Step 4: 通ることを確認する**（Mac側で実行待ち）
+- [x] **Step 4: 通ることを確認する**（2026-09-13 `make verify`で確認）
 
 Run: `swift test 2>&1 | tail -5` → 全件PASS。`swift build 2>&1 | grep -E "error|warning"` → 出力なし
 Run（Apple Intelligence有効なら）: `make daemon && .build/release/notetaked polish <保存先>/<prefix>.timed.jsonl` → `<prefix>.polished.md` の先頭が `# yyyy-MM-dd 名前` で、行に時刻が無いことを `head -3` で確認
