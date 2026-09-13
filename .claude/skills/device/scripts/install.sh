@@ -1,6 +1,7 @@
 #!/bin/bash
 # usage: install.sh iphone|watch   — 実機向けにbuildしてdevicectlでインストールする
 # iPhoneはロック解除、Watchはロック解除 + Mac近接（トンネルが張れないとタイムアウト）
+# make verifyや収録と並行させない（メモリ不足でtaskが落ちる。issue #9）
 set -eo pipefail
 ROOT=$(cd "$(dirname "$0")/../../../.." && pwd); cd "$ROOT"
 IPHONE=FE7B47C9-2CF0-5509-A52C-1C0D806CC085

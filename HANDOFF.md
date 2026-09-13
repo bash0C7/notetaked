@@ -142,6 +142,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 - system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
 - 実機probe（2026-09-13）: Macに繋がる機材（内蔵マイク / AirPods Pro 3 / ContinuityのiPhone）はいずれも`isMultichannelAudioModeSupported(.firstOrderAmbisonics)`がfalse、入力1ch。空間収録はiPhone本体でのみ試せる（iPhone 16eの対応可否は実機で判定）
+- **メモリ**: 収録（分離あり）中に`make verify`と実機向けxcodebuildを並行させると24GBでもメモリ不足になりbackground taskが落ちる（issue #9）。ビルドは直列に。収録中のdaemonのRSSは未計測
 - `make app`で`.build/release/notetaked`を更新してもbundle内が古いままの場合は`Apps/project.yml`のEmbed scriptの`inputFiles`を確認（16d68b1で追加済み）
 - Claude Code on the web（Linux）にはSwiftツールチェーンが無く、swift.orgもproxyで403。Swiftの実行が要る作業はMac側セッションで
 
