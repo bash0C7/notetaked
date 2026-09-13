@@ -27,6 +27,7 @@ let package = Package(
             dependencies: [
                 "NotetakeCore",
                 "NotetakeDiarization",
+                .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["Info.plist"]

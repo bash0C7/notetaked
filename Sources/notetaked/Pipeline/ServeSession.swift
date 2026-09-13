@@ -1,4 +1,5 @@
 #if canImport(Speech)
+import FluidAudio
 import Foundation
 import NotetakeCore
 
@@ -34,6 +35,8 @@ actor ServeSession {
     private let locale: Locale
     private let control: StdioControl
     private let device: DeviceIdentity
+    private let diarizerModels: DiarizerModels?
+    private let profileStore: SpeakerProfileStore?
 
     private var store: SessionStore?
     private var reconciler = Reconciler()
@@ -43,10 +46,15 @@ actor ServeSession {
     /// 直前に使ったprefix。同一秒内でのstart/rotateがprefixを衝突させないよう、
     /// startCaptureで開始日時をずらすのに使う
     private var lastPrefix: String?
+    /// mic/systemのlocal話者idをMac横断の大域idへ束ねる。1回のserve起動（プロセス）の間、
+    /// stop→startやrotateをまたいで保持する（同じ人には同じ大域idを付け続けるため、
+    /// startCapture()ではリセットしない）
+    private var registry: SpeakerRegistry
 
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
-        control: StdioControl, device: DeviceIdentity
+        control: StdioControl, device: DeviceIdentity, diarizerModels: DiarizerModels?,
+        registry: SpeakerRegistry, profileStore: SpeakerProfileStore?
     ) {
         self.outputDirectory = outputDirectory
         self.owner = owner
@@ -54,6 +62,9 @@ actor ServeSession {
         self.locale = locale
         self.control = control
         self.device = device
+        self.diarizerModels = diarizerModels
+        self.registry = registry
+        self.profileStore = profileStore
     }
 
     func handle(_ command: Command) async {
@@ -130,7 +141,8 @@ actor ServeSession {
                     throw CaptureStreamError.sourceNotImplemented(source)
                 }
                 let captureStream = try await CaptureStream(
-                    source: source, capture: capture, locale: locale)
+                    source: source, capture: capture, locale: locale,
+                    diarizerModels: diarizerModels)
                 let events = try await captureStream.start()
                 let streamOwner = ownerFor(owner)
                 let consumer = Task { [weak self] in
@@ -176,17 +188,27 @@ actor ServeSession {
             await control.send(.volatile(source: source, text: text))
         case .final(let piece, let levelDBFS):
             await handleFinal(piece, levelDBFS: levelDBFS, source: source, owner: owner)
+        case .log(let message):
+            await control.send(.log(message))
         }
     }
 
     private func handleFinal(
-        _ piece: TranscriptPiece, levelDBFS: Double, source: Source, owner: String
+        _ piece: AlignedPiece, levelDBFS: Double, source: Source, owner: String
     ) async {
         guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let store else { return }
 
         seq += 1
         let receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+
+        var speaker: SpeakerTag?
+        if let local = piece.localSpeaker, let embedding = piece.embedding {
+            let global = registry.assign(
+                streamKey: source.rawValue, localID: local, embedding: embedding)
+            speaker = SpeakerTag(local: local, global: global, embedding: embedding)
+        }
+
         let segment = Segment(
             id: UUID(),
             session: store.prefix,
@@ -201,6 +223,7 @@ actor ServeSession {
             text: piece.text,
             confidence: piece.confidence,
             levelDBFS: levelDBFS,
+            speaker: speaker,
             clockOffsetMS: 0,
             receivedAt: receivedAt)
 
@@ -230,6 +253,20 @@ actor ServeSession {
         } catch {
             await control.send(.error("failed to rename speaker: \(error)"))
             return
+        }
+
+        registry.setName(name, for: id)
+        do {
+            try await store.writeSpeakers(registry.profiles)
+        } catch {
+            await control.send(.error("failed to write speakers: \(error)"))
+        }
+        if let profileStore {
+            do {
+                try profileStore.save(registry.namedProfiles)
+            } catch {
+                await control.send(.error("failed to save speaker profiles: \(error)"))
+            }
         }
 
         for utterance in reconciler.apply(.speakerName(rename)) {
@@ -278,6 +315,22 @@ actor ServeSession {
         } catch {
             await control.send(.error("failed to write final: \(error)"))
         }
+
+        if !registry.profiles.isEmpty {
+            do {
+                try await store.writeSpeakers(registry.profiles)
+            } catch {
+                await control.send(.error("failed to write speakers: \(error)"))
+            }
+        }
+        if let profileStore {
+            do {
+                try profileStore.save(registry.namedProfiles)
+            } catch {
+                await control.send(.error("failed to save speaker profiles: \(error)"))
+            }
+        }
+
         await store.close()
 
         self.store = nil

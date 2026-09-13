@@ -18,6 +18,10 @@ struct MenuContent: View {
             Text("次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt))
                 .foregroundStyle(.secondary)
         }
+        if let lastLog = appModel.lastLog {
+            Text(lastLog)
+                .foregroundStyle(.secondary)
+        }
         if let lastError = appModel.lastError {
             Text(lastError)
                 .foregroundStyle(.red)

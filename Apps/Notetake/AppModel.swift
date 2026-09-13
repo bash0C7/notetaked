@@ -41,6 +41,8 @@ final class AppModel {
     var lastError: String?
     /// 自動区切りの予定時刻。表示用。自動区切りが無効（間隔0、または未収録）ならnil。
     var nextRotationAt: Date?
+    /// daemonから届いた直近の`.log`（話者分離モデルの取得進捗など）。表示用。
+    var lastLog: String?
 
     private var client: DaemonClient?
     /// 現在の収録（`prefix`）が開始した時刻。自動区切りの期限計算の起点。
@@ -336,6 +338,7 @@ final class AppModel {
             lastError = message
             FileHandle.standardError.write(Data("notetaked error: \(message)\n".utf8))
         case .log(let message):
+            lastLog = message
             FileHandle.standardError.write(Data("notetaked log: \(message)\n".utf8))
         }
     }

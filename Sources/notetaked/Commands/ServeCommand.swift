@@ -3,6 +3,7 @@ import Foundation
 import NotetakeCore
 
 #if canImport(Speech)
+import NotetakeDiarization
 import Speech
 #endif
 
@@ -29,6 +30,11 @@ struct Serve: AsyncParsableCommand {
 
     @Flag(name: .customLong("start"), help: "Start recording immediately on launch")
     var startImmediately = false
+
+    @Flag(
+        name: .customLong("diarize"), inversion: .prefixedNo,
+        help: "Run speaker diarization (default on)")
+    var diarize = true
 
     func run() async throws {
         #if canImport(Speech)
@@ -59,9 +65,38 @@ struct Serve: AsyncParsableCommand {
 
         let stdioControl = StdioControl()
         let device = DeviceIdentity.load()
-        let session = ServeSession(
-            outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
-            locale: selectedLocale, control: stdioControl, device: device)
+        let profileStore = SpeakerProfileStore.default()
+        let registry = SpeakerRegistry(profiles: profileStore.load())
+
+        let session: ServeSession
+        if diarize {
+            let progressReporter = DiarizerModelProgressReporter()
+            do {
+                let models = try await Diarizer.prepareModels { fraction in
+                    Task {
+                        if let step = await progressReporter.reportedStep(for: fraction) {
+                            await stdioControl.send(.log("diarizer models: \(step * 10)%"))
+                        }
+                    }
+                }
+                await stdioControl.send(.log("diarizer ready"))
+                session = ServeSession(
+                    outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
+                    locale: selectedLocale, control: stdioControl, device: device,
+                    diarizerModels: models, registry: registry, profileStore: profileStore)
+            } catch {
+                await stdioControl.send(.error("diarizer unavailable: \(error)"))
+                session = ServeSession(
+                    outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
+                    locale: selectedLocale, control: stdioControl, device: device,
+                    diarizerModels: nil, registry: registry, profileStore: profileStore)
+            }
+        } else {
+            session = ServeSession(
+                outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
+                locale: selectedLocale, control: stdioControl, device: device,
+                diarizerModels: nil, registry: registry, profileStore: profileStore)
+        }
 
         await stdioControl.send(
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))
@@ -105,3 +140,23 @@ struct Serve: AsyncParsableCommand {
     }
     #endif
 }
+
+#if canImport(Speech)
+/// `Diarizer.prepareModels(progress:)`のprogress closureは高頻度に呼ばれうるため、
+/// `.log`イベントを10%刻みでしか送らないよう直近の刻みを覚えておくactor
+/// （closure自体は`@Sendable`な同期関数で、直接`await`できないため、呼び出し側が
+/// `Task { await ... }`でこのactorへ問い合わせる）
+private actor DiarizerModelProgressReporter {
+    private var lastStep = -1
+
+    /// fraction（0...1）から10%刻みのstepを求め、前回報告済みのstepと同じなら`nil`
+    /// （報告不要）、新しいstepなら報告用に`0...10`を返す
+    func reportedStep(for fraction: Double) -> Int? {
+        let clamped = min(max(fraction, 0), 1)
+        let step = Int((clamped * 10).rounded(.down))
+        guard step != lastStep else { return nil }
+        lastStep = step
+        return step
+    }
+}
+#endif
