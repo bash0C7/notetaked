@@ -107,8 +107,9 @@ actor WatchRelay {
     private let onStreamCount: @Sendable (Int) -> Void
 
     private var streams: [String: WatchStream] = [:]
-    /// session生成中（Transcriber起動待ち）のTask。完了したら`streams`へ移し空にする
-    private var creating: [String: Task<WatchStream, Error>] = [:]
+    /// session生成中（Transcriber起動待ち）のTask。完了したら`buildStream`が`streams`へ登録し、ここから消す。
+    /// `WatchStream`は可変なclassでSendableでないため、Taskの結果としてactor外へ出さない
+    private var creating: [String: Task<Void, Never>] = [:]
     private var idleTask: Task<Void, Never>?
 
     /// - Parameters:
@@ -124,9 +125,6 @@ actor WatchRelay {
         self.locale = locale
         self.onSegment = onSegment
         self.onStreamCount = onStreamCount
-        idleTask = Task { [weak self] in
-            await self?.runIdleLoop()
-        }
     }
 
     /// `<Application Support>/Notetake/watch-inbox`。`WatchSessionDelegate`（actor外）からも
@@ -141,6 +139,7 @@ actor WatchRelay {
     /// `WatchSessionDelegate`から呼ばれる。`url`の所有権を引き取り、最終的に必ず削除する
     /// （streamの生成に失敗した場合も含む）。
     func receive(url: URL, meta: WatchChunkMetadata) async {
+        ensureIdleLoop()
         guard let stream = await streamFor(meta: meta, orphanFileIfFailed: url) else { return }
 
         // `WatchChunkSequencer`が内部で「すでに追い越されたindex」として即座に捨てる小片を
@@ -186,51 +185,47 @@ actor WatchRelay {
             return existing
         }
 
-        let task: Task<WatchStream, Error>
+        let task: Task<Void, Never>
         if let inFlight = creating[meta.session] {
             task = inFlight
         } else {
-            let newTask = Task { try await self.buildStream(meta: meta) }
+            let newTask = Task { await self.buildStream(meta: meta) }
             creating[meta.session] = newTask
             task = newTask
         }
+        await task.value
 
-        do {
-            let stream = try await task.value
-            // task.valueを待っていた複数の呼び出しが順にここへ戻ってくる可能性があるため、
-            // 二重登録・二重のonStreamCount通知を避ける
-            if streams[meta.session] == nil {
-                streams[meta.session] = stream
-                creating[meta.session] = nil
-                onStreamCount(streams.count)
-            }
-            return stream
-        } catch {
-            creating[meta.session] = nil
-            logError("failed to start transcriber for session \(meta.session): \(error)")
+        guard let stream = streams[meta.session] else {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
+        return stream
     }
 
-    /// origin(先頭小片のstartAtMS)でTranscriberを起動し、final pieceを消費するTaskを繋いだ
-    /// `WatchStream`を作る。`self`への参照はpieceTask経由のみ（weak、`emit`はactor-isolated）。
-    private func buildStream(meta: WatchChunkMetadata) async throws -> WatchStream {
-        let originMS = meta.startAtMS
-        let origin = Date(timeIntervalSince1970: Double(originMS) / 1000)
-        let transcriber = try await Transcriber(locale: locale, origin: origin)
-        let pieces = try await transcriber.start()
+    /// Transcriberを起動して`streams[meta.session]`へ登録する。失敗はlogして登録しない。
+    /// `task.value`を待っていた複数の呼び出しが順に戻ってきても、登録と`onStreamCount`は1回だけ
+    private func buildStream(meta: WatchChunkMetadata) async {
+        defer { creating[meta.session] = nil }
+        do {
+            let originMS = meta.startAtMS
+            let origin = Date(timeIntervalSince1970: Double(originMS) / 1000)
+            let transcriber = try await Transcriber(locale: locale, origin: origin)
+            let pieces = try await transcriber.start()
 
-        let stream = WatchStream(transcriber: transcriber, originMS: originMS, firstMeta: meta)
-        let session = meta.session
-        stream.pieceTask = Task { [weak self] in
-            for await piece in pieces where piece.isFinal {
-                guard !piece.text.isEmpty else { continue }
-                guard let self else { return }
-                await self.emit(piece: piece, session: session)
+            let stream = WatchStream(transcriber: transcriber, originMS: originMS, firstMeta: meta)
+            let session = meta.session
+            stream.pieceTask = Task { [weak self] in
+                for await piece in pieces where piece.isFinal {
+                    guard !piece.text.isEmpty else { continue }
+                    guard let self else { return }
+                    await self.emit(piece: piece, session: session)
+                }
             }
+            streams[session] = stream
+            onStreamCount(streams.count)
+        } catch {
+            logError("failed to start transcriber for session \(meta.session): \(error)")
         }
-        return stream
     }
 
     private func emit(piece: TranscriptPiece, session: String) async {
@@ -308,6 +303,15 @@ actor WatchRelay {
     }
 
     // MARK: - Idle finishing
+
+    /// idle監視は最初の小片が届いてから始める（非asyncなactor initでは`self`を捕捉するTaskを作れないため）。
+    /// `finishAll()`で止めた後に小片が来れば再び起動する
+    private func ensureIdleLoop() {
+        guard idleTask == nil else { return }
+        idleTask = Task { [weak self] in
+            await self?.runIdleLoop()
+        }
+    }
 
     private func runIdleLoop() async {
         while !Task.isCancelled {

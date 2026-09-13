@@ -94,7 +94,7 @@ final class MobileModel {
 
     /// WatchRelayを起動し、`WCSession.isSupported()`ならdelegateを登録してactivateする。
     /// Watch非対応（実機がWatch非対応、または未ペアリング）の場合もrelay自体は作っておく
-    /// （何も受信しないだけで無害。idleループが15秒おきに空のstreams辞書を見るだけ）。
+    /// （何も受信しないだけで無害。idleループも最初の小片が届くまで動かない）。
     private func connectWatch() {
         let box = WeakBox(self)
         let relay = WatchRelay(
