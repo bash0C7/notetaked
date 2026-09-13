@@ -35,6 +35,7 @@ make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存
 - `Sources/notetaked/Peer/PeerListener.swift`、`Apps/NotetakeMobile/PeerClient.swift`: Network frameworkのTLS PSK（`sec_protocol_options_add_pre_shared_key(_:_:_:)`のDispatchData引数、`sec_protocol_options_append_tls_ciphersuite`と`tls_ciphersuite_t(rawValue:)`、`NWListener.Service(name:type:)`、`includePeerToPeer`）
 - `Sources/NotetakeCore/Transcribe/Transcriber.swift` `makePiece`: `run.audioTimeRange`（`AttributeScopes.SpeechAttributes`、`CMTimeRange`）
 - `Sources/NotetakeDiarization/Diarizer.swift`: FluidAudioの`DiarizerConfig(clusteringThreshold:chunkDuration:)`引数順、`DownloadProgress.fractionCompleted`（v0.15.7ソースで確認済みだが要ビルド）
+- `Sources/notetaked/Peer/PeerListener.swift`: `NWConnection`をactor境界越しに渡している（`accept` / `receiveLoop` / `sendLine`）。SDKで`NWConnection`がSendableでなければ引数に`sending`を付ける
 - strict concurrency: `CaptureStream.Converted`（非Sendableな`AVAudioPCMBuffer`を`sending`で渡す）、`WatchRecorder`/`WatchSessionDelegate`の`nonisolated`デリゲート、`MobileModel`の`WeakBox`、`AppModel.polishLastRecording`の`terminationHandler`
 - `Apps/NotetakeWatch/WatchRecorder.swift`: `AVAudioFile(forWriting:settings:commonFormat:interleaved:)`にAAC settingsでPCMを`write(from:)`できるか
 

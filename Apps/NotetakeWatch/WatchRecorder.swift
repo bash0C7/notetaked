@@ -283,7 +283,7 @@ actor ChunkWriter {
     }
 
     /// bufferを現在のfileへ書き込む。rotationの閾値に達したら閉じて転送キューへ入れ、次のfileを開く。
-    func append(_ buffer: AVAudioPCMBuffer) -> AppendOutcome {
+    func append(_ buffer: sending AVAudioPCMBuffer) -> AppendOutcome {
         guard let currentFile else {
             return .writeFailed("録音ファイルが開かれていません")
         }
