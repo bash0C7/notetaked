@@ -11,6 +11,7 @@ final class AppModel {
         static let outputDirectory = "outputDirectory"
         static let ownerName = "ownerName"
         static let rotationIntervalHours = "rotationIntervalHours"
+        static let pairingCode = "pairingCode"
     }
 
     private static let maxRestartsPerWindow = 5
@@ -32,6 +33,15 @@ final class AppModel {
         }
     }
 
+    /// iPhoneアプリがMacを発見してペアリングする際に入力する6桁コード。変更のたびに永続化し、
+    /// daemonが起動済みなら即座に`.pairCode`で伝える（daemon側は準備でき次第これを扱う）。
+    var pairingCode: String {
+        didSet {
+            UserDefaults.standard.set(pairingCode, forKey: DefaultsKey.pairingCode)
+            client?.send(.pairCode(pairingCode))
+        }
+    }
+
     var daemonRunning = false
     var isRecording = false
     var prefix: String?
@@ -43,6 +53,12 @@ final class AppModel {
     var nextRotationAt: Date?
     /// daemonから届いた直近の`.log`（話者分離モデルの取得進捗など）。表示用。
     var lastLog: String?
+    /// 直前に完了した収録（停止、または区切りで置き換えられた収録）のprefix。「整形」の対象。
+    var lastFinishedPrefix: String?
+    /// `notetaked polish`の子processが実行中かどうか。多重起動防止。
+    var isPolishing = false
+    /// 接続中のiPhone等のpeer（device id → 表示名）。`.peer(connected: false)`で削除する。
+    var connectedPeers: [String: String] = [:]
 
     private var client: DaemonClient?
     /// 現在の収録（`prefix`）が開始した時刻。自動区切りの期限計算の起点。
@@ -77,6 +93,22 @@ final class AppModel {
                 defaults.double(forKey: DefaultsKey.rotationIntervalHours)
             )
         }
+        if let existingCode = defaults.string(forKey: DefaultsKey.pairingCode), !existingCode.isEmpty {
+            pairingCode = existingCode
+        } else {
+            let generated = Self.generatePairingCode()
+            defaults.set(generated, forKey: DefaultsKey.pairingCode)
+            pairingCode = generated
+        }
+    }
+
+    private static func generatePairingCode() -> String {
+        String(format: "%06d", Int.random(in: 0...999_999))
+    }
+
+    /// 現在接続中のpeer名（表示用に安定した順序でソート済み）。
+    var connectedPeerNames: [String] {
+        connectedPeers.values.sorted()
     }
 
     private func persistOutputDirectory() {
@@ -175,6 +207,7 @@ final class AppModel {
             try newClient.start()
             client = newClient
             daemonRunning = true
+            newClient.send(.pairCode(pairingCode))
         } catch {
             lastError = "daemonの起動に失敗しました: \(error.localizedDescription)"
             daemonRunning = false
@@ -193,6 +226,7 @@ final class AppModel {
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
         prefix = nil
+        connectedPeers = [:]
         clearRotation()
         if code != 0 {
             lastError = "daemonが予期せず終了しました (code \(code))"
@@ -263,6 +297,62 @@ final class AppModel {
         NSWorkspace.shared.open(outputDirectory)
     }
 
+    func regeneratePairingCode() {
+        pairingCode = Self.generatePairingCode()
+    }
+
+    /// 直前に完了した収録（`lastFinishedPrefix`）の`timed.jsonl`を`notetaked polish`にかけ、
+    /// `<prefix>.polished.md`を生成する。子processなので多重起動は`isPolishing`で防ぐ。
+    func polishLastRecording() {
+        guard !isPolishing else { return }
+        guard let prefix = lastFinishedPrefix else { return }
+        guard let outputDirectory else { return }
+        guard let executable = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("notetaked")
+        else {
+            lastError = "notetakedの実行ファイルが見つかりません"
+            return
+        }
+        let inputPath = outputDirectory.appendingPathComponent("\(prefix).timed.jsonl").path
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["polish", inputPath]
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        // terminationHandlerは@Sendable。Pipeではなく（Sendableな）FileHandleをcaptureする
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+        process.terminationHandler = { [weak self] finishedProcess in
+            let status = finishedProcess.terminationStatus
+            _ = stdoutHandle.readDataToEndOfFile()
+            let stderrData = stderrHandle.readDataToEndOfFile()
+            Task { @MainActor in
+                guard let self else { return }
+                self.isPolishing = false
+                if status == 0 {
+                    self.lastLog = "整形完了: \(prefix).polished.md"
+                } else {
+                    let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
+                    let lastLine = stderrText
+                        .split(separator: "\n", omittingEmptySubsequences: true)
+                        .last
+                        .map(String.init) ?? ""
+                    self.lastError = "整形に失敗しました (code \(status)): \(lastLine)"
+                }
+            }
+        }
+        do {
+            try process.run()
+            isPolishing = true
+            lastLog = "整形中: \(prefix)"
+        } catch {
+            lastError = "整形の起動に失敗しました: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Auto rotation
 
     /// 収録開始時刻（`recordingStartedAt`）と設定間隔（`rotationIntervalHours`）から次の区切り期限を計算し、
@@ -301,7 +391,8 @@ final class AppModel {
     private func handle(_ event: Event) {
         switch event {
         case .status(let status):
-            let isNewRecording = status.recording && status.prefix != prefix
+            let previousPrefix = prefix
+            let isNewRecording = status.recording && status.prefix != previousPrefix
             if isNewRecording {
                 utterances = []
                 volatile = [:]
@@ -310,6 +401,11 @@ final class AppModel {
                 lastError = nil
             } else {
                 volatile = [:]
+            }
+            if let previousPrefix, !status.recording || isNewRecording {
+                // 停止（!recording）、または区切り（recordingのままprefixが変わった）のいずれかで
+                // 直前の収録が完了したとみなす。
+                lastFinishedPrefix = previousPrefix
             }
             isRecording = status.recording
             prefix = status.prefix
@@ -340,6 +436,12 @@ final class AppModel {
         case .log(let message):
             lastLog = message
             FileHandle.standardError.write(Data("notetaked log: \(message)\n".utf8))
+        case .peer(let device, let deviceName, let connected):
+            if connected {
+                connectedPeers[device] = deviceName
+            } else {
+                connectedPeers.removeValue(forKey: device)
+            }
         }
     }
 }

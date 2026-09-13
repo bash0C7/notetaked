@@ -9,6 +9,10 @@ import Testing
             == "{\"cmd\":\"rename_speaker\",\"name\":\"田中\",\"speaker\":\"g3\"}"
     )
     #expect(try Command.rotate.encodedLine() == "{\"cmd\":\"rotate\"}")
+    #expect(
+        try Command.pairCode("123456").encodedLine()
+            == "{\"cmd\":\"pair_code\",\"code\":\"123456\"}"
+    )
 }
 
 @Test func commandRoundTrip() throws {
@@ -17,6 +21,7 @@ import Testing
         .stop,
         .renameSpeaker(id: "g3", name: "田中"),
         .rotate,
+        .pairCode("123456"),
         .quit,
     ]
     for command in commands {
@@ -46,8 +51,11 @@ import Testing
     let volatileEvent = Event.volatile(source: .mic, text: "…")
     let errorEvent = Event.error("something failed")
     let logEvent = Event.log("started recording")
+    let peerEvent = Event.peer(device: "iphone-1", deviceName: "bash iPhone", connected: true)
 
-    let events: [Event] = [statusEvent, utteranceEvent, volatileEvent, errorEvent, logEvent]
+    let events: [Event] = [
+        statusEvent, utteranceEvent, volatileEvent, errorEvent, logEvent, peerEvent,
+    ]
     for event in events {
         let line = try event.encodedLine()
         #expect(try Event.decode(line: line) == event)
@@ -56,6 +64,14 @@ import Testing
     let utteranceLine = try utteranceEvent.encodedLine()
     #expect(utteranceLine.contains("\"speaker_id\""))
     #expect(utteranceLine.contains("\"ev\":\"utterance\""))
+}
+
+@Test func peerEventExactString() throws {
+    let event = Event.peer(device: "iphone-1", deviceName: "bash iPhone", connected: true)
+    #expect(
+        try event.encodedLine()
+            == "{\"connected\":true,\"device\":\"iphone-1\",\"device_name\":\"bash iPhone\",\"ev\":\"peer\"}"
+    )
 }
 
 @Test func statusEventNilPrefixOmitsKey() throws {

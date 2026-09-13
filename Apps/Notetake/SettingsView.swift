@@ -38,6 +38,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            LabeledContent("ペアリングコード") {
+                HStack {
+                    Text(appModel.pairingCode)
+                        .font(.system(.title2, design: .monospaced))
+                    Button("再生成") { appModel.regeneratePairingCode() }
+                }
+            }
+            Text("iPhoneのNotetakeでこのコードを入力")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .onAppear {
             ownerNameDraft = appModel.ownerName

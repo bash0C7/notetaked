@@ -10,12 +10,14 @@ public enum Command: Codable, Sendable, Equatable {
     case stop
     case renameSpeaker(id: String, name: String)
     case rotate
+    case pairCode(String)
     case quit
 
     enum CodingKeys: String, CodingKey {
         case cmd
         case speaker
         case name
+        case code
     }
 
     public init(from decoder: Decoder) throws {
@@ -32,6 +34,9 @@ public enum Command: Codable, Sendable, Equatable {
             self = .renameSpeaker(id: speaker, name: name)
         case "rotate":
             self = .rotate
+        case "pair_code":
+            let code = try container.decode(String.self, forKey: .code)
+            self = .pairCode(code)
         case "quit":
             self = .quit
         default:
@@ -52,6 +57,9 @@ public enum Command: Codable, Sendable, Equatable {
             try container.encode(name, forKey: .name)
         case .rotate:
             try container.encode("rotate", forKey: .cmd)
+        case .pairCode(let code):
+            try container.encode("pair_code", forKey: .cmd)
+            try container.encode(code, forKey: .code)
         case .quit:
             try container.encode("quit", forKey: .cmd)
         }
@@ -96,12 +104,16 @@ public enum Event: Codable, Sendable, Equatable {
     case volatile(source: Source, text: String)
     case error(String)
     case log(String)
+    case peer(device: String, deviceName: String, connected: Bool)
 
     enum CodingKeys: String, CodingKey {
         case ev
         case source
         case text
         case message
+        case device
+        case deviceName = "device_name"
+        case connected
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +134,11 @@ public enum Event: Codable, Sendable, Equatable {
         case "log":
             let message = try container.decode(String.self, forKey: .message)
             self = .log(message)
+        case "peer":
+            let device = try container.decode(String.self, forKey: .device)
+            let deviceName = try container.decode(String.self, forKey: .deviceName)
+            let connected = try container.decode(Bool.self, forKey: .connected)
+            self = .peer(device: device, deviceName: deviceName, connected: connected)
         default:
             throw ControlError.unknownEvent(ev)
         }
@@ -146,6 +163,11 @@ public enum Event: Codable, Sendable, Equatable {
         case .log(let message):
             try container.encode("log", forKey: .ev)
             try container.encode(message, forKey: .message)
+        case .peer(let device, let deviceName, let connected):
+            try container.encode("peer", forKey: .ev)
+            try container.encode(device, forKey: .device)
+            try container.encode(deviceName, forKey: .deviceName)
+            try container.encode(connected, forKey: .connected)
         }
     }
 

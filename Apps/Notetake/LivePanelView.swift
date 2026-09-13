@@ -74,6 +74,10 @@ struct LivePanelView: View {
                     .disabled(!appModel.isRecording)
             }
             ToolbarItem(placement: .automatic) {
+                Button("整形") { appModel.polishLastRecording() }
+                    .disabled(appModel.lastFinishedPrefix == nil || appModel.isPolishing)
+            }
+            ToolbarItem(placement: .automatic) {
                 Toggle("常に前面", isOn: $floating)
                     .onChange(of: floating) {
                         applyFloating(floating)
@@ -93,6 +97,9 @@ struct LivePanelView: View {
         }
         if let nextRotationAt = appModel.nextRotationAt {
             text += " 次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt)
+        }
+        if !appModel.connectedPeers.isEmpty {
+            text += " 接続: " + appModel.connectedPeerNames.joined(separator: "/")
         }
         return text
     }
