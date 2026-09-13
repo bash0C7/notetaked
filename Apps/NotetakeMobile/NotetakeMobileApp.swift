@@ -2,7 +2,11 @@ import SwiftUI
 
 @main
 struct NotetakeMobileApp: App {
+    @State private var model = MobileModel()
+
     var body: some Scene {
-        WindowGroup { Text("Notetake").padding() }
+        WindowGroup {
+            ContentView(model: model)
+        }
     }
 }
