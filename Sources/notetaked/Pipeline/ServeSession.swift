@@ -63,6 +63,9 @@ actor ServeSession {
     /// stop→startやrotateをまたいで保持する（同じ人には同じ大域idを付け続けるため、
     /// startCapture()ではリセットしない）
     private var registry: SpeakerRegistry
+    /// profile由来の話者名を、そのcaptureで大域idが初めて出た時に1回だけ発話へ流すための判定。
+    /// captureごと（startCapture）にリセットする
+    private var nameAnnouncer = ProfileNameAnnouncer()
 
     // MARK: - peer (iPhone/Watch)
 
@@ -205,6 +208,7 @@ actor ServeSession {
 
         self.store = store
         self.reconciler = Reconciler()
+        self.nameAnnouncer = ProfileNameAnnouncer()
         self.seq = 0
         self.streams = started
         self.currentInput = started.first(where: { $0.source == .mic })?.input
@@ -239,10 +243,12 @@ actor ServeSession {
         let receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
 
         var speaker: SpeakerTag?
+        var profileName: SpeakerNameRecord?
         if let local = piece.localSpeaker, let embedding = piece.embedding {
             let global = registry.assign(
                 streamKey: source.rawValue, localID: local, embedding: embedding)
             speaker = SpeakerTag(local: local, global: global, embedding: embedding)
+            profileName = nameAnnouncer.record(for: global, in: registry)
         }
 
         let segment = Segment(
@@ -263,6 +269,18 @@ actor ServeSession {
             speaker: speaker,
             clockOffsetMS: 0,
             receivedAt: receivedAt)
+
+        if let profileName {
+            do {
+                try await store.append(.speakerName(profileName))
+            } catch {
+                await control.send(.error("failed to append speaker name: \(error)"))
+                return
+            }
+            for utterance in reconciler.apply(.speakerName(profileName)) {
+                await control.send(.utterance(utterance))
+            }
+        }
 
         do {
             try await store.append(.segment(segment))
