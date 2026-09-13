@@ -37,7 +37,14 @@ struct Polish: AsyncParsableCommand {
 
         let timedURL = URL(fileURLWithPath: timedPath)
         let text = try String(contentsOf: timedURL, encoding: .utf8)
-        let utterances = Reconciler.fold(NDJSON.decodeAll(text))
+        let records = NDJSON.decodeAll(text)
+        guard case .session(let sessionRecord)? = records.first(where: {
+            if case .session = $0 { return true } else { return false }
+        }) else {
+            throw ValidationError("no session record in \(timedPath)")
+        }
+        let recordedAt = Date(timeIntervalSince1970: Double(sessionRecord.started) / 1000)
+        let utterances = Reconciler.fold(records)
         let turns = PolishChunker.turns(from: utterances)
         let chunks = PolishChunker.chunks(turns, maxCharacters: maxCharacters)
 
@@ -55,7 +62,7 @@ struct Polish: AsyncParsableCommand {
         }
 
         let polished = PolishChunker.merge(outputs: outputs, chunks: chunks)
-        let markdown = PolishRenderer.markdown(polished, timeZone: .current)
+        let markdown = PolishRenderer.markdown(polished, recordedAt: recordedAt, timeZone: .current)
 
         let outputURL = resolvedOutputURL(timedURL: timedURL)
         try Data(markdown.utf8).write(to: outputURL, options: .atomic)

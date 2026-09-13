@@ -4,12 +4,10 @@ import Foundation
 public struct PolishTurn: Codable, Sendable, Equatable {
     public var speaker: String
     public var text: String
-    public var startMS: Int64
 
-    public init(speaker: String, text: String, startMS: Int64) {
+    public init(speaker: String, text: String) {
         self.speaker = speaker
         self.text = text
-        self.startMS = startMS
     }
 }
 
@@ -24,17 +22,15 @@ public struct PolishChunk: Sendable, Equatable {
     }
 }
 
-/// 整形結果1 turn。startMSはbodyと1対1対応した時だけ入る。polishedがfalseなら原文採用
+/// 整形結果1 turn。polishedがfalseなら原文採用
 public struct PolishedTurn: Codable, Sendable, Equatable {
     public var speaker: String
     public var text: String
-    public var startMS: Int64?
     public var polished: Bool
 
-    public init(speaker: String, text: String, startMS: Int64?, polished: Bool) {
+    public init(speaker: String, text: String, polished: Bool) {
         self.speaker = speaker
         self.text = text
-        self.startMS = startMS
         self.polished = polished
     }
 }
@@ -43,14 +39,14 @@ public enum PolishChunker {
     public static let defaultMaxCharacters = 2000   // 日本語で約1500 token相当
     public static let defaultContextTurns = 2
 
-    /// utterance（start順）→ 連続する同一speakerを1 turnへ（textは""で連結、startMSは先頭）。空textは飛ばす
+    /// utterance（start順）→ 連続する同一speakerを1 turnへ（textは""で連結）。空textは飛ばす
     public static func turns(from utterances: [Utterance]) -> [PolishTurn] {
         var result: [PolishTurn] = []
         for utterance in utterances where !utterance.text.isEmpty {
             if let last = result.last, last.speaker == utterance.speaker {
                 result[result.count - 1].text += utterance.text
             } else {
-                result.append(PolishTurn(speaker: utterance.speaker, text: utterance.text, startMS: utterance.start))
+                result.append(PolishTurn(speaker: utterance.speaker, text: utterance.text))
             }
         }
         return result
@@ -87,7 +83,7 @@ public enum PolishChunker {
         return result
     }
 
-    /// chunkごとの整形出力（失敗はnil）をbodyと突き合わせる: 出力件数がbody件数と一致すればspeaker/textは出力、startMSはbodyから、polished true。件数不一致でも出力が空でなければ startMS nil・polished true で採用。nil（失敗）はbodyを polished false で採用
+    /// chunkごとの整形出力（失敗はnil）をbodyと突き合わせる: 出力が空でなければ件数一致・不一致とも出力のspeaker/textをそのまま polished true で採用。nil（失敗）はbodyを polished false で採用
     public static func merge(
         outputs: [[(speaker: String, text: String)]?],
         chunks: [PolishChunk]
@@ -96,17 +92,17 @@ public enum PolishChunker {
         for (output, chunk) in zip(outputs, chunks) {
             guard let output, !output.isEmpty else {
                 result.append(contentsOf: chunk.body.map {
-                    PolishedTurn(speaker: $0.speaker, text: $0.text, startMS: $0.startMS, polished: false)
+                    PolishedTurn(speaker: $0.speaker, text: $0.text, polished: false)
                 })
                 continue
             }
             if output.count == chunk.body.count {
-                for (item, turn) in zip(output, chunk.body) {
-                    result.append(PolishedTurn(speaker: item.speaker, text: item.text, startMS: turn.startMS, polished: true))
+                for item in output {
+                    result.append(PolishedTurn(speaker: item.speaker, text: item.text, polished: true))
                 }
             } else {
                 result.append(contentsOf: output.map {
-                    PolishedTurn(speaker: $0.speaker, text: $0.text, startMS: nil, polished: true)
+                    PolishedTurn(speaker: $0.speaker, text: $0.text, polished: true)
                 })
             }
         }

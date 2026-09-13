@@ -2,68 +2,43 @@ import Foundation
 import Testing
 @testable import NotetakeCore
 
-private func epochMS(
-    year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int, timeZone: TimeZone
-) -> Int64 {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = timeZone
-    let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second)
-    return Int64(calendar.date(from: components)!.timeIntervalSince1970 * 1000)
-}
+private let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+private let recordedAt = Date(timeIntervalSince1970: 1_789_300_000)   // 2026-09-13 JST
 
-@Test func rendersLineWithTimeWhenStartMSPresent() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
-    let start = epochMS(year: 2026, month: 9, day: 12, hour: 14, minute: 30, second: 5, timeZone: tokyo)
-    let turn = PolishedTurn(speaker: "小芝", text: "こんにちは", startMS: start, polished: true)
-
-    let result = PolishRenderer.markdown([turn], timeZone: tokyo)
-
-    #expect(result == "14:30:05 **小芝**: こんにちは\n")
-}
-
-@Test func rendersLineWithoutTimeWhenStartMSNil() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
-    let turn = PolishedTurn(speaker: "小芝", text: "こんにちは", startMS: nil, polished: true)
-
-    let result = PolishRenderer.markdown([turn], timeZone: tokyo)
-
-    #expect(result == "**小芝**: こんにちは\n")
+@Test func rendersHeaderWithDateAndParticipantsThenDialogue() {
+    let turns = [
+        PolishedTurn(speaker: "小芝", text: "こんにちは", polished: true),
+        PolishedTurn(speaker: "田中", text: "うん", polished: true),
+        PolishedTurn(speaker: "小芝", text: "そう", polished: true),
+    ]
+    let result = PolishRenderer.markdown(turns, recordedAt: recordedAt, timeZone: tokyo)
+    #expect(result == "# 2026-09-13 小芝、田中\n\n**小芝**: こんにちは\n**田中**: うん\n**小芝**: そう\n")
 }
 
 @Test func replacesNewlinesWithSpace() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
-    let turn = PolishedTurn(speaker: "小芝", text: "a\nb", startMS: nil, polished: true)
-
-    let result = PolishRenderer.markdown([turn], timeZone: tokyo)
-
-    #expect(result == "**小芝**: a b\n")
+    let turn = PolishedTurn(speaker: "小芝", text: "a\nb", polished: true)
+    let result = PolishRenderer.markdown([turn], recordedAt: recordedAt, timeZone: tokyo)
+    #expect(result.hasSuffix("**小芝**: a b\n"))
 }
 
 @Test func appendsFailureFooterWhenAnyTurnNotPolished() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
     let turns = [
-        PolishedTurn(speaker: "小芝", text: "こんにちは", startMS: nil, polished: true),
-        PolishedTurn(speaker: "田中", text: "うん", startMS: nil, polished: false),
-        PolishedTurn(speaker: "小芝", text: "そう", startMS: nil, polished: false),
+        PolishedTurn(speaker: "小芝", text: "こんにちは", polished: true),
+        PolishedTurn(speaker: "田中", text: "うん", polished: false),
     ]
-
-    let result = PolishRenderer.markdown(turns, timeZone: tokyo)
-
-    #expect(result == "**小芝**: こんにちは\n**田中**: うん\n**小芝**: そう\n\n> 整形に失敗したturn: 2件（原文のまま）\n")
+    let result = PolishRenderer.markdown(turns, recordedAt: recordedAt, timeZone: tokyo)
+    #expect(result.hasSuffix("**田中**: うん\n\n> 整形に失敗したturn: 1件（原文のまま）\n"))
 }
 
-@Test func noFooterWhenAllPolished() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+@Test func participantsAreInOrderOfAppearanceWithoutDuplicates() {
     let turns = [
-        PolishedTurn(speaker: "小芝", text: "こんにちは", startMS: nil, polished: true),
+        PolishedTurn(speaker: "田中", text: "a", polished: true),
+        PolishedTurn(speaker: "小芝", text: "b", polished: true),
+        PolishedTurn(speaker: "田中", text: "c", polished: true),
     ]
-
-    let result = PolishRenderer.markdown(turns, timeZone: tokyo)
-
-    #expect(!result.contains("整形に失敗"))
+    #expect(PolishRenderer.participants(turns) == ["田中", "小芝"])
 }
 
 @Test func emptyIsEmpty() {
-    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
-    #expect(PolishRenderer.markdown([], timeZone: tokyo) == "")
+    #expect(PolishRenderer.markdown([], recordedAt: recordedAt, timeZone: tokyo) == "")
 }

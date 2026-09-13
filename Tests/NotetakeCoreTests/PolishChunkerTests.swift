@@ -47,8 +47,8 @@ private func utterance(
     let turns = PolishChunker.turns(from: [a1, aEmpty, a2, b])
 
     #expect(turns == [
-        PolishTurn(speaker: "小芝", text: "こんにちは、元気ですか", startMS: 0),
-        PolishTurn(speaker: "田中", text: "うん", startMS: 2000),
+        PolishTurn(speaker: "小芝", text: "こんにちは、元気ですか"),
+        PolishTurn(speaker: "田中", text: "うん"),
     ])
 }
 
@@ -60,9 +60,9 @@ private func utterance(
     let turns = PolishChunker.turns(from: [a1, b, a2])
 
     #expect(turns == [
-        PolishTurn(speaker: "A", text: "1", startMS: 0),
-        PolishTurn(speaker: "B", text: "2", startMS: 100),
-        PolishTurn(speaker: "A", text: "3", startMS: 200),
+        PolishTurn(speaker: "A", text: "1"),
+        PolishTurn(speaker: "B", text: "2"),
+        PolishTurn(speaker: "A", text: "3"),
     ])
 }
 
@@ -74,9 +74,9 @@ private func utterance(
 
 @Test func chunksSplitByMaxCharacters() {
     let turns = [
-        PolishTurn(speaker: "A", text: String(repeating: "あ", count: 5), startMS: 0),
-        PolishTurn(speaker: "B", text: String(repeating: "い", count: 5), startMS: 1000),
-        PolishTurn(speaker: "A", text: String(repeating: "う", count: 5), startMS: 2000),
+        PolishTurn(speaker: "A", text: String(repeating: "あ", count: 5)),
+        PolishTurn(speaker: "B", text: String(repeating: "い", count: 5)),
+        PolishTurn(speaker: "A", text: String(repeating: "う", count: 5)),
     ]
 
     let chunks = PolishChunker.chunks(turns, maxCharacters: 12, contextTurns: 2)
@@ -87,8 +87,8 @@ private func utterance(
 }
 
 @Test func oversizedSingleTurnGetsItsOwnChunk() {
-    let big = PolishTurn(speaker: "A", text: String(repeating: "あ", count: 20), startMS: 0)
-    let small = PolishTurn(speaker: "B", text: "うん", startMS: 1000)
+    let big = PolishTurn(speaker: "A", text: String(repeating: "あ", count: 20))
+    let small = PolishTurn(speaker: "B", text: "うん")
 
     let chunks = PolishChunker.chunks([big, small], maxCharacters: 10, contextTurns: 2)
 
@@ -98,7 +98,7 @@ private func utterance(
 }
 
 @Test func chunkContextIsPreviousChunkBodyTail() {
-    let turns = (1...5).map { PolishTurn(speaker: "A", text: "x", startMS: Int64($0) * 100) }
+    let turns = (1...5).map { _ in PolishTurn(speaker: "A", text: "x") }
 
     // 1文字ずつ: maxCharacters=3で最初の3件が1 chunk、残り2件が次のchunkになる
     let chunks = PolishChunker.chunks(turns, maxCharacters: 3, contextTurns: 2)
@@ -116,10 +116,10 @@ private func utterance(
 
 // MARK: - merge
 
-@Test func mergeExactCountAssignsStartMSAndPolishedTrue() {
+@Test func mergeExactCountUsesOutputAndPolishedTrue() {
     let body = [
-        PolishTurn(speaker: "小芝", text: "こんにちは", startMS: 0),
-        PolishTurn(speaker: "田中", text: "うん", startMS: 1000),
+        PolishTurn(speaker: "小芝", text: "こんにちは"),
+        PolishTurn(speaker: "田中", text: "うん"),
     ]
     let chunk = PolishChunk(context: [], body: body)
     let output: [(speaker: String, text: String)]? = [
@@ -130,15 +130,15 @@ private func utterance(
     let result = PolishChunker.merge(outputs: [output], chunks: [chunk])
 
     #expect(result == [
-        PolishedTurn(speaker: "小芝", text: "こんにちは。", startMS: 0, polished: true),
-        PolishedTurn(speaker: "田中", text: "うん。", startMS: 1000, polished: true),
+        PolishedTurn(speaker: "小芝", text: "こんにちは。", polished: true),
+        PolishedTurn(speaker: "田中", text: "うん。", polished: true),
     ])
 }
 
-@Test func mergeCountMismatchAssignsNilStartMS() {
+@Test func mergeCountMismatchStillAdoptsOutput() {
     let body = [
-        PolishTurn(speaker: "小芝", text: "こんにちは", startMS: 0),
-        PolishTurn(speaker: "田中", text: "うん", startMS: 1000),
+        PolishTurn(speaker: "小芝", text: "こんにちは"),
+        PolishTurn(speaker: "田中", text: "うん"),
     ]
     let chunk = PolishChunk(context: [], body: body)
     let output: [(speaker: String, text: String)]? = [
@@ -148,40 +148,40 @@ private func utterance(
     let result = PolishChunker.merge(outputs: [output], chunks: [chunk])
 
     #expect(result == [
-        PolishedTurn(speaker: "小芝", text: "こんにちは、田中さん。うん、元気です。", startMS: nil, polished: true),
+        PolishedTurn(speaker: "小芝", text: "こんにちは、田中さん。うん、元気です。", polished: true),
     ])
 }
 
 @Test func mergeNilOutputFallsBackToOriginalPolishedFalse() {
     let body = [
-        PolishTurn(speaker: "小芝", text: "こんにちは", startMS: 0),
+        PolishTurn(speaker: "小芝", text: "こんにちは"),
     ]
     let chunk = PolishChunk(context: [], body: body)
 
     let result = PolishChunker.merge(outputs: [nil], chunks: [chunk])
 
     #expect(result == [
-        PolishedTurn(speaker: "小芝", text: "こんにちは", startMS: 0, polished: false),
+        PolishedTurn(speaker: "小芝", text: "こんにちは", polished: false),
     ])
 }
 
 @Test func mergeEmptyOutputFallsBackToOriginalPolishedFalse() {
-    let body = [PolishTurn(speaker: "A", text: "hi", startMS: 0)]
+    let body = [PolishTurn(speaker: "A", text: "hi")]
     let chunk = PolishChunk(context: [], body: body)
     let emptyOutput: [(speaker: String, text: String)]? = []
 
     let result = PolishChunker.merge(outputs: [emptyOutput], chunks: [chunk])
 
-    #expect(result == [PolishedTurn(speaker: "A", text: "hi", startMS: 0, polished: false)])
+    #expect(result == [PolishedTurn(speaker: "A", text: "hi", polished: false)])
 }
 
 @Test func mergeAcrossMultipleChunksPreservesTotalCount() {
     let chunk0 = PolishChunk(context: [], body: [
-        PolishTurn(speaker: "A", text: "a", startMS: 0),
-        PolishTurn(speaker: "B", text: "b", startMS: 100),
+        PolishTurn(speaker: "A", text: "a"),
+        PolishTurn(speaker: "B", text: "b"),
     ])
     let chunk1 = PolishChunk(context: [], body: [
-        PolishTurn(speaker: "A", text: "c", startMS: 200),
+        PolishTurn(speaker: "A", text: "c"),
     ])
 
     let result = PolishChunker.merge(
@@ -193,7 +193,7 @@ private func utterance(
     )
 
     #expect(result.count == 3)
-    #expect(result[0] == PolishedTurn(speaker: "A", text: "a.", startMS: 0, polished: true))
-    #expect(result[1] == PolishedTurn(speaker: "B", text: "b.", startMS: 100, polished: true))
-    #expect(result[2] == PolishedTurn(speaker: "A", text: "c", startMS: 200, polished: false))
+    #expect(result[0] == PolishedTurn(speaker: "A", text: "a.", polished: true))
+    #expect(result[1] == PolishedTurn(speaker: "B", text: "b.", polished: true))
+    #expect(result[2] == PolishedTurn(speaker: "A", text: "c", polished: false))
 }
