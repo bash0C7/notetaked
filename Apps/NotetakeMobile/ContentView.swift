@@ -12,6 +12,7 @@ struct ContentView: View {
                 Section("状態") {
                     LabeledContent("Mac", value: peerStatusText)
                     LabeledContent("未送信", value: "\(model.pendingCount)件")
+                    LabeledContent("Watch", value: "\(model.watchStreams) stream")
                 }
 
                 Section("収録") {

@@ -1,5 +1,6 @@
 import Foundation
 import NotetakeCore
+import WatchConnectivity
 
 /// `self`（`@MainActor`だがSendable宣言はしていないクラス）を、actor（`PeerClient`/`Recorder`）から
 /// 呼ばれる`@Sendable`closureの中で弱参照するための薄いbox。
@@ -22,11 +23,16 @@ final class MobileModel {
     private(set) var peerState: PeerClientState = .idle
     private(set) var pendingCount = 0
     private(set) var lastText = ""
+    /// WatchRelayが現在扱っているWatch session（=収録）の数。ContentViewに「Watch: N stream」で出す
+    private(set) var watchStreams = 0
     var lastError: String?
 
     private let outbox: Outbox
     private let recorder = Recorder()
     private var peerClient: PeerClient?
+    private var watchRelay: WatchRelay?
+    // `WCSession.delegate`はweak参照のため、こちらで強参照を保持し続ける必要がある
+    private var watchSessionDelegate: WatchSessionDelegate?
 
     init() {
         outbox = Outbox(directory: Self.applicationSupportDirectory())
@@ -34,6 +40,7 @@ final class MobileModel {
         // 兼ねるため、録音がペアリング前でも蓄積転送できるようにする）。browsingはコードが
         // あるときだけ始める
         connectPeer()
+        connectWatch()
         Task { await self.refreshPendingCount() }
     }
 
@@ -81,6 +88,60 @@ final class MobileModel {
         peerState = .idle
         Task { await previous?.stop() }
         connectPeer()
+    }
+
+    // MARK: - Watch relay
+
+    /// WatchRelayを起動し、`WCSession.isSupported()`ならdelegateを登録してactivateする。
+    /// Watch非対応（実機がWatch非対応、または未ペアリング）の場合もrelay自体は作っておく
+    /// （何も受信しないだけで無害。idleループが15秒おきに空のstreams辞書を見るだけ）。
+    private func connectWatch() {
+        let box = WeakBox(self)
+        let relay = WatchRelay(
+            locale: Self.locale,
+            onSegment: { segment in
+                // WatchRelay側のpieceTaskはこのclosureの完了をawaitしてから次のpieceへ進む
+                // （WatchRelay.init参照）。ここで内側のTaskを`await`せず`Task { @MainActor in }`
+                // だけ積んで即returnすると、複数segmentのMainActor移送がFIFO順で実行される保証が
+                // 無くなり、outbox.nextSeq()の採番順が届いた順と食い違いうる（HANDOFFに残る
+                // DaemonClientの同種の懸念と同じ問題）。そのためTaskの完了を待ちきる
+                let task = Task { @MainActor in
+                    guard let model = box.value else { return }
+                    await model.handleWatchSegment(segment)
+                }
+                await task.value
+            },
+            onStreamCount: { count in
+                Task { @MainActor in
+                    box.value?.watchStreams = count
+                }
+            }
+        )
+        watchRelay = relay
+        guard WCSession.isSupported() else { return }
+        let delegate = WatchSessionDelegate(relay: relay)
+        watchSessionDelegate = delegate
+        WCSession.default.delegate = delegate
+        WCSession.default.activate()
+    }
+
+    /// WatchRelayから届いたSegmentをoutboxへ積む。
+    ///
+    /// `segment.seq`はWatchRelay内では「そのWatch streamローカルな」連番でしかない。
+    /// Outboxはこのiphone 1台につき1本の単調増加するseqカウンタしか持たないため
+    /// （`nextSeq()` = ファイル中の最大seq + 1、deviceを区別しない）、ここで
+    /// outbox全体のseqへ採番し直す。`device`はWatch自身のidのまま残す。
+    ///
+    /// Mac側はSegmentを`(device, seq)`でdedupし、deviceごとにseqのcursorを進める
+    /// （`ack`はseqしか運ばない）。Watch deviceについて見えるseqは「iPhone全体seqの
+    /// 部分列」になるが、部分列であっても厳密に単調増加である（一度採番したseqを
+    /// 他のdeviceへ使い回すことはない）ため、Macの単調性チェック・重複排除・ack
+    /// cursorの前進は壊れない。
+    private func handleWatchSegment(_ segment: Segment) async {
+        var segment = segment
+        segment.seq = await outbox.nextSeq()
+        await peerClient?.enqueue(segment)
+        await refreshPendingCount()
     }
 
     // MARK: - Recording
