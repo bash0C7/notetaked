@@ -43,7 +43,7 @@
 - `direction: Direction?` — 統合したsegのうち `direction` を持つものがあれば採用。複数あれば `confidence` 最大。本文の採用（source優先度）とは独立に決める
 - 既存の `devices` は据え置き
 
-### 表示用の短縮ラベル（`InputLabel.short(name:platform:source:)`、NotetakeCore、純粋関数）
+### 表示用の短縮ラベル（`LocationLabel.short(inputName:platform:source:)`、NotetakeCore、純粋関数）
 
 | 条件 | 表示 |
 |---|---|
@@ -53,7 +53,9 @@
 | name に "AirPods" を含む | `AirPods` |
 | それ以外（Mac内蔵マイク等） | `Mac` |
 
-方位の時計位置（`ClockPosition.label(azimuthDeg:)`、純粋関数）: `round(azimuth / 30) mod 12`、0は12 → `"12時"`〜`"11時"`。
+方位の時計位置（`LocationLabel.clock(azimuthDeg:)`、純粋関数）: `round(azimuth / 30) mod 12`、0は12 → `"12時"`〜`"11時"`。
+
+合成（`LocationLabel.text(inputName:platform:source:direction:)`）: `direction`があれば `<短縮ラベル> <時計位置>`（例 `iPhone 2時`）、無ければ短縮ラベルのみ。
 
 ### final.md / live表示
 
@@ -77,6 +79,8 @@
 - 開始時: `isMultichannelAudioModeSupported(.firstOrderAmbisonics)` を判定し、trueなら `multichannelAudioMode = .firstOrderAmbisonics` と `spatialAudioChannelLayoutTag = kAudioChannelLayoutTag_HOA_ACN_SN3D | 4`、falseなら `.none`（layout tag は既定のまま）。判定結果を `input.spatial` に、`localizedName` / `uniqueID` を `input` に入れる
 - 受け取った `CMSampleBuffer` を `AVAudioPCMBuffer` に変換。FOA時はW chをmonoとして既存Transcriberへ、4ch全体を `DirectionEstimator` へ。非FOA時はそのままTranscriberへ
 - segを切るたびに、そのsegの時間範囲のフレームから seg方位を出して `direction` に付ける
+- 時刻基準: segの時刻と `DirectionEstimator` へ渡すフレーム時刻は、どちらもTranscriberの入力format（変換後）のサンプル数を `SampleClock(originMS:sampleRate:)`（NotetakeCore、`ms(atFrame:) = originMS + round(frame / sampleRate * 1000)`）で換算した値。生マイクのサンプルレートは時刻に使わない。取り込みbufferは先に変換し、変換後のフレーム数で `startMS` / `endMS` を求めてから `DirectionEstimator.add` と `Transcriber.feed` に渡す
+- `Recorder.currentInput()` は `start()` 成功後にのみ有効
 - 既存の `PeerMessage.seg` はSegment全体を包むので、プロトコル変更は不要
 - Watch由来seg（`WatchRelay`）は `input` を `{"name":"Apple Watch","uid":<Watch device id>,"spatial":false}` に固定
 
@@ -102,7 +106,8 @@
 - `Segment` / `Utterance` の `input` / `direction` encode-decode（snake_case、`direction` 省略時にキーが出ない）
 - `Reconciler`: `direction` 付きsegとMac mic segの統合で `direction` が残る。両方 `direction` 付きなら confidence 最大
 - `DirectionEstimator`: 上記3ケース
-- `InputLabel.short` / `ClockPosition.label` の表
+- `LocationLabel.short` / `LocationLabel.clock` / `LocationLabel.text` の表
+- `SampleClock.ms(atFrame:)`: 換算と丸めが `Transcriber` の `startMS` の式と一致する
 - `TranscriptRenderer`: 場所付き行の書式
 - `PolishChunker` / `PolishRenderer`: 時刻無しturn、見出し、参加者列、同一話者結合、失敗注記
 
