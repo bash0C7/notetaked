@@ -98,6 +98,9 @@ struct LivePanelView: View {
         if let nextRotationAt = appModel.nextRotationAt {
             text += " 次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt)
         }
+        if let inputName = appModel.inputName {
+            text += " 入力: \(inputName)（空間: \(appModel.inputSpatial == true ? "対応" : "非対応")）"
+        }
         if !appModel.connectedPeers.isEmpty {
             text += " 接続: " + appModel.connectedPeerNames.joined(separator: "/")
         }
@@ -146,6 +149,9 @@ private struct UtteranceRow: View {
                 Text(utterance.speaker)
                     .fontWeight(.semibold)
             }
+            Text(LocationLabel.text(for: utterance))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text(utterance.text)
         }
     }

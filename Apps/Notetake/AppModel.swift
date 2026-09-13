@@ -48,6 +48,9 @@ final class AppModel {
     var utterances: [Utterance] = []
     var volatile: [Source: String] = [:]
     var sources: [Source] = []
+    /// 現在の収録の入力機材（daemonの`status.input_name`）。停止中はnil
+    var inputName: String?
+    var inputSpatial: Bool?
     var lastError: String?
     /// 自動区切りの予定時刻。表示用。自動区切りが無効（間隔0、または未収録）ならnil。
     var nextRotationAt: Date?
@@ -410,6 +413,8 @@ final class AppModel {
             isRecording = status.recording
             prefix = status.prefix
             sources = status.sources
+            inputName = status.inputName
+            inputSpatial = status.inputSpatial
             if isNewRecording {
                 recordingStartedAt = Date()
                 scheduleRotation()
