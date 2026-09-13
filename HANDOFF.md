@@ -6,9 +6,11 @@
 - **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。**`make verify`通過**（2026-09-13: `swift build`警告ゼロ / テスト164件 / mac app / iOS + watchOSコンパイル）。下記「Mac側で行う検証」のうちCLIで自動化できる分は合格（次々項）、人の操作が要る分は未実施
 - **段階L（場所情報・対話整形）実装済み・`make verify`通過**（2026-09-13）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。iPhoneの実機検証（`input.spatial`の値、方位、FOA変換のチャンネル順）は証明書再発行後。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`。段階LのMac側検証で見つかった問題の全件・根本原因・是正はspec `docs/superpowers/specs/2026-09-13-stage-l-verification-remediation-design.md`、plan `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md`。web側のledger（`.superpowers/sdd/2026-09-13-spatial-location-polish/`）はMacからは読めない。Mac側のledgerは`.superpowers/sdd/2026-09-13-stage-l-verification-remediation/progress.md`（git管理外）
 - **Mac側CLI検証の結果（2026-09-13、`say`とsystem音声で自動実行）**: 段階1-1（rotateで2 prefix、status 4件、`rotated`ログ）合格。段階2-1〜2-3前半（`diarizer ready`、segに`speaker`（`g1`/`g2`が交互）、`<prefix>.speakers.json`、final.mdに`**g1**`/`**g2**`）合格。段階3-1（`polish: chunk 1/1`、`<prefix>.polished.md`）合格。段階4-1（`dns-sd -B _notetake._tcp`に`ゆふのMacBook Air M3`、ペアリングコードは設定Windowの値）合格。段階6-1のうち状態行（`input_name: "MacBook Airのマイク"`, `input_spatial: false`）とsystem segの`input`、final.mdの`（system）`は合格。段階6-3（`# 2026-09-13 リモート` / `# 2026-09-13 g1、g2`、時刻無し）合格
-- **人の操作が要る残り**: 段階1-2〜1-4（パネル操作・設定Window）、段階2-3後半（話者名の命名→再起動で引き継ぎ）・2-4・2-5（判断）、段階3-2（メニュー / パネルの整形）、段階6-1のmic seg（スピーカー経由の`say`は内蔵マイクで−60dBFSにしかならず認識されない。人が話す）、段階6-2（AirPods Pro 3を既定入力にして区切る）、段階4-2以降と段階5・6-4（下記の実機の状況を参照）
-- **実機の状況（2026-09-13）**: Apple Development証明書は**再発行済み**（`security find-identity -v -p codesigning`で有効なidentity `A3F23595F28DC4E18B5063DF519E424A44778AB4`。失効した3本もkeychainに残っている）。`xcodebuild -scheme NotetakeMobile -destination 'id=FE7B47C9-2CF0-5509-A52C-1C0D806CC085' -allowProvisioningUpdates build`は本物の署名とprovisioning profile（ios / watchkitapp）で**BUILD SUCCEEDED**。しかしiPhone 16eへの`devicectl device install app`は「無料developer profileのアプリ上限（Torch / Stackchan / PicoRubyRunnerの3本）」で失敗。**user作業: iPhone 16eから上記のいずれか1本（Watch app分も数えるなら2本）を削除してから再インストール**。iPhone 13 Proは対象外（user決定）。Apple Watch Series 8はdeveloper mode有効・pairedだが、Macからの直接インストールはトンネル接続がタイムアウト（companion iPhoneにapp導入後に再試行）
-- **次: userが戻ったら上記「人の操作が要る残り」を順に**。iPhoneの空きができたら `xcrun devicectl device install app --device FE7B47C9-2CF0-5509-A52C-1C0D806CC085 .build/DerivedData/Build/Products/Debug-iphoneos/NotetakeMobile.app` → `xcrun devicectl device process launch --device FE7B47C9-2CF0-5509-A52C-1C0D806CC085 io.github.bash0c7.notetake.ios`
+- **実機の環境（2026-09-13）**: Apple Development証明書は**再発行済み**（`security find-identity -v -p codesigning`で有効なidentity `A3F23595F28DC4E18B5063DF519E424A44778AB4`。失効した3本もkeychainに残っている）。iPhone 16e（`FE7B47C9-2CF0-5509-A52C-1C0D806CC085`、有線）へは`xcodebuild -scheme NotetakeMobile -destination 'id=<udid>' -allowProvisioningUpdates build` → `xcrun devicectl device install app --device <udid> .build/DerivedData/Build/Products/Debug-iphoneos/NotetakeMobile.app` → `xcrun devicectl device process launch --device <udid> io.github.bash0c7.notetake.ios`。無料developer profileは1端末3 appまで（Torchを削除して空けた。残りはStackchan / PicoRubyRunner）。段階6-1のmic segはuserの発話で合格（スピーカー経由の`say`は内蔵マイクで−60dBFSにしかならず認識されない）。iPhone 13 Proは対象外（user決定）
+- **iPhone実機の結果（2026-09-13、iPhone 16e、Torchを削除して空きを作りインストール）**: 段階4-1〜4-4合格（Bonjour発見 → TLS PSK接続 → `hello`で`"t":"device"`（`offset_ms` 9）→ iPhone segがMacの`timed.jsonl`に入りfinal.mdで`**私**（iPhone 12時）:`）。段階6-4: **iPhone 16eは`input.spatial: true`**、FOA bufferは`4 ch, 48000 Hz, Float32, interleaved`。当初は`foaBuffer(from:)`の変換先formatが作れず（3ch以上はlayout必須）音声が届かなかったが、`foaChannels(from:)`で直接W / Y / Xを取り出す形に直して解決（是正spec項目9）。方位は平置きで話者位置を変えても0°付近に固まる → **軸の対応の校正はissue #2**（https://github.com/bash0C7/notetaked/issues/2、優先度低）。接続確認の手順: Mac側は`netstat -anv | grep <port>`（`lsof -p`はIPv6リンクローカルの接続を出さない）、iPhone側は`xcrun devicectl device process launch --console --terminate-existing --device <id> io.github.bash0c7.notetake.ios`でstderrの`peer client:` / `recorder:`行を読む
+- **人の操作が要る残り**: 段階1-2〜1-4（パネル操作・設定Window）、段階2-3後半（話者名の命名→再起動で引き継ぎ）・2-4・2-5（判断）、段階3-2（メニュー / パネルの整形）、段階4-5・4-6（遅延反映・冪等）、段階5（Watch。Macからの直接インストールはWatchのロック解除とMac近接が必要: `xcodebuild -scheme NotetakeWatch -destination 'id=4583DD30-701C-5787-8BAC-600F4F495DEA' -allowProvisioningUpdates -allowProvisioningDeviceRegistration build`で端末登録→`devicectl device install app --device 4583DD30-… .build/DerivedData/Build/Products/Debug-watchos/NotetakeWatch.app`）、段階6-2（AirPods Pro 3を既定入力にして区切る）
+- **後回しの要望（user、2026-09-13）**: (1) ライブパネルのハンバーガーへの畳み込みと再展開の位置が微妙 (2) ペアリングコード方式をやめ、同じiCloudアカウントでのログイン等で相互識別したい (3) 「Macの収録開始 = セッション開始、iPhoneの開始 = そのセッションに乗る取り込み開始」という概念をUI・用語で整理する (4) issue #2（方位の軸校正）
+- **次: 「人の操作が要る残り」を順に。実機検証がuserの判断で完了したら、後回しの要望をissue化して優先順位を決める**
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -37,7 +39,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 
 **実機でしか分からない箇所**（コンパイルは通っている）:
 - `Apps/NotetakeWatch/WatchRecorder.swift`: `AVAudioFile(forWriting:settings:commonFormat:interleaved:)`にAAC settingsでPCMを`write(from:)`できるか
-- `Apps/NotetakeMobile/Recorder.swift`: `foaBuffer(from:)`がHOAタグ付き4chを無タグ4chへ`AVAudioConverter`で変換した時にW / Y / Z / Xの順序が保たれるか（崩れていれば手動de-interleaveへ差し替える。段階L plan Task 7 Step 1の「注意」参照）、`multichannelAudioMode`を`addInput`後に設定する順序で`startRunning()`後に4chが来るか
+- `Apps/NotetakeMobile/Recorder.swift`: FOA取り込みは実機で動作確認済み（`foaChannels(from:)`で直接抽出）。残るは方位の軸校正（issue #2）
 
 ### 1. 区切る（R）
 
@@ -91,7 +93,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 1. Mac: 収録開始→発話→停止。`timed.jsonl` の seg に `"input":{"name":"MacBook Airのマイク","uid":"BuiltInMicrophoneDevice","spatial":false}`、final.md の行が `**話者**（Mac）:`。パネル状態行に `入力: MacBook Airのマイク（空間: 非対応）`
 2. AirPods Pro 3 を接続して既定入力にし「区切る」→ 新しいprefixのsegが `"name":"ゆふAirPods Pro 3"`、行が `（AirPods）`
 3. `notetaked polish <prefix>.timed.jsonl` → 先頭 `# yyyy-MM-dd 参加者`、行に時刻無し
-4. iPhone（証明書後）: 初回起動で `input.spatial` を確認。true なら机に平置きし、上端側から `say` → `azimuth_deg ≈ 0`、右側から → `≈ 90`。ずれていれば `Recorder` の `DirectionEstimator(azimuthOffsetDeg:)` を決める。false なら `direction` 無し・`input.name` のみで完了
+4. iPhone: `input.spatial` は iPhone 16e で true（確認済み）。方位の軸校正は issue #2（平置きで上端側 → `≈ 0`、右側 → `≈ 90` になるまで）
 
 ## 申し送り（Mac必須・user作業を含む）
 
