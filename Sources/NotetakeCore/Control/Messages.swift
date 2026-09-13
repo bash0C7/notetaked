@@ -81,19 +81,32 @@ public struct StatusEvent: Codable, Sendable, Equatable {
     public var recording: Bool
     public var prefix: String?          // 収録中のファイル接頭辞
     public var sources: [Source]
+    public var inputName: String?       // key: input_name
+    public var inputSpatial: Bool?      // key: input_spatial
     public var outputDirectory: String  // key: output_directory
 
     enum CodingKeys: String, CodingKey {
         case recording
         case prefix
         case sources
+        case inputName = "input_name"
+        case inputSpatial = "input_spatial"
         case outputDirectory = "output_directory"
     }
 
-    public init(recording: Bool, prefix: String? = nil, sources: [Source], outputDirectory: String) {
+    public init(
+        recording: Bool,
+        prefix: String? = nil,
+        sources: [Source],
+        inputName: String? = nil,
+        inputSpatial: Bool? = nil,
+        outputDirectory: String
+    ) {
         self.recording = recording
         self.prefix = prefix
         self.sources = sources
+        self.inputName = inputName
+        self.inputSpatial = inputSpatial
         self.outputDirectory = outputDirectory
     }
 }

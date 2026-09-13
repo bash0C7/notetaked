@@ -84,6 +84,26 @@ import Testing
     #expect(try Event.decode(line: line) == event)
 }
 
+@Test func statusEventCarriesInputDevice() throws {
+    let status = StatusEvent(
+        recording: true,
+        prefix: "2026-09-13T10-00-00",
+        sources: [.mic],
+        inputName: "MacBook Airのマイク",
+        inputSpatial: false,
+        outputDirectory: "/tmp"
+    )
+    let line = try Event.status(status).encodedLine()
+    #expect(line.contains("\"input_name\":\"MacBook Airのマイク\""))
+    #expect(line.contains("\"input_spatial\":false"))
+}
+
+@Test func statusEventWithoutInputOmitsKeys() throws {
+    let status = StatusEvent(recording: false, sources: [], outputDirectory: "/tmp")
+    let line = try Event.status(status).encodedLine()
+    #expect(!line.contains("input_name"))
+}
+
 @Test func unknownEventThrows() {
     #expect(throws: ControlError.unknownEvent("nope")) {
         try Event.decode(line: "{\"ev\":\"nope\"}")

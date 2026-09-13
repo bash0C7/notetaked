@@ -53,6 +53,8 @@ actor ServeSession {
     private var reconciler = Reconciler()
     private var seq = 0
     private var streams: [RunningStream] = []
+    /// 現在収録中のmic streamの入力機材。mic無しならnil。収録停止でnilに戻す
+    private var currentInput: InputDevice?
     private var recording = false
     /// 直前に使ったprefix。同一秒内でのstart/rotateがprefixを衝突させないよう、
     /// startCaptureで開始日時をずらすのに使う
@@ -123,7 +125,9 @@ actor ServeSession {
                 .status(
                     StatusEvent(
                         recording: true, prefix: store.prefix,
-                        sources: streams.map(\.source), outputDirectory: outputDirectory.path)))
+                        sources: streams.map(\.source),
+                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
+                        outputDirectory: outputDirectory.path)))
         }
     }
 
@@ -203,6 +207,7 @@ actor ServeSession {
         self.reconciler = Reconciler()
         self.seq = 0
         self.streams = started
+        self.currentInput = started.first(where: { $0.source == .mic })?.input
         self.recording = true
         self.lastPrefix = store.prefix
         self.recordedPeerDevices = []
@@ -366,6 +371,7 @@ actor ServeSession {
         await store.close()
 
         self.store = nil
+        currentInput = nil
         recording = false
         refreshSessions()
     }
@@ -388,7 +394,9 @@ actor ServeSession {
                 .status(
                     StatusEvent(
                         recording: true, prefix: store.prefix,
-                        sources: streams.map(\.source), outputDirectory: outputDirectory.path)))
+                        sources: streams.map(\.source),
+                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
+                        outputDirectory: outputDirectory.path)))
             await control.send(.log("rotated \(oldPrefix) -> \(store.prefix)"))
         } else {
             await control.send(
