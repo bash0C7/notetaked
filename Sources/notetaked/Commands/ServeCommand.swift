@@ -36,6 +36,11 @@ struct Serve: AsyncParsableCommand {
         help: "Run speaker diarization (default on)")
     var diarize = true
 
+    @Option(
+        name: .customLong("pair-code"),
+        help: "6-digit pairing code: starts the iPhone/Watch peer listener on launch")
+    var pairCode: String?
+
     func run() async throws {
         #if canImport(Speech)
         guard #available(macOS 26, iOS 26, *) else {
@@ -100,6 +105,10 @@ struct Serve: AsyncParsableCommand {
 
         await stdioControl.send(
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))
+
+        if let pairCode {
+            await session.handle(.pairCode(pairCode))
+        }
 
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
         sigintSource.setEventHandler {

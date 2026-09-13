@@ -2,79 +2,129 @@
 
 ## 状態（2026-09-13）
 
-- **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く: メニューバーapp（Notetake.app）がdaemon（notetaked）を子processで起動し、mic + システム音声をリアルタイムに文字起こしして`<保存先>/<yyyy-MM-dd_HHmmss>.live.txt / .timed.jsonl / .final.md`を出す。ライブパネルでコピー・話者改名ができる
-- **branch `claude/jolly-fermi-mi44i4`（PRあり）: 「区切る」機能を実装済み・Mac未検証**。Linuxのweb sessionで書いたため`swift test` / `make app`を一度も通していない。**次にやること: 下記「Mac側で行う検証」を上から順に実行し、通ったらPRをmerge**。計画: `docs/superpowers/plans/2026-09-13-rotation.md`
-  - daemon: `{"cmd":"rotate"}`（収録中にstop→startをactor内で一括。中間の停止statusは出さず新prefixの`status`と`log`を出す。同じ秒のprefixになる場合は開始日時を1秒進める）
-  - app: メニュー「収録を区切る」、ライブパネルに「収録開始」「収録停止」「区切る」、設定「自動で区切る間隔」（時間・小数可、既定24、0で区切らない。UserDefaults `rotationIntervalHours`）。タイマーはapp側（`AppModel.scheduleRotation()`、`ContinuousClock`なのでMacスリープ中も進む）。状態行に「次の区切り」
-  - 長時間収録: `Transcriber.fedFrames`をUInt64に、`CaptureStream.levels`を直近2分で刈る
-- その後: M3以降の計画の検討（下記「次フェーズの検討」）
+- **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
+- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を一気に実装済み・Mac未検証**。Claude Code on the web（Linux、Swiftツールチェーン無し）で書いたため`swift test` / `make app`を一度も通していない。テストは先に書いてある（Core純粋ロジック）が実行はMac側
+- **次にやること: 下記「Mac側で行う検証」を段階順に実行し、コンパイルエラー・テスト失敗を直しながら進める**。段階ごとにcommitし、全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
 
-## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`）
+### branchに入っているもの（段階順 = 検証順）
 
-1. `make test` → 全件通る（M2時点49件 + `MessagesTests`のrotate + `RotationScheduleTests`）。落ちたらまずtest側の期待値ではなく実装を疑う（testが仕様）
-2. `swift build 2>&1 | grep -i warning` → 出力なし
-3. CLI e2e（rotateで2つのprefixができ、各final.mdに該当発話が入る）:
+| 段階 | 内容 | 計画doc |
+|---|---|---|
+| R 区切る | daemon `rotate`、パネルの開始/停止/区切る、設定「自動で区切る間隔」（既定24時間、0で無停止、app側タイマー）、`fedFrames` UInt64、`levels`時間刈り | `docs/superpowers/plans/2026-09-13-rotation.md` |
+| M3 話者分離 | FluidAudio 0.15.7（`NotetakeDiarization`）、`Diarizer` actor、`Aligner`（final pieceを分離結果が覆うまで保留、上限12秒）、`SpeakerRegistry`（cosine 0.7、`g<N>`）、`<prefix>.speakers.json`、大域`~/Library/Application Support/Notetake/speakers.json`、`serve --diarize/--no-diarize`、モデル取得進捗を`log`イベント | `docs/superpowers/plans/2026-09-13-m3-diarization.md` |
+| M4 polish | `notetaked polish <timed.jsonl>`（Foundation Models、2000文字chunk、失敗chunkは原文）、`<prefix>.polished.md`、app「直前の収録を整形」/ パネル「整形」 | `docs/superpowers/plans/2026-09-13-m4-polish.md` |
+| M5 iPhone | `PeerMessage`（hello/hello_ack/ping/pong/seg/ack）、`ClockOffset`、`SessionMatcher`、`Outbox`、daemon `PeerListener`（Bonjour `_notetake._tcp` + TLS PSK）、`pair_code` command / `peer` event、停止後segのfinal.md再生成、`orphans.jsonl`、Mac設定のペアリングコード、iOS app（Recorder / PeerClient / UI） | `docs/superpowers/plans/2026-09-13-m5-iphone.md` |
+| M6 Watch | `WatchChunkMetadata` / `WatchChunkSequencer`、Watch app（20秒AAC小片→`transferFile`）、iPhone `WatchRelay`（小片→専用Transcriber→seg→Outbox） | `docs/superpowers/plans/2026-09-13-m6-watch.md` |
+
+## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`、上から順に）
+
+原則: **落ちたらまずテストの期待値ではなく実装を疑う（テストが仕様）**。ただしこのbranchは全てコンパイル未確認なので、Apple SDKのAPI名の取り違えは実装側を直す。段階ごとに`git commit`（trailer付き）。
+
+### 0. 依存解決とビルド
+
+```bash
+swift package resolve            # FluidAudio 0.15.7（binaryTarget NemoTextProcessing.xcframework.zipを取得する。ネット必須）
+swift build 2>&1 | grep -E "error|warning" # まずCoreとdaemonが通るまで直す
+make test                        # M2時点49件 + 新規（Messages / RotationSchedule / Aligner / SpeakerRegistry / SessionStore / PolishChunker / PolishRenderer / PeerMessage / ClockOffset / SessionMatcher / Outbox / PeerFraming / WatchChunk）
+swift build 2>&1 | grep -i warning   # 出力なしが正常
+make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存を追加済み。watchOSでCoreがコンパイルできるかはここで初めて分かる）
+```
+
+**コンパイルエラーが出やすい（一次資料で未確認の）箇所**:
+- `Sources/notetaked/Polish/Polisher.swift`: Foundation Models（`SystemLanguageModel.default.availability`の`.unavailable(reason)`、`LanguageModelSession(instructions:)`、`respond(to:generating:)`→`.content`、`@Generable`/`@Guide`、`LanguageModelSession.GenerationError`）
+- `Sources/notetaked/Peer/PeerListener.swift`、`Apps/NotetakeMobile/PeerClient.swift`: Network frameworkのTLS PSK（`sec_protocol_options_add_pre_shared_key(_:_:_:)`のDispatchData引数、`sec_protocol_options_append_tls_ciphersuite`と`tls_ciphersuite_t(rawValue:)`、`NWListener.Service(name:type:)`、`includePeerToPeer`）
+- `Sources/NotetakeCore/Transcribe/Transcriber.swift` `makePiece`: `run.audioTimeRange`（`AttributeScopes.SpeechAttributes`、`CMTimeRange`）
+- `Sources/NotetakeDiarization/Diarizer.swift`: FluidAudioの`DiarizerConfig(clusteringThreshold:chunkDuration:)`引数順、`DownloadProgress.fractionCompleted`（v0.15.7ソースで確認済みだが要ビルド）
+- strict concurrency: `CaptureStream.Converted`（非Sendableな`AVAudioPCMBuffer`を`sending`で渡す）、`WatchRecorder`/`WatchSessionDelegate`の`nonisolated`デリゲート、`MobileModel`の`WeakBox`、`AppModel.polishLastRecording`の`terminationHandler`
+- `Apps/NotetakeWatch/WatchRecorder.swift`: `AVAudioFile(forWriting:settings:commonFormat:interleaved:)`にAAC settingsでPCMを`write(from:)`できるか
+
+### 1. 区切る（R）
+
+1. CLI e2e（rotateで2つのprefixができ、各final.mdに該当発話が入る）:
    ```bash
    make daemon && rm -rf /tmp/nt && mkdir -p /tmp/nt
    ( sleep 3; say -v Kyoko "一つ目の収録です。"; sleep 12; say -v Kyoko "二つ目の収録です。" ) &
    ( sleep 12; echo '{"cmd":"rotate"}'; sleep 14; echo '{"cmd":"stop"}'; sleep 2; echo '{"cmd":"quit"}' ) \
-     | .build/release/notetaked serve --output /tmp/nt --owner 小芝 --source system --start | tee /tmp/nt/events.log
+     | .build/release/notetaked serve --output /tmp/nt --owner 小芝 --source system --start --no-diarize | tee /tmp/nt/events.log
    ls /tmp/nt/*.final.md            # 2件
    grep -c '"ev":"status"' /tmp/nt/events.log   # 4（起動時false / --startのtrue / rotateのtrue / stopのfalse）
    grep '"ev":"log"' /tmp/nt/events.log         # rotated <old> -> <new>
    ```
-4. `make app` → ライブパネルに 収録開始 / 収録停止 / 区切る。開始→`say`→区切る→`say`→停止 で保存先に2組のファイル。区切った瞬間にパネルの一覧がクリアされ状態行のprefixが変わる（userの画面確認）
-5. 設定「自動で区切る間隔」に`0.05`（3分）を入れて収録開始 → 状態行に「次の区切り HH:mm」→ 3分後に自動で区切られ、さらに3分後にもう一度。`0`にすると「次の区切り」が消え自動区切りが止まる。最後に`24`へ戻す
-6. 設定Windowで名前欄にfocusしたまま閉じても値が保持される（`onDisappear`でcommit）
+2. `make app` → ライブパネルに 収録開始 / 収録停止 / 区切る / 整形。開始→`say`→区切る→`say`→停止 で保存先に2組。区切った瞬間にパネルがクリアされ状態行のprefixが変わる（userの画面確認）
+3. 設定「自動で区切る間隔」に`0.05`（3分）→ 状態行に「次の区切り HH:mm」→ 3分後に自動で区切られ、さらに3分後にもう一度。`0`で「次の区切り」が消える。最後に`24`へ戻す
+4. 設定Windowで名前欄にfocusしたまま閉じても値が残る
+
+### 2. 話者分離（M3）
+
+1. 初回: `serve`（`--diarize`既定on）起動時にHugging Faceから`FluidInference/speaker-diarization-coreml`を取得する（`~/Library/Application Support/FluidAudio/Models/`）。stdoutに`{"ev":"log","message":"diarizer models: N0%"}`〜`diarizer ready`。取得失敗時は`error: diarizer unavailable`を出して分離なしで続行する
+2. 上記1のe2eを`--no-diarize`無しで実行し、segに`"speaker":{"local":..,"global":"g1","embedding":[...256]}`が付く、`<prefix>.speakers.json`が書かれる
+3. 2話者: 日本語2話者の音源（例: `say -v Kyoko`と`say -v Otoya`を交互に）をsystem音声で再生 → final.mdに`**g1**:` / `**g2**:`が分かれる。ライブパネルで話者名クリック→命名 → 以後の行が名前に変わり、`~/Library/Application Support/Notetake/speakers.json`に命名済みcentroidが残る。**次のserve起動（app再起動）で同じ声に同じ名前が付く**
+4. 分離ありでは本文が最大約12秒遅れて出る（volatile行で途中経過は見える）。遅延が許容できるかuser判断。CoreML推論は`CaptureStream.ingest`（feed task）内で同期実行しているため、10秒ごとにtranscriberへのfeedが推論時間ぶん遅れる。問題があれば`Diarizer.feed`を`Task.detached`に逃がす
+5. `--source both`でmicとsystemは別`Diarizer`（別local id空間）。同一人物のcentroidが`SpeakerRegistry`（閾値0.7）で束なるか確認。割れるなら`SpeakerRegistry.Config.threshold`を下げる
+
+### 3. polish（M4）
+
+1. Apple Intelligenceが有効なMacで `.build/release/notetaked polish /tmp/nt/<prefix>.timed.jsonl` → stderrに`polish: chunk 1/N`、`<prefix>.polished.md`。無効なら`Foundation Models unavailable: <reason>`で非0 exit
+2. appのメニュー「直前の収録を整形」/ パネル「整形」（停止または区切り後に有効）→ メニューに「整形完了: <prefix>.polished.md」
+3. 失敗chunkがあれば末尾に`> 整形に失敗したturn: N件（原文のまま）`
+
+### 4. iPhone（M5）— **Apple Development証明書の再発行が前提**
+
+1. Mac: 設定Windowに6桁ペアリングコード（「再生成」可）。app起動後にdaemonへ`pair_code`が送られ、daemonが`_notetake._tcp`をadvertiseする（`dns-sd -B _notetake._tcp`で見える）。CLI単体なら`serve --pair-code 123456`
+2. iPhone: `make project` → Xcodeで`NotetakeMobile`を実機へ（`xcodebuild -scheme NotetakeMobile -destination 'id=<udid>'` + `xcrun devicectl device install app`）。初回にローカルネットワーク許可とマイク許可
+3. iPhoneでコードを入力→保存 → 状態が「接続: <Mac名>」、Macのライブパネル状態行に「接続: <iPhone名>」
+4. Macで収録開始 → iPhoneで開始 → userが発話 → Macのtimed.jsonlに`"platform":"ios"`のsegと`"t":"device"`（`offset_ms`はping/pongの推定）。final.mdでmic/iPhoneの同一発話が統合される（Reconcilerの±1秒・Dice 0.5）
+5. 遅延反映: iPhoneを機内モードで収録→Mac側停止→機内モード解除 → 未ack segが再送され、該当収録の`timed.jsonl`に追記・`final.md`再生成（`log: appended peer seg to <prefix>, final.md regenerated`）。どの収録にも入らない場合は`<output>/orphans.jsonl`
+6. 冪等: Macの`~/Library/Application Support/Notetake/received/<device>.cursor`。iPhoneを再起動して同じsegを再送しても二重に入らない
+7. iPhone側の話者分離（埋め込み送信）は未実装（specのM5後半）。`NotetakeDiarization`はiOS 17+対応なので、Macと同じ`Diarizer`を`Recorder`に足す
+
+### 5. Watch（M6）
+
+1. `NotetakeWatch`を実機へ。前面で開始 → 20秒ごとに`chunks/<session>-<index>.m4a`が`transferFile`される（未転送数がUIに出る）
+2. iPhone側`WatchRelay`が受信 → 専用Transcriber → `"platform":"watchos","source":"watch"`のseg → Outbox → Mac。Watchの録音停止後60秒で該当streamを`finish()`
+3. Macのfinal.mdでWatch由来segがmic/iPhoneと統合される（source優先度 system > mic > watch）
+4. 未確認事項: watchOSの`inputNode`のフォーマットとAAC書き出し、`WCSession`の背景転送、`AVAudioFile(forReading:)`でのAAC→PCM（`processingFormat`）
+
+## 申し送り（Mac必須・user作業を含む）
+
+- **Apple Development証明書が失効中**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。daemon / mac appはad-hoc署名（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を`Automatic` + Team `SM5792D355`へ戻す。iPhone / Watch実機ビルドに必須
+- **TCC**: ad-hoc署名でrebuildすると再許可が要る可能性（未確認）。appが子processで起動したdaemonのマイク／システム音声許可は親app（Notetake.app）に帰属。`tccutil reset Microphone/AudioCapture io.github.bash0c7.notetake`でリセット可
+- **ネットワークが要る初回処理**: FluidAudioモデル（Hugging Face）、`swift package resolve`のbinaryTarget（GitHub releases）、ja-JP音声モデル（済み）。オフライン化（モデルのapp同梱）は未対応
+- **Foundation Models**: Apple Intelligence有効なM3 Mac。sessionあたり4096 token。`--max-characters`でchunkを小さくできる
+- **FluidAudioの推論負荷**: 2 stream同時（mic + system）でのCPU/メモリを`make app`後にアクティビティモニタで確認。10秒chunkごとに数百ms想定
+- **iPhone / Watch**: 実機はuserの操作（発話・機内モード・Watch画面操作）が必要。Claudeは`xcodebuild` / `devicectl`でインストール・起動し、Mac側のtimed.jsonl / final.mdを確認する
+- **PRの粒度**: 1本のbranch（この session の指定branch）にR〜M6を積んである。段階ごとに切り出したければ`git rebase -i`でcommit範囲ごとにbranchを作る（commitは段階順に並んでいる）
+
+## 設計上の割り切り・既知の未実装
+
+- 区切り（`rotate`）は中間の停止statusを出さないため、録音中に変えた設定（名前・保存先）の`restartPending`再起動は次の明示的な停止まで持ち越す
+- 話者分離: specの「本文を即表示して後から話者だけ差し替え」は採らず、`Aligner`で最大12秒保留してから話者付きで出す（timed.jsonlにはfinalだけ書く原則を保つため）
+- `SpeakerRegistry`は1回のserve起動の間だけ`g<N>`を保持。命名していない話者はserve再起動で`g1`から振り直し（命名済みは大域プロファイルで引き継ぐ）
+- `levelForPiece`: pieceの時間範囲にbufferが無い時のfallback `-120`は未対応
+- daemon再起動後に同じ接頭辞で収録を再開する要件（spec）は未実装
+- `DaemonClient`: stdout chunkごとのTask hopがFIFO前提 → AsyncStreamで直列化（未対応）
+- Transcriber: 変換ごとの`AudioConverter.reset()`が認識品質に与える影響のA/B未実施
+- `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り、同一deviceなので統合されず重複する（spec追記候補）
+- iPhone側の話者分離・埋め込み送信、Watchのownerを`WCSession.applicationContext`で同期、`hello`のowner名変更の即時反映は未実装
 
 ## ドキュメント
 
 - 設計spec（M0〜M6の全体設計、binding authority）: `docs/superpowers/specs/2026-09-12-notetake-design.md`
-- M0〜M2の実装計画（完了。Task構成・interface・検証コマンドの記録として参照）: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`
-- 「区切る」機能の実装計画（実装済み・Mac検証待ち）: `docs/superpowers/plans/2026-09-13-rotation.md`
+- 実装計画: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`（完了）/ `2026-09-13-rotation.md` / `2026-09-13-m3-diarization.md` / `2026-09-13-m4-polish.md` / `2026-09-13-m5-iphone.md` / `2026-09-13-m6-watch.md`（いずれも実装済み・Mac検証待ち）
 - project instructions（モデル分担・SDDの手順・署名の注意）: `CLAUDE.md`
 
 ## いま動くもの（使い方）
 
-- app: `make app` → `.build/DerivedData/Build/Products/Debug/Notetake.app`。設定Windowで保存先と自分の名前を指定（UserDefaults `io.github.bash0c7.notetake` の `outputDirectory` / `ownerName`）。daemonは`serve --output <dir> --owner <name> --source both --control stdio`で起動される
-- CLI: `make daemon` → `.build/release/notetaked`。subcommand: `serve`（stdin `{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"quit"}`、stdout `{"ev":"status"|"utterance"|"volatile"|"error"|"log",...}`）/ `render <timed.jsonl>` / `transcribe <audio file>` / `capture --source mic|system --seconds N`
-- e2e（system音声のみ）:
-  ```bash
-  make daemon && rm -rf /tmp/nt && mkdir -p /tmp/nt
-  ( sleep 3; say -v Kyoko "明日の会議は十時からです。" ) &
-  ( sleep 12; echo '{"cmd":"stop"}'; sleep 2; echo '{"cmd":"quit"}' ) | .build/release/notetaked serve --output /tmp/nt --owner 小芝 --source system --start
-  cat /tmp/nt/*.final.md
-  ```
-
-## 次フェーズの検討（着手前に`superpowers:brainstorming`→`writing-plans`→`subagent-driven-development`）
-
-specのマイルストーン順は M3 話者分離 → M4 polish → M5 iPhone → M6 Watch。検討時の論点:
-
-- **M3 話者分離（Mac）**: FluidAudio v0.15.7（`https://github.com/FluidInference/FluidAudio.git`、Apache-2.0、SPM）を`NotetakeDiarization` targetにのみ追加。モデル`FluidInference/speaker-diarization-coreml`は初回にHugging Faceから取得（オフライン化のためapp同梱にするかを決める）。`Diarizer` actor（16kHz mono、10秒chunk、閾値0.7、256次元埋め込み）→ `Aligner`（final結果を話者turn境界で分割、保留上限chunk長+2秒）→ `SpeakerRegistry`（cosine最近傍、閾値0.7、命名済みcentroidを`~/Library/Application Support/Notetake/speakers.json`に永続化）→ `<prefix>.speakers.json` → パネルの命名UI。実機確認は2話者の日本語音源をsystem音声で再生
-- **M4 polish**: Foundation Models（`SystemLanguageModel.default.availability`を最初に確認、sessionあたり4096 token）。turn単位で約1500 token chunk、`@Generable struct PolishedTurn`、失敗chunkは原文採用、`notetaked polish <timed.jsonl>` → `<prefix>.polished.md`。appの「整形」ボタンは子processで同subcommand
-- **M5 iPhone**: Bonjour `_notetake._tcp` + `NWListener(includePeerToPeer)`、TLS PSK（appが表示する6桁コード）、NDJSON `hello`/`ping`/`seg`/`ack`、iPhone側`Outbox`（未ack再送、`(device, seq)`で冪等）、Macの`clock_offset_ms`付与とReconcilerのデバイス横断統合。**Apple Development証明書の再発行が前提**（下記）
-- **M6 Watch**: 前面録音→20秒AAC小片→`WCSession.transferFile`→iPhoneの専用Transcriber stream。`NotetakeWatch` targetは現状`NotetakeCore`に依存していない（M6で追加し、watchOSでCoreがコンパイルできることを初めて確認する）
-- **横断**: 停止後に届いたiPhone／Watchのsegを該当収録のtimed.jsonlへ追記しfinal.mdを再生成する経路（spec「収録の対応付け」「orphans.jsonl」）はM5で実装。daemon再起動後に同じ接頭辞で収録を再開する要件（spec）は未実装で、M3〜M5のどこで拾うか決める
-
-## M0〜M2の最終reviewで持ち越した項目（次の計画で扱うか判断する）
-
-- CaptureStream: `AVAudioConverter.convert`をIOProc（real-time thread）で実行し、失敗を`try?`で捨てている → `ingest`側（actor）へ移してEvent.errorで報告
-- CaptureStream: system最初のsegの`level_dbfs`が-120になる（pieceの時間範囲にbufferが無い時のfallback）。無音時の`levels`増加はrotation branchで時間刈りを入れた
-- ServeSession: capture開始失敗時に`session`/`device`だけの`timed.jsonl`が残る
-- DaemonClient: stdout chunkごとのTask hopがFIFO前提 → AsyncStreamで直列化
-- SettingsView: focusしたまま閉じると編集が落ちる件はrotation branchで`onDisappear`commitを入れた（Mac側検証6で確認）
-- 録音中に設定（名前・保存先）を変えた場合の`restartPending`再起動は、区切り（`rotate`）では適用されず次の明示的な停止まで持ち越す（rotateは中間の停止statusを出さないため）
-- Transcriber: 変換ごとの`AudioConverter.reset()`が認識品質に与える影響をM3前にA/B（`fedFrames`のUInt64化はrotation branchで実施）
-- LivePanel: 「常に前面」toggleはwindowを開き直すと初期値に戻る（userは「だいじょうぶ」と判断）
-- spec追記候補: `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り、同一deviceなので統合されず重複する
+- app: `make app` → `.build/DerivedData/Build/Products/Debug/Notetake.app`。設定Windowで保存先・自分の名前・自動で区切る間隔・ペアリングコード（UserDefaults `io.github.bash0c7.notetake` の `outputDirectory` / `ownerName` / `rotationIntervalHours` / `pairingCode`）。daemonは`serve --output <dir> --owner <name> --source both --control stdio`で起動され、起動直後に`pair_code`を受け取る
+- CLI: `make daemon` → `.build/release/notetaked`。subcommand: `serve`（stdin `{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdout `{"ev":"status"|"utterance"|"volatile"|"peer"|"error"|"log",...}`、`--diarize/--no-diarize`、`--pair-code`）/ `render <timed.jsonl>` / `polish <timed.jsonl>` / `transcribe <audio file>` / `capture --source mic|system --seconds N`
+- 出力: `<prefix>.live.txt` / `.timed.jsonl` / `.final.md` / `.speakers.json` / `.polished.md`、`orphans.jsonl`
 
 ## 環境の注意
 
-- **Apple Development証明書が失効中**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。daemonとmac appはad-hoc署名（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行（M5のiPhone実機ビルドまでに必須）。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を`Automatic` + Team `SM5792D355`へ戻す
-- **TCC帰属（M2で実測）**: appが子processで起動したdaemonのマイク／システム音声録音の許可は親app（Notetake.app）に帰属する。usage stringはappのInfo.plist（project.yml）に必要。daemonの`io.github.bash0c7.notetaked`はLaunchServices未登録で`tccutil reset`は効かない。terminalから単体起動した場合はterminal appに帰属。ad-hoc署名でrebuildした後に再許可が要るかは未確認
-- **system音声tapの特性**: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - git push / ghはBash sandboxでは資格情報が読めない → sandboxを無効にして実行。sandbox内で`~/.gitconfig`が読めない時は`GIT_CONFIG_GLOBAL=/dev/null`（repo localにuser.name/email設定済み）
+- system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
+- Claude Code on the web（Linux）にはSwiftツールチェーンが無く、swift.orgもproxyで403。Swiftの実行が要る作業はMac側セッションで
 
 ## 検証コマンド
 
@@ -84,3 +134,4 @@ specのマイルストーン順は M3 話者分離 → M4 polish → M5 iPhone �
 ## GitHub
 
 - public repo: https://github.com/bash0C7/notetaked（default `main`）
+- draft PR: https://github.com/bash0C7/notetaked/pull/1（branch `claude/jolly-fermi-mi44i4`）
