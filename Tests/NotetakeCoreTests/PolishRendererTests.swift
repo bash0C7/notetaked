@@ -39,6 +39,6 @@ private let recordedAt = Date(timeIntervalSince1970: 1_789_300_000)   // 2026-09
     #expect(PolishRenderer.participants(turns) == ["田中", "小芝"])
 }
 
-@Test func emptyIsEmpty() {
+@Test func polishedMarkdownOfNoTurnsIsEmpty() {
     #expect(PolishRenderer.markdown([], recordedAt: recordedAt, timeZone: tokyo) == "")
 }

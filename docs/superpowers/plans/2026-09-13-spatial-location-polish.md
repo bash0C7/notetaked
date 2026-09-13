@@ -567,7 +567,7 @@ private func planeWave(thetaDeg: Double, frames: Int = 480, seed: UInt64 = 1) ->
     var state = seed
     func next() -> Float {   // 決定論的な疑似乱数 [-1, 1)
         state = state &* 6364136223846793005 &+ 1442695040888963407
-        return Float(Int64(bitPattern: state >> 11) % 2_000_000) / 1_000_000
+        return Float(Int64(bitPattern: state >> 11) % 2_000_000) / 1_000_000 - 1
     }
     let theta = thetaDeg * .pi / 180
     var w: [Float] = [], y: [Float] = [], x: [Float] = []
@@ -1070,7 +1070,7 @@ private let recordedAt = Date(timeIntervalSince1970: 1_789_300_000)   // 2026-09
     #expect(PolishRenderer.participants(turns) == ["田中", "小芝"])
 }
 
-@Test func emptyIsEmpty() {
+@Test func polishedMarkdownOfNoTurnsIsEmpty() {
     #expect(PolishRenderer.markdown([], recordedAt: recordedAt, timeZone: tokyo) == "")
 }
 ```

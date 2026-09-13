@@ -132,7 +132,7 @@ actor CaptureStream {
         forwardTask = Task {
             for await piece in pieces {
                 if piece.isFinal {
-                    await self.acceptFinal(piece)
+                    self.acceptFinal(piece)
                 } else {
                     eventContinuation.yield(.volatile(piece.text))
                 }
@@ -143,7 +143,7 @@ actor CaptureStream {
             while true {
                 try? await Task.sleep(for: .seconds(2))
                 if Task.isCancelled { break }
-                await self.drainPending()
+                self.drainPending()
             }
         }
 
