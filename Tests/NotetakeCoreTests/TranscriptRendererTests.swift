@@ -52,7 +52,7 @@ private func utterance(
 
     let result = TranscriptRenderer.markdown([u], timeZone: tokyo)
 
-    #expect(result == "14:30:05 **小芝**: こんにちは\n")
+    #expect(result == "14:30:05 **小芝**（Mac）: こんにちは\n")
 }
 
 @Test func rendersInOrderAndReplacesNewlines() {
@@ -64,8 +64,8 @@ private func utterance(
     let lines = result.split(separator: "\n")
 
     #expect(lines.count == 2)
-    #expect(lines[0].hasSuffix("**小芝**: おはよう"))
-    #expect(lines[1].hasSuffix("**田中**: a b"))
+    #expect(lines[0].hasSuffix("**小芝**（Mac）: おはよう"))
+    #expect(lines[1].hasSuffix("**田中**（Mac）: a b"))
 }
 
 @Test func emptyIsEmpty() {
@@ -80,5 +80,14 @@ private func utterance(
 
     let result = TranscriptRenderer.markdown([u], timeZone: tokyo)
 
-    #expect(result == "14:30:05 **小芝**: a b c\n")
+    #expect(result == "14:30:05 **小芝**（Mac）: a b c\n")
+}
+
+@Test func rendersDirectionAsClockPosition() {
+    let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+    let u = utterance(start: 0, speaker: "田中", text: "はい", source: .mic,
+                      platform: .ios, input: "iPhone マイク",
+                      direction: Direction(azimuthDeg: 90, confidence: 0.9))
+    let line = TranscriptRenderer.markdown([u], timeZone: tokyo)
+    #expect(line.hasSuffix("**田中**（iPhone 3時）: はい\n"))
 }
