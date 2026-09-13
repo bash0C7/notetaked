@@ -16,6 +16,12 @@ import WatchConnectivity
 @MainActor
 @Observable
 final class WatchRecorder: NSObject {
+    /// tap callback（audioスレッド）からfeedTaskへbufferを渡すための値型wrapper。
+    /// `@unchecked Sendable`の根拠: tapはyield後にbufferへ触れず、受け取ったfeedTaskだけが読む（`Recorder.CapturedBuffer`と同じ）
+    private struct CapturedBuffer: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+    }
+
     private enum DefaultsKey {
         static let ownerName = "ownerName"
     }
@@ -36,7 +42,7 @@ final class WatchRecorder: NSObject {
     }
 
     private let engine = AVAudioEngine()
-    private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    private var bufferContinuation: AsyncStream<CapturedBuffer>.Continuation?
     private var feedTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
     private var writer: ChunkWriter?
@@ -90,12 +96,12 @@ final class WatchRecorder: NSObject {
         }
         self.writer = writer
 
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream()
         bufferContinuation = continuation
         // このclosureはreal-time audio threadから呼ばれる。`continuation`はSendableな値型で、
         // `self`やactorには触れないので、engineのtapとしてそのまま安全に使える。
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            continuation.yield(buffer)
+            continuation.yield(CapturedBuffer(buffer: buffer))
         }
 
         do {
@@ -112,8 +118,8 @@ final class WatchRecorder: NSObject {
         }
 
         feedTask = Task { @MainActor [weak self] in
-            for await buffer in stream {
-                let outcome = await writer.append(buffer)
+            for await captured in stream {
+                let outcome = await writer.append(captured.buffer)
                 guard let self else { return }
                 switch outcome {
                 case .ok:
@@ -279,7 +285,11 @@ actor ChunkWriter {
             AVEncoderBitRateKey: 32000,
         ]
         try FileManager.default.createDirectory(at: chunksDirectory, withIntermediateDirectories: true)
-        try openNextFile()
+        let (file, url) = try Self.openFile(
+            directory: chunksDirectory, session: session, index: index, settings: fileSettings,
+            commonFormat: commonFormat, interleaved: interleaved)
+        self.currentFile = file
+        self.currentURL = url
     }
 
     /// bufferを現在のfileへ書き込む。rotationの閾値に達したら閉じて転送キューへ入れ、次のfileを開く。
@@ -315,10 +325,23 @@ actor ChunkWriter {
         closeAndTransferCurrentFile()
     }
 
+    /// 非asyncなactor initはnonisolatedで隔離メソッドを呼べないため、
+    /// ファイルを開く処理はstaticにしてinitと`openNextFile()`の両方から使う
+    private static func openFile(
+        directory: URL, session: String, index: Int, settings: [String: Any],
+        commonFormat: AVAudioCommonFormat, interleaved: Bool
+    ) throws -> (AVAudioFile, URL) {
+        let url = directory.appendingPathComponent("\(session)-\(index).m4a")
+        let file = try AVAudioFile(
+            forWriting: url, settings: settings, commonFormat: commonFormat, interleaved: interleaved)
+        return (file, url)
+    }
+
     private func openNextFile() throws {
-        let url = chunksDirectory.appendingPathComponent("\(session)-\(index).m4a")
-        currentFile = try AVAudioFile(
-            forWriting: url, settings: fileSettings, commonFormat: commonFormat, interleaved: interleaved)
+        let (file, url) = try Self.openFile(
+            directory: chunksDirectory, session: session, index: index, settings: fileSettings,
+            commonFormat: commonFormat, interleaved: interleaved)
+        currentFile = file
         currentURL = url
     }
 
