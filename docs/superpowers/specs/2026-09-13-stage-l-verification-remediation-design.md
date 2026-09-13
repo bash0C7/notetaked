@@ -76,7 +76,8 @@
 | 6 | `.builtInMicrophone`を`.microphone`へ | |
 | 7 | `Recorder`の`await self.finish(piece:)`から`await`を外す | 3と同じ理由 |
 | 8 | NotetakeCoreに`SampleClock`を追加し、`Recorder.ingest`の時刻計算を変換後サンプル数に統一する（下記） | |
-| 9・10 | コード変更なし。HANDOFFの実機検証項に残す | |
+| 9 | 実機で確定（2026-09-13、iPhone 16e、`spatial=true`、buffer `4 ch, 48000 Hz, Float32, interleaved`）: `foaBuffer(from:)` の変換先 `AVAudioFormat(commonFormat:sampleRate:channels: 4, interleaved: false)` が3ch以上ではlayout無しでnilになり毎buffer失敗、音声がTranscriberへ届かない。`AVAudioConverter` を使わず `foaChannels(from:)` で直接W / Y / Xを取り出す形に差し替える（親spec改訂） | 段階L planのTask 7注記の手動de-interleave |
+| 10 | コード変更なし。実機で `spatial=true` かつ4ch bufferが届くことを確認済み（設定順序は問題なし） | |
 | 11 | 親specの命名を実装に合わせる | 親spec改訂 |
 | 12 | コード変更なし。親specに「`start()`成功後にのみ有効」と明記 | 親spec改訂 |
 

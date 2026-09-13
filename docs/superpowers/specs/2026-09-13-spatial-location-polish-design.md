@@ -78,6 +78,7 @@
 - 取り込みを `AVAudioEngine` から `AVCaptureSession` + `AVCaptureDeviceInput(builtInMicrophone)` + `AVCaptureAudioDataOutput` に置き換える（対応・非対応で同じ経路にする）
 - 開始時: `isMultichannelAudioModeSupported(.firstOrderAmbisonics)` を判定し、trueなら `multichannelAudioMode = .firstOrderAmbisonics` と `spatialAudioChannelLayoutTag = kAudioChannelLayoutTag_HOA_ACN_SN3D | 4`、falseなら `.none`（layout tag は既定のまま）。判定結果を `input.spatial` に、`localizedName` / `uniqueID` を `input` に入れる
 - 受け取った `CMSampleBuffer` を `AVAudioPCMBuffer` に変換。FOA時はW chをmonoとして既存Transcriberへ、4ch全体を `DirectionEstimator` へ。非FOA時はそのままTranscriberへ
+- FOA bufferの分解は `AVAudioConverter` を使わず、Float32のbufferから直接W / Y / X（ACN 0 / 1 / 3）を取り出す（interleaved / non-interleavedの両対応）。理由: 4chのtarget formatはchannel layout無しでは `AVAudioFormat` が作れず（実機で確認、2026-09-13）、layout付きでも変換後の並びが保たれる保証が無い。実機（iPhone 16e）が届けるformatは `4 ch, 48000 Hz, Float32, interleaved`
 - segを切るたびに、そのsegの時間範囲のフレームから seg方位を出して `direction` に付ける
 - 時刻基準: segの時刻と `DirectionEstimator` へ渡すフレーム時刻は、どちらもTranscriberの入力format（変換後）のサンプル数を `SampleClock(originMS:sampleRate:)`（NotetakeCore、`ms(atFrame:) = originMS + round(frame / sampleRate * 1000)`）で換算した値。生マイクのサンプルレートは時刻に使わない。取り込みbufferは先に変換し、変換後のフレーム数で `startMS` / `endMS` を求めてから `DirectionEstimator.add` と `Transcriber.feed` に渡す
 - `Recorder.currentInput()` は `start()` 成功後にのみ有効
