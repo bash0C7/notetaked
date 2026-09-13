@@ -10,6 +10,25 @@ public struct TranscriptPiece: Sendable, Equatable {
     public var endMS: Int64
     public var confidence: Double?  // runの transcriptionConfidence の平均。無ければnil
     public var isFinal: Bool
+    /// run単位の時間範囲付きテキスト片（`text.runs`の`audioTimeRange`から作る）。
+    /// 空のテキストのrunは含まない。時間範囲を持たないrunはpiece全体の範囲を使う
+    public var runs: [TranscriptRun] = []
+
+    public init(
+        text: String,
+        startMS: Int64,
+        endMS: Int64,
+        confidence: Double?,
+        isFinal: Bool,
+        runs: [TranscriptRun] = []
+    ) {
+        self.text = text
+        self.startMS = startMS
+        self.endMS = endMS
+        self.confidence = confidence
+        self.isFinal = isFinal
+        self.runs = runs
+    }
 }
 
 public enum TranscriberError: Error {
@@ -209,10 +228,25 @@ public actor Transcriber {
         let endMS = originMS + Int64((CMTimeGetSeconds(result.range.end) * 1000).rounded())
 
         var confidences: [Double] = []
+        var runs: [TranscriptRun] = []
         for run in text.runs {
             if let confidence = run.transcriptionConfidence {
                 confidences.append(confidence)
             }
+
+            let runText = String(text[run.range].characters)
+            guard !runText.isEmpty else { continue }
+
+            let runStartMS: Int64
+            let runEndMS: Int64
+            if let audioTimeRange = run.audioTimeRange {
+                runStartMS = originMS + Int64((CMTimeGetSeconds(audioTimeRange.start) * 1000).rounded())
+                runEndMS = originMS + Int64((CMTimeGetSeconds(audioTimeRange.end) * 1000).rounded())
+            } else {
+                runStartMS = startMS
+                runEndMS = endMS
+            }
+            runs.append(TranscriptRun(text: runText, startMS: runStartMS, endMS: runEndMS))
         }
         let confidence =
             confidences.isEmpty ? nil : confidences.reduce(0, +) / Double(confidences.count)
@@ -222,7 +256,8 @@ public actor Transcriber {
             startMS: startMS,
             endMS: endMS,
             confidence: confidence,
-            isFinal: result.isFinal
+            isFinal: result.isFinal,
+            runs: runs
         )
     }
 }

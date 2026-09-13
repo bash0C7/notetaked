@@ -88,4 +88,39 @@ private func tokyoDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, 
     #expect(store.liveURL.lastPathComponent == "\(store.prefix).live.txt")
     #expect(store.timedURL.lastPathComponent == "\(store.prefix).timed.jsonl")
     #expect(store.finalURL.lastPathComponent == "\(store.prefix).final.md")
+    #expect(store.speakersURL.lastPathComponent == "\(store.prefix).speakers.json")
+}
+
+@Test func writeSpeakersWritesSortedPrettyJSON() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let store = SessionStore(directory: dir, start: Date(), timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+    let profiles = [
+        SpeakerProfile(id: "g1", name: "田中", centroid: [0.1, 0.2], count: 3),
+        SpeakerProfile(id: "g2", name: nil, centroid: [0.3, 0.4], count: 1),
+    ]
+
+    try await store.writeSpeakers(profiles)
+
+    let data = try Data(contentsOf: store.speakersURL)
+    let decoded = try JSONDecoder().decode([SpeakerProfile].self, from: data)
+    #expect(decoded == profiles)
+
+    let text = try String(contentsOf: store.speakersURL, encoding: .utf8)
+    #expect(text.contains("\n"))
+}
+
+@Test func writeSpeakersOverwrites() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let store = SessionStore(directory: dir, start: Date(), timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+
+    try await store.writeSpeakers([SpeakerProfile(id: "g1", centroid: [1, 0], count: 1)])
+    try await store.writeSpeakers([SpeakerProfile(id: "g2", centroid: [0, 1], count: 1)])
+
+    let decoded = try JSONDecoder().decode(
+        [SpeakerProfile].self, from: Data(contentsOf: store.speakersURL))
+    #expect(decoded == [SpeakerProfile(id: "g2", centroid: [0, 1], count: 1)])
 }
