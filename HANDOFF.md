@@ -3,7 +3,7 @@
 ## 状態（2026-09-13）
 
 - **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
-- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。**`make verify`通過**（2026-09-13: `swift build`警告ゼロ / テスト164件 / mac app / iOS + watchOSコンパイル）。下記「Mac側で行う検証」のうちCLIで自動化できる分は合格（次々項）、人の操作が要る分は未実施
+- **`main`にmerge済み（2026-09-14、fast-forward、PR #1）**。区切る + M3〜M6 + 段階L + 検証是正: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。**`make verify`通過**（2026-09-13: `swift build`警告ゼロ / テスト164件 / mac app / iOS + watchOSコンパイル）。下記「Mac側で行う検証」のうちCLIで自動化できる分は合格（次々項）、人の操作が要る分は未実施
 - **段階L（場所情報・対話整形）実装済み・`make verify`通過**（2026-09-13）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。iPhoneの実機検証（`input.spatial`の値、方位、FOA変換のチャンネル順）は証明書再発行後。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`。段階LのMac側検証で見つかった問題の全件・根本原因・是正はspec `docs/superpowers/specs/2026-09-13-stage-l-verification-remediation-design.md`、plan `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md`。web側のledger（`.superpowers/sdd/2026-09-13-spatial-location-polish/`）はMacからは読めない。Mac側のledgerは`.superpowers/sdd/2026-09-13-stage-l-verification-remediation/progress.md`（git管理外）
 - **Mac側CLI検証の結果（2026-09-13、`say`とsystem音声で自動実行）**: 段階1-1（rotateで2 prefix、status 4件、`rotated`ログ）合格。段階2-1〜2-3前半（`diarizer ready`、segに`speaker`（`g1`/`g2`が交互）、`<prefix>.speakers.json`、final.mdに`**g1**`/`**g2**`）合格。段階3-1（`polish: chunk 1/1`、`<prefix>.polished.md`）合格。段階4-1（`dns-sd -B _notetake._tcp`に`ゆふのMacBook Air M3`、ペアリングコードは設定Windowの値）合格。段階6-1のうち状態行（`input_name: "MacBook Airのマイク"`, `input_spatial: false`）とsystem segの`input`、final.mdの`（system）`は合格。段階6-3（`# 2026-09-13 リモート` / `# 2026-09-13 g1、g2`、時刻無し）合格
 - **実機の環境（2026-09-13）**: Apple Development証明書は**再発行済み**（`security find-identity -v -p codesigning`で有効なidentity `A3F23595F28DC4E18B5063DF519E424A44778AB4`。失効した3本もkeychainに残っている）。iPhone 16e（`FE7B47C9-2CF0-5509-A52C-1C0D806CC085`、有線）へは`xcodebuild -scheme NotetakeMobile -destination 'id=<udid>' -allowProvisioningUpdates build` → `xcrun devicectl device install app --device <udid> .build/DerivedData/Build/Products/Debug-iphoneos/NotetakeMobile.app` → `xcrun devicectl device process launch --device <udid> io.github.bash0c7.notetake.ios`。無料developer profileは1端末3 appまで（Torchを削除して空けた。残りはStackchan / PicoRubyRunner）。段階6-1のmic segはuserの発話で合格（スピーカー経由の`say`は内蔵マイクで−60dBFSにしかならず認識されない）。iPhone 13 Proは対象外（user決定）
@@ -13,7 +13,7 @@
 - **気づき**: issue #7 / #8 / #3に転記済み
 - **人の操作が要る残り**: なし（2-4・2-5はuser判断事項として残るが検証は完了扱い）
 - **実機検証はuser宣言で完了（2026-09-14）。後回しの要望と気づきはissue化済み（優先順位は未定、userの指示で今は付けない）**: #3 ライブパネルのtoolbar overflow（ハンバーガー位置） / #4 ペアリングコード廃止・iCloud識別 / #5 Macセッション開始とiPhone取り込み開始の概念整理 / #6 場所ラベルは`level_dbfs`最大のsegの機器（決定済み） / #7 daemon再起動後のiPhone「接続」表示とCLOSE_WAIT / #8 分離結果の無い短い発話が所有者名に割れる / #2 方位の軸校正
-- **次: issue #2〜#8から着手するものをuserが選ぶ。PR #1のundraft / mergeはuserが切り出すまで話題にしない**
+- **次: issue #2〜#9から着手するものをuserが選び、issueごとにbranchを切って進める**
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -27,7 +27,7 @@
 | L 場所情報 / 対話整形 | `make verify`通過。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、状態行とパネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
 | V 検証ゲート | `make verify`、`ChunkWriter` init / `WatchRecorder`のbuffer受け渡し / `WatchRelay`の並行性修正、`SampleClock`（iPhone側の時刻基準） | `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md` |
 
-## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`、上から順に）
+## Mac側で行う検証（`main`、上から順に）
 
 原則: **落ちたらまずテストの期待値ではなく実装を疑う（テストが仕様）**。修正はゲート（`make verify`）の結果を全件受け取ってから行い、1件ずつ潰さない。段階ごとに`git commit`（trailer付き）。
 
