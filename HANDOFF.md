@@ -4,8 +4,8 @@
 
 - **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
 - **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。`make test`と下記「Mac側で行う検証」の段階1〜5は未実施。iOS / watchOS targetはまだ一度もコンパイルしていない
-- **次の実装: 場所情報（入力機材・方位）と整形の対話化（段階L）**。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`（user承認済み）と plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`（Task 1〜9）が揃っている。Claude Code on the webで実装を進め、build / test / 実機はMac側セッションで行う（planの「検証コマンド」参照）。ledger: `.superpowers/sdd/2026-09-13-spatial-location-polish/progress.md`（git管理外、無ければ作る）
-- **その後: 「Mac側で行う検証」を段階順に実行**し、段階ごとにcommit。全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
+- **段階L（場所情報・対話整形）実装済み・Mac未検証**（2026-09-13、Claude Code on the webでTask 1〜8をSwiftツールチェーン無しで実装・commit。Task 9でこのHANDOFFを更新）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。**Mac側でまだ一度もビルドしていない** — `swift build` / `swift test` / `make app` / iOS `xcodebuild`が全て未実施。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`（Task 1〜9、コード付き）、ledger `.superpowers/sdd/2026-09-13-spatial-location-polish/progress.md`（git管理外）
+- **次: 下記「6. 場所情報 / 対話整形（L）」を含む「Mac側で行う検証」を段階順に実行**し、段階ごとにcommit。全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -16,7 +16,7 @@
 | M4 polish | `notetaked polish <timed.jsonl>`（Foundation Models、2000文字chunk、失敗chunkは原文）、`<prefix>.polished.md`、app「直前の収録を整形」/ パネル「整形」 | `docs/superpowers/plans/2026-09-13-m4-polish.md` |
 | M5 iPhone | `PeerMessage`（hello/hello_ack/ping/pong/seg/ack）、`ClockOffset`、`SessionMatcher`、`Outbox`、daemon `PeerListener`（Bonjour `_notetake._tcp` + TLS PSK）、`pair_code` command / `peer` event、停止後segのfinal.md再生成、`orphans.jsonl`、Mac設定のペアリングコード、iOS app（Recorder / PeerClient / UI） | `docs/superpowers/plans/2026-09-13-m5-iphone.md` |
 | M6 Watch | `WatchChunkMetadata` / `WatchChunkSequencer`、Watch app（20秒AAC小片→`transferFile`）、iPhone `WatchRelay`（小片→専用Transcriber→seg→Outbox） | `docs/superpowers/plans/2026-09-13-m6-watch.md` |
-| L 場所情報 / 対話整形 | **未実装（spec・plan済み）**。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、パネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
+| L 場所情報 / 対話整形 | **実装済み・Mac未検証**。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、状態行とパネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
 
 ## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`、上から順に）
 
@@ -40,6 +40,7 @@ make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存
 - `Sources/notetaked/Peer/PeerListener.swift`: `NWConnection`をactor境界越しに渡している（`accept` / `receiveLoop` / `sendLine`）。SDKで`NWConnection`がSendableでなければ引数に`sending`を付ける
 - strict concurrency: `CaptureStream.Converted`（非Sendableな`AVAudioPCMBuffer`を`sending`で渡す）、`WatchRecorder`/`WatchSessionDelegate`の`nonisolated`デリゲート、`MobileModel`の`WeakBox`、`AppModel.polishLastRecording`の`terminationHandler`
 - `Apps/NotetakeWatch/WatchRecorder.swift`: `AVAudioFile(forWriting:settings:commonFormat:interleaved:)`にAAC settingsでPCMを`write(from:)`できるか
+- `Apps/NotetakeMobile/Recorder.swift`（段階L）: `AVCaptureDeviceInput.multichannelAudioMode` / `isMultichannelAudioModeSupported(.firstOrderAmbisonics)`、`AVCaptureAudioDataOutput.spatialAudioChannelLayoutTag`、`kAudioChannelLayoutTag_HOA_ACN_SN3D | 4`（定数名・値、`AVAudioChannelLayout(layoutTag:)`が受け付けるか）、`CMSampleBufferCopyPCMDataIntoAudioBufferList(_:at:frameCount:into:)`の引数ラベル、FOA channel layout付きformatを`AudioConverter`（`AVAudioConverter`ベース）が受け付けるか（拒否されたら`foaBuffer(from:)`を手動de-interleaveへ差し替える。plan Task 7 Step 1の「注意」参照）
 
 ### 1. 区切る（R）
 
@@ -87,6 +88,34 @@ make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存
 2. iPhone側`WatchRelay`が受信 → 専用Transcriber → `"platform":"watchos","source":"watch"`のseg → Outbox → Mac。Watchの録音停止後60秒で該当streamを`finish()`
 3. Macのfinal.mdでWatch由来segがmic/iPhoneと統合される（source優先度 system > mic > watch）
 4. 未確認事項: watchOSの`inputNode`のフォーマットとAAC書き出し、`WCSession`の背景転送、`AVAudioFile(forReading:)`でのAAC→PCM（`processingFormat`）
+
+### 6. 場所情報 / 対話整形（L）
+
+1. Mac: 収録開始→発話→停止。`timed.jsonl` の seg に `"input":{"name":"MacBook Airのマイク","uid":"BuiltInMicrophoneDevice","spatial":false}`、final.md の行が `**話者**（Mac）:`。パネル状態行に `入力: MacBook Airのマイク（空間: 非対応）`
+2. AirPods Pro 3 を接続して既定入力にし「区切る」→ 新しいprefixのsegが `"name":"ゆふAirPods Pro 3"`、行が `（AirPods）`
+3. `notetaked polish <prefix>.timed.jsonl` → 先頭 `# yyyy-MM-dd 参加者`、行に時刻無し
+4. iPhone（証明書後）: 初回起動で `input.spatial` を確認。true なら机に平置きし、上端側から `say` → `azimuth_deg ≈ 0`、右側から → `≈ 90`。ずれていれば `Recorder` の `DirectionEstimator(azimuthOffsetDeg:)` を決める。false なら `direction` 無し・`input.name` のみで完了
+
+未実行の検証コマンド（Claude Code on the webでは実行不可、上記の他に）:
+```bash
+swift test --filter segmentEncodesInputAndDirection
+swift test --filter segmentWithoutDirectionOmitsKey
+swift test --filter utteranceCarriesInputPlatformAndDirectionOfSegment
+swift test --filter mergeKeepsDirectionFromSpatialSegmentEvenWhenTextComesFromOther
+swift test --filter mergePrefersHigherConfidenceDirection
+swift test --filter LocationLabel        # shortLabelTable / clockPositionRoundsToNearestHour / textCombinesLabelAndClock
+swift test --filter TranscriptRenderer   # 既存4件の期待値変更 + rendersDirectionAsClockPosition
+swift test --filter statusEventCarriesInputDevice
+swift test --filter statusEventWithoutInputOmitsKeys
+swift test --filter DirectionEstimator   # 9件
+swift test --filter PolishRenderer       # 5件（rendersHeaderWithDateAndParticipantsThenDialogueの期待日付をreview時に修正済み）
+swift test --filter PolishChunker
+swift test                               # 全件
+swift build 2>&1 | grep -E "error|warning"
+make app 2>&1 | grep -E "error:|BUILD"
+xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' \
+  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build 2>&1 | grep -E "error:|BUILD"
+```
 
 ## 申し送り（Mac必須・user作業を含む）
 

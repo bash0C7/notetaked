@@ -495,7 +495,7 @@ git commit -m "feat(daemon): report current input device in status events"
 - Consumes: `StatusEvent.inputName` / `inputSpatial`（Task 4）、`LocationLabel.text(for:)`（Task 2）、`Utterance.direction`（Task 1）
 - Produces: `AppModel.inputName: String?`、`AppModel.inputSpatial: Bool?`
 
-- [ ] **Step 1: AppModel を直す**
+- [x] **Step 1: AppModel を直す**
 
 `var sources: [Source] = []` の隣に:
 
@@ -512,7 +512,7 @@ inputName = status.inputName
 inputSpatial = status.inputSpatial
 ```
 
-- [ ] **Step 2: LivePanelView を直す**
+- [x] **Step 2: LivePanelView を直す**
 
 `statusText` の `接続:` の前に:
 
@@ -530,12 +530,12 @@ Text(LocationLabel.text(for: utterance))
     .foregroundStyle(.secondary)
 ```
 
-- [ ] **Step 3: ビルドして起動する**
+- [ ] **Step 3: ビルドして起動する**（Mac側で実行待ち）
 
 Run: `make app 2>&1 | grep -E "error:|BUILD"` → `BUILD SUCCEEDED`
 Run: 既存のNotetake.appを終了（`pkill -f "Notetake.app/Contents/MacOS/Notetake"`）してから `open .build/DerivedData/Build/Products/Debug/Notetake.app`。パネルで収録開始し、状態行に `入力: MacBook Airのマイク（空間: 非対応）`、発話行に `Mac` が出ることを確認（画面確認はuser）。保存先の`timed.jsonl`に `"input":{"name":"MacBook Airのマイク",...}` があることは `grep -c '"input"' <prefix>.timed.jsonl` で確認
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Apps/Notetake/AppModel.swift Apps/Notetake/LivePanelView.swift
@@ -1155,7 +1155,7 @@ git commit -m "feat(polish): render dialogue only with a date/participants heade
 **Files:**
 - Modify: `HANDOFF.md`（「branchに入っているもの」表と「Mac側で行う検証」）
 
-- [ ] **Step 1: 追記する**
+- [x] **Step 1: 追記する**
 
 表に行を足す:
 
@@ -1174,7 +1174,7 @@ git commit -m "feat(polish): render dialogue only with a date/participants heade
 4. iPhone（証明書後）: 初回起動で `input.spatial` を確認。true なら机に平置きし、上端側から `say` → `azimuth_deg ≈ 0`、右側から → `≈ 90`。ずれていれば `Recorder` の `DirectionEstimator(azimuthOffsetDeg:)` を決める。false なら `direction` 無し・`input.name` のみで完了
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add HANDOFF.md
