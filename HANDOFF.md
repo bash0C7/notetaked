@@ -3,8 +3,9 @@
 ## 状態（2026-09-13）
 
 - **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
-- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を一気に実装済み・Mac未検証**。Claude Code on the web（Linux、Swiftツールチェーン無し）で書いたため`swift test` / `make app`を一度も通していない。テストは先に書いてある（Core純粋ロジック）が実行はMac側
-- **次にやること: 下記「Mac側で行う検証」を段階順に実行し、コンパイルエラー・テスト失敗を直しながら進める**。段階ごとにcommitし、全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
+- **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。`make test`と下記「Mac側で行う検証」の段階1〜5は未実施。iOS / watchOS targetはまだ一度もコンパイルしていない
+- **次の実装: 場所情報（入力機材・方位）と整形の対話化（段階L）**。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`（user承認済み）と plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`（Task 1〜9）が揃っている。Claude Code on the webで実装を進め、build / test / 実機はMac側セッションで行う（planの「検証コマンド」参照）。ledger: `.superpowers/sdd/2026-09-13-spatial-location-polish/progress.md`（git管理外、無ければ作る）
+- **その後: 「Mac側で行う検証」を段階順に実行**し、段階ごとにcommit。全段階が通ったらdraftを外してmerge。実機（iPhone / Watch）は証明書再発行が前提
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -15,6 +16,7 @@
 | M4 polish | `notetaked polish <timed.jsonl>`（Foundation Models、2000文字chunk、失敗chunkは原文）、`<prefix>.polished.md`、app「直前の収録を整形」/ パネル「整形」 | `docs/superpowers/plans/2026-09-13-m4-polish.md` |
 | M5 iPhone | `PeerMessage`（hello/hello_ack/ping/pong/seg/ack）、`ClockOffset`、`SessionMatcher`、`Outbox`、daemon `PeerListener`（Bonjour `_notetake._tcp` + TLS PSK）、`pair_code` command / `peer` event、停止後segのfinal.md再生成、`orphans.jsonl`、Mac設定のペアリングコード、iOS app（Recorder / PeerClient / UI） | `docs/superpowers/plans/2026-09-13-m5-iphone.md` |
 | M6 Watch | `WatchChunkMetadata` / `WatchChunkSequencer`、Watch app（20秒AAC小片→`transferFile`）、iPhone `WatchRelay`（小片→専用Transcriber→seg→Outbox） | `docs/superpowers/plans/2026-09-13-m6-watch.md` |
+| L 場所情報 / 対話整形 | **未実装（spec・plan済み）**。segの`input` / `direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession` + FOA、パネルの場所表示、polishの時刻無し対話出力 | `docs/superpowers/plans/2026-09-13-spatial-location-polish.md` |
 
 ## Mac側で行う検証（branch `claude/jolly-fermi-mi44i4`、上から順に）
 
@@ -126,6 +128,8 @@ make project && make app         # xcodegen（NotetakeWatchにNotetakeCore依存
 - git push / ghはBash sandboxでは資格情報が読めない → sandboxを無効にして実行。sandbox内で`~/.gitconfig`が読めない時は`GIT_CONFIG_GLOBAL=/dev/null`（repo localにuser.name/email設定済み）
 - system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
+- 実機probe（2026-09-13）: Macに繋がる機材（内蔵マイク / AirPods Pro 3 / ContinuityのiPhone）はいずれも`isMultichannelAudioModeSupported(.firstOrderAmbisonics)`がfalse、入力1ch。空間収録はiPhone本体でのみ試せる（iPhone 16eの対応可否は実機で判定）
+- `make app`で`.build/release/notetaked`を更新してもbundle内が古いままの場合は`Apps/project.yml`のEmbed scriptの`inputFiles`を確認（16d68b1で追加済み）
 - Claude Code on the web（Linux）にはSwiftツールチェーンが無く、swift.orgもproxyで403。Swiftの実行が要る作業はMac側セッションで
 
 ## 検証コマンド
