@@ -111,6 +111,8 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 
 ## 設計上の割り切り・既知の未実装
 
+- **daemonの状況表示・監視・起動終了はメニューバーapp（Notetake.app）が司る**（user方針、2026-09-14）。現状: `AppModel.ensureDaemon()`が子processとして起動し設定変更で再起動、`DaemonClient`の`terminationHandler`で落ちたら再起動（60秒に複数回落ちる場合は抑止）、app終了時に`quit`を送って待つ、`log` / `error` / `peer`イベントをメニューに表示。issue #7（peer生存検知）もこの枠で扱う。CLI単体の`serve`は検証用
+
 - 区切り（`rotate`）は中間の停止statusを出さないため、録音中に変えた設定（名前・保存先）の`restartPending`再起動は次の明示的な停止まで持ち越す
 - 話者分離: specの「本文を即表示して後から話者だけ差し替え」は採らず、`Aligner`で最大12秒保留してから話者付きで出す（timed.jsonlにはfinalだけ書く原則を保つため）
 - `SpeakerRegistry`は1回のserve起動の間だけ`g<N>`を保持。命名していない話者はserve再起動で`g1`から振り直し（命名済みは大域プロファイルで引き継ぐ）
