@@ -23,8 +23,7 @@ final class WatchSessionDelegate: NSObject, WCSessionDelegate, @unchecked Sendab
         error: Error?
     ) {
         if let error {
-            FileHandle.standardError.write(
-                Data("WatchSessionDelegate: activation failed: \(error)\n".utf8))
+            Diag.log("WatchSessionDelegate: activation failed: \(error)")
         }
     }
 
@@ -46,15 +45,11 @@ final class WatchSessionDelegate: NSObject, WCSessionDelegate, @unchecked Sendab
         do {
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
         } catch {
-            FileHandle.standardError.write(
-                Data("WatchSessionDelegate: failed to copy received file: \(error)\n".utf8))
+            Diag.log("WatchSessionDelegate: failed to copy received file: \(error)")
             return
         }
         guard let meta = WatchChunkMetadata(metadata: file.metadata ?? [:]) else {
-            FileHandle.standardError.write(
-                Data(
-                    "WatchSessionDelegate: received file with missing/invalid metadata; discarding\n"
-                        .utf8))
+            Diag.log("WatchSessionDelegate: received file with missing/invalid metadata; discarding")
             try? FileManager.default.removeItem(at: destination)
             return
         }
@@ -358,6 +353,6 @@ actor WatchRelay {
     }
 
     private func logError(_ message: String) {
-        FileHandle.standardError.write(Data("WatchRelay: \(message)\n".utf8))
+        Diag.log("WatchRelay: \(message)")
     }
 }

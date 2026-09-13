@@ -37,14 +37,14 @@ actor Recorder {
                 format = AVAudioFormat(streamDescription: asbd)
             }
             let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-            if bufferCount == 0 { FileHandle.standardError.write(Data("recorder: first buffer ch=\(asbd.pointee.mChannelsPerFrame) rate=\(asbd.pointee.mSampleRate) frames=\(frames) flags=\(asbd.pointee.mFormatFlags) bits=\(asbd.pointee.mBitsPerChannel)\n".utf8)) }
+            if bufferCount == 0 { Diag.log("recorder: first buffer ch=\(asbd.pointee.mChannelsPerFrame) rate=\(asbd.pointee.mSampleRate) frames=\(frames) flags=\(asbd.pointee.mFormatFlags) bits=\(asbd.pointee.mBitsPerChannel)") }
             bufferCount += 1
-            if format == nil { FileHandle.standardError.write(Data("recorder: AVAudioFormat nil\n".utf8)) }
+            if format == nil { Diag.log("recorder: AVAudioFormat nil") }
             guard let format, frames > 0, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
             pcm.frameLength = frames
             let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
                 sampleBuffer, at: 0, frameCount: Int32(frames), into: pcm.mutableAudioBufferList)
-            guard status == noErr else { FileHandle.standardError.write(Data("recorder: copy status=\(status)\n".utf8)); return }
+            guard status == noErr else { Diag.log("recorder: copy status=\(status)"); return }
             continuation.yield(CapturedBuffer(buffer: pcm))
         }
     }
@@ -82,7 +82,7 @@ actor Recorder {
         let deviceInput = try AVCaptureDeviceInput(device: microphone)
         let spatial = deviceInput.isMultichannelAudioModeSupported(.firstOrderAmbisonics)
         input = InputDevice(name: microphone.localizedName, uid: microphone.uniqueID, spatial: spatial)
-        FileHandle.standardError.write(Data("recorder: input=\(microphone.localizedName) spatial=\(spatial)\n".utf8))
+        Diag.log("recorder: input=\(microphone.localizedName) spatial=\(spatial)")
 
         let origin = Date()
         originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())
@@ -122,7 +122,7 @@ actor Recorder {
         }
         session.commitConfiguration()
         session.startRunning()
-        FileHandle.standardError.write(Data("recorder: session running=\(session.isRunning) inputs=\(session.inputs.count) outputs=\(session.outputs.count)\n".utf8))
+        Diag.log("recorder: session running=\(session.isRunning) inputs=\(session.inputs.count) outputs=\(session.outputs.count)")
 
         self.session = session
         self.delegate = delegate
@@ -135,7 +135,7 @@ actor Recorder {
 
         forwardTask = Task {
             for await piece in pieces where piece.isFinal {
-                FileHandle.standardError.write(Data("recorder: final piece \(piece.text.prefix(20))\n".utf8))
+                Diag.log("recorder: final piece \(piece.text.prefix(20))")
                 let (level, direction) = self.finish(piece: piece)
                 onPiece(piece, level, direction)
             }
@@ -177,7 +177,7 @@ actor Recorder {
         if input.spatial, buffer.format.channelCount == 4 {
             guard let channels = Self.foaChannels(from: buffer) else {
                 if ingestCount % 200 == 0 {
-                    FileHandle.standardError.write(Data("recorder: unsupported FOA format \(buffer.format)\n".utf8))
+                    Diag.log("recorder: unsupported FOA format \(buffer.format)")
                 }
                 ingestCount += 1
                 return
@@ -193,7 +193,7 @@ actor Recorder {
                 axisE += e; axis1 += i1; axis2 += i2; axis3 += i3
                 if ingestCount % 50 == 49 {
                     let n = max(axisE, 1e-9)
-                    FileHandle.standardError.write(Data("recorder: axes ch1=\(i1Str(axis1 / n)) ch2=\(i1Str(axis2 / n)) ch3=\(i1Str(axis3 / n)) E=\(i1Str(axisE))\n".utf8))
+                    Diag.log("recorder: axes ch1=\(i1Str(axis1 / n)) ch2=\(i1Str(axis2 / n)) ch3=\(i1Str(axis3 / n)) E=\(i1Str(axisE))")
                     axisE = 0; axis1 = 0; axis2 = 0; axis3 = 0
                 }
             }
@@ -207,7 +207,7 @@ actor Recorder {
         if converter == nil {
             converter = try? AudioConverter(from: monoSource.format, to: transcriber.inputFormat)
         }
-        if converter == nil { FileHandle.standardError.write(Data("recorder: converter nil from=\(monoSource.format) to=\(transcriber.inputFormat)\n".utf8)) }
+        if converter == nil { Diag.log("recorder: converter nil from=\(monoSource.format) to=\(transcriber.inputFormat)") }
         guard let converter, let converted = try? converter.convert(monoSource) else { return }
         let convertedFrames = AVAudioFramePosition(converted.frameLength)
 
@@ -219,7 +219,7 @@ actor Recorder {
                 endMS: clock.ms(atFrame: sampleTime + convertedFrames))
         }
         lastLevelDBFS = AudioLevel.dbfs(converted)
-        if ingestCount % 200 == 0 { FileHandle.standardError.write(Data("recorder: fed frames=\(convertedFrames) dbfs=\(lastLevelDBFS) sampleTime=\(sampleTime)\n".utf8)) }
+        if ingestCount % 200 == 0 { Diag.log("recorder: fed frames=\(convertedFrames) dbfs=\(lastLevelDBFS) sampleTime=\(sampleTime)") }
         ingestCount += 1
         await transcriber.feed(converted, at: sampleTime)
         sampleTime += convertedFrames

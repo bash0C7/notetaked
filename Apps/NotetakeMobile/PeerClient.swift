@@ -31,7 +31,7 @@ actor PeerClient {
     private var state: PeerClientState = .idle {
         didSet {
             // 実機の接続不良を`devicectl device process launch --console`で追えるようstderrへ出す
-            FileHandle.standardError.write(Data("peer client: \(state)\n".utf8))
+            Diag.log("peer client: \(state)")
             onState(state)
         }
     }
@@ -131,7 +131,7 @@ actor PeerClient {
 
     private func connect(to endpoint: NWEndpoint) {
         let description = Self.describe(endpoint)
-        FileHandle.standardError.write(Data("peer client: connect to \(endpoint)\n".utf8))
+        Diag.log("peer client: connect to \(endpoint)")
         state = .connecting(description)
 
         let tls = NWProtocolTLS.Options()
@@ -173,7 +173,7 @@ actor PeerClient {
             startReceiving()
             await resendPending()
         case .waiting(let error):
-            FileHandle.standardError.write(Data("peer client: waiting \(error)\n".utf8))
+            Diag.log("peer client: waiting \(error)")
         case .failed(let error):
             handleDisconnect(reason: "\(error)")
         case .cancelled:
