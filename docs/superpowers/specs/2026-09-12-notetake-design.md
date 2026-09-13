@@ -162,7 +162,7 @@ Mac側が一次のリアルタイムtranscript（コピペ可能なライブパ�
 - `NotetakeDiarization` targetがFluidAudioに依存し、`Diarizer` actorとして「16kHz mono floatを受け取り、10秒（設定可）溜まるごとに`performCompleteDiarization`を呼び、stream原点からの絶対時刻に直した話者turn（時間範囲・local id・埋め込み）を返す」だけを提供する。各音声stream（Mac mic / Mac system / iPhone mic）に1インスタンス
 - **Aligner**（NotetakeCore、純粋関数）: Transcriberのfinal結果を、runごとの`audioTimeRange`を使って話者turn境界で分割し、各片に最大重なりの話者を割り当てて`seg`にする。分離結果がその時間範囲を覆うまでfinal結果を保留（保留上限 = chunk長 + 2秒、超えたら話者未定で出す）
 - **SpeakerRegistry**（NotetakeCore、Macで使用）: 大域話者ごとにcentroid埋め込み（所属segの埋め込みの正規化平均）を持ち、新しい埋め込みをcosine類似度で最近傍に割り当てる。初期閾値0.7（設定可。デバイス横断で同一人物が割れる場合に下げる）。閾値未満なら新規話者「話者N」。デバイス横断・session横断の同一人物統合はこれ一つで担い、命名はライブパネルから。大域プロファイルに命名済み話者のcentroidを保存し、次回sessionでは先にそれと照合する
-- ライブパネルは、final直後の本文を暫定話者（デバイス / source）で即表示し、分離結果が付いた時点でutterance upsertにより話者名だけ差し替わる
+- **実装（M3）での変更**: final直後の即表示ではなく、`Aligner`がfinal pieceを「分離結果がその時間範囲を覆うまで」保留（上限12秒）してから話者付きのsegとして出す。保留中はvolatile行で途中経過が見える。timed.jsonlにはfinalだけを書く原則（seg更新レコードを増やさない）を優先した
 - iPhoneでも同じ`Diarizer`を動かし、segに埋め込みを載せて送る（M5後半）。Macの`SpeakerRegistry`がMac由来の埋め込みと同じ空間で照合する（同一モデルなので比較可能）
 
 ## 後処理 polish（Foundation Models）
@@ -170,12 +170,12 @@ Mac側が一次のリアルタイムtranscript（コピペ可能なライブパ�
 - `notetaked polish <start>.timed.jsonl`: timed.jsonl → Reconciler → utterances → 話者turnにまとめ → 1 chunkあたり入力約1500 token（日本語約1500〜2500文字）に分割 → chunkごとに新しい`LanguageModelSession(instructions:)`で「認識誤りの修正・句読点整形・言い淀み除去・意味は変えない・話者ラベル維持」を指示し、`@Generable struct PolishedTurn { speaker: String; text: String }`の配列で受ける → `<start>.polished.md`
 - 直前chunkの末尾2 turnを文脈として次chunkの入力に添える（重複出力は時間順で除去）
 - 失敗（`exceededContextWindowSize` / guardrail / unavailable）はそのchunkを原文のまま採用し末尾に注記。`SystemLanguageModel.default.availability`を最初に確認
-- メニューバーapp / ライブパネルの「整形」ボタンは同じsubcommandを子processで実行
+- メニューバーapp「直前の収録を整形」/ ライブパネル「整形」は、直前に停止（または区切りで置き換え）された収録に対して同じsubcommandを子processで実行
 
 ## 通信プロトコル（iPhone→Mac）
 
 - 発見: MacのdaemonがBonjour `_notetake._tcp`で`NWListener`（`includePeerToPeer = true`）。iPhoneは`NWBrowser`で発見し接続
-- 認証: TLS PSK。Macのappが表示する6桁ペアリングコードをiPhoneで1回入力しKeychainに保存（LAN上の第三者Macへの誤送信を防ぐsystem boundaryの検証）
+- 認証: TLS PSK。Macのappが表示する6桁ペアリングコード（設定Window、UserDefaults `pairingCode`、再生成可。appが起動直後にdaemonへ`{"cmd":"pair_code","code":...}`で渡し、daemonがlistenerを起動する）をiPhoneで1回入力しKeychainに保存（LAN上の第三者Macへの誤送信を防ぐsystem boundaryの検証）。接続状態はdaemonが`{"ev":"peer","device":..,"device_name":..,"connected":..}`でappへ通知
 - 枠: NDJSON。`hello` → `hello_ack`、`ping`/`pong`（NTP式でMacがoffsetを算出し`device`レコードに記録）、`seg`（`seq`付き）→ `ack {seq}`
 - 蓄積転送: iPhoneの`Outbox`（追記ファイル + ack済みseq cursor）。未ackを再接続時にseq順で再送。Mac側は`(device, seq)`で冪等
 - Watch→iPhone: `WCSession.transferFile(url, metadata: {session, index, start_at, sample_rate})`。iPhoneはWatchごとの専用Transcriber streamへ`bufferStartTime`付きで順に流し、segの`device`はWatch、`source`は`watch`。転送完了で小片を削除
