@@ -30,3 +30,14 @@ import Testing
     var announcer = ProfileNameAnnouncer()
     #expect(announcer.record(for: "g9", in: registry) == nil)
 }
+
+@Test func markAnnouncedSuppressesLaterRecord() {
+    var registry = SpeakerRegistry(profiles: [
+        SpeakerProfile(id: "g1", name: nil, centroid: [1, 0, 0, 0], count: 3)
+    ])
+    var announcer = ProfileNameAnnouncer()
+    #expect(announcer.record(for: "g1", in: registry) == nil)
+    registry.setName("Kyoko", for: "g1")
+    announcer.markAnnounced("g1")   // rename_speakerが自分でrecordを流した
+    #expect(announcer.record(for: "g1", in: registry) == nil)
+}

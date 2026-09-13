@@ -12,4 +12,9 @@ public struct ProfileNameAnnouncer: Sendable {
         announced.insert(globalID)
         return SpeakerNameRecord(speaker: globalID, name: name)
     }
+
+    /// `rename_speaker`が同じrecordを流した後に`record`が二重に返さないようにする。
+    public mutating func markAnnounced(_ globalID: String) {
+        announced.insert(globalID)
+    }
 }

@@ -311,6 +311,7 @@ actor ServeSession {
         }
 
         registry.setName(name, for: id)
+        nameAnnouncer.markAnnounced(id)
         do {
             try await store.writeSpeakers(registry.profiles)
         } catch {
