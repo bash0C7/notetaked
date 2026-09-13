@@ -380,7 +380,7 @@ actor ServeSession {
 
         await stopCapture()
 
-        if await startCapture(), let store {
+        if await startCapture(), let store = self.store {
             await control.send(
                 .status(
                     StatusEvent(

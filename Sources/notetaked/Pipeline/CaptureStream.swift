@@ -4,6 +4,8 @@ import FluidAudio
 import Foundation
 import NotetakeCore
 import NotetakeDiarization
+import class NotetakeCore.AudioConverter
+import class NotetakeDiarization.Diarizer
 
 enum StreamEvent: Sendable {
     case volatile(String)
