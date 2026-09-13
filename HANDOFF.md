@@ -5,7 +5,10 @@
 - **M0〜M2完了、`main`にmerge済み**（`fa3bc8d`）。Mac単体の製品として動く（メニューバーapp + daemon、mic + system音声のリアルタイム文字起こし、`<prefix>.live.txt / .timed.jsonl / .final.md`、ライブパネル）
 - **branch `claude/jolly-fermi-mi44i4`（draft PR https://github.com/bash0C7/notetaked/pull/1）: 「区切る」機能 + M3〜M6を実装済み。Macで`swift build` / `make app`が通り、Notetake.app（新daemon同梱）が起動・userが動作OKを確認済み**（2026-09-13）。**`make verify`通過**（2026-09-13: `swift build`警告ゼロ / テスト164件 / mac app / iOS + watchOSコンパイル）。下記「Mac側で行う検証」の段階1〜6（実機・手動）は未実施
 - **段階L（場所情報・対話整形）実装済み・`make verify`通過**（2026-09-13）。segの`input`/`direction`、`LocationLabel`、`DirectionEstimator`、iPhone `AVCaptureSession`+FOA、状態行/パネルの場所表示、polishの時刻無し対話出力。iPhoneの実機検証（`input.spatial`の値、方位、FOA変換のチャンネル順）は証明書再発行後。spec `docs/superpowers/specs/2026-09-13-spatial-location-polish-design.md`、plan `docs/superpowers/plans/2026-09-13-spatial-location-polish.md`。段階LのMac側検証で見つかった問題の全件・根本原因・是正はspec `docs/superpowers/specs/2026-09-13-stage-l-verification-remediation-design.md`、plan `docs/superpowers/plans/2026-09-13-stage-l-verification-remediation.md`。web側のledger（`.superpowers/sdd/2026-09-13-spatial-location-polish/`）はMacからは読めない。Mac側のledgerは`.superpowers/sdd/2026-09-13-stage-l-verification-remediation/progress.md`（git管理外）
-- **次: 下記「Mac側で行う検証」の段階1〜6（実機・手動）を順に実行**し、段階ごとにcommit。実機（iPhone / Watch）は証明書再発行が前提
+- **Mac側CLI検証の結果（2026-09-13、`say`とsystem音声で自動実行）**: 段階1-1（rotateで2 prefix、status 4件、`rotated`ログ）合格。段階2-1〜2-3前半（`diarizer ready`、segに`speaker`（`g1`/`g2`が交互）、`<prefix>.speakers.json`、final.mdに`**g1**`/`**g2**`）合格。段階3-1（`polish: chunk 1/1`、`<prefix>.polished.md`）合格。段階4-1（`dns-sd -B _notetake._tcp`に`ゆふのMacBook Air M3`、ペアリングコードは設定Windowの値）合格。段階6-1のうち状態行（`input_name: "MacBook Airのマイク"`, `input_spatial: false`）とsystem segの`input`、final.mdの`（system）`は合格。段階6-3（`# 2026-09-13 リモート` / `# 2026-09-13 g1、g2`、時刻無し）合格
+- **人の操作が要る残り**: 段階1-2〜1-4（パネル操作・設定Window）、段階2-3後半（話者名の命名→再起動で引き継ぎ）・2-4・2-5（判断）、段階3-2（メニュー / パネルの整形）、段階6-1のmic seg（スピーカー経由の`say`は内蔵マイクで−60dBFSにしかならず認識されない。人が話す）、段階6-2（AirPods Pro 3を既定入力にして区切る）、段階4-2以降と段階5・6-4（下記の実機の状況を参照）
+- **実機の状況（2026-09-13）**: Apple Development証明書は**再発行済み**（`security find-identity -v -p codesigning`で有効なidentity `A3F23595F28DC4E18B5063DF519E424A44778AB4`。失効した3本もkeychainに残っている）。`xcodebuild -scheme NotetakeMobile -destination 'id=FE7B47C9-2CF0-5509-A52C-1C0D806CC085' -allowProvisioningUpdates build`は本物の署名とprovisioning profile（ios / watchkitapp）で**BUILD SUCCEEDED**。しかしiPhone 16eへの`devicectl device install app`は「無料developer profileのアプリ上限（Torch / Stackchan / PicoRubyRunnerの3本）」で失敗。**user作業: iPhone 16eから上記のいずれか1本（Watch app分も数えるなら2本）を削除してから再インストール**。iPhone 13 Proは対象外（user決定）。Apple Watch Series 8はdeveloper mode有効・pairedだが、Macからの直接インストールはトンネル接続がタイムアウト（companion iPhoneにapp導入後に再試行）
+- **次: userが戻ったら上記「人の操作が要る残り」を順に**。iPhoneの空きができたら `xcrun devicectl device install app --device FE7B47C9-2CF0-5509-A52C-1C0D806CC085 .build/DerivedData/Build/Products/Debug-iphoneos/NotetakeMobile.app` → `xcrun devicectl device process launch --device FE7B47C9-2CF0-5509-A52C-1C0D806CC085 io.github.bash0c7.notetake.ios`
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -66,7 +69,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 2. appのメニュー「直前の収録を整形」/ パネル「整形」（停止または区切り後に有効）→ メニューに「整形完了: <prefix>.polished.md」
 3. 失敗chunkがあれば末尾に`> 整形に失敗したturn: N件（原文のまま）`
 
-### 4. iPhone（M5）— **Apple Development証明書の再発行が前提**
+### 4. iPhone（M5）— 証明書は再発行済み。iPhone 16eの無料profileアプリ上限の解消が前提（「状態」参照）
 
 1. Mac: 設定Windowに6桁ペアリングコード（「再生成」可）。app起動後にdaemonへ`pair_code`が送られ、daemonが`_notetake._tcp`をadvertiseする（`dns-sd -B _notetake._tcp`で見える）。CLI単体なら`serve --pair-code 123456`
 2. iPhone: `make project` → Xcodeで`NotetakeMobile`を実機へ（`xcodebuild -scheme NotetakeMobile -destination 'id=<udid>'` + `xcrun devicectl device install app`）。初回にローカルネットワーク許可とマイク許可
@@ -92,7 +95,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 
 ## 申し送り（Mac必須・user作業を含む）
 
-- **Apple Development証明書が失効中**（`spctl`: `CSSMERR_TP_CERT_REVOKED`）。daemon / mac appはad-hoc署名（`Makefile`の`DAEMON_IDENTITY ?= -`、`Apps/project.yml`のmac targetは`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。**user作業**: Xcode > Settings > Accounts > Manage Certificates で再発行。再発行後は`DAEMON_IDENTITY=<SHA-1>`を渡し、project.ymlの署名設定を`Automatic` + Team `SM5792D355`へ戻す。iPhone / Watch実機ビルドに必須
+- **Apple Development証明書は再発行済み**（有効identity `A3F23595F28DC4E18B5063DF519E424A44778AB4`、失効した3本もkeychainに残る）。iOS / watchOSは`Apps/project.yml`のbase設定（`Automatic` + Team `SM5792D355`）でそのまま実機署名できる。daemon / mac appは**まだad-hoc署名のまま**（`Makefile`の`DAEMON_IDENTITY ?= -`、mac targetの`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。本物の署名へ切り替えると署名が変わりTCC（マイク / システム音声）の再許可ダイアログが出るため、**userが画面の前にいる時に**: `make app DAEMON_IDENTITY=A3F23595F28DC4E18B5063DF519E424A44778AB4` と、project.ymlのmac targetから`CODE_SIGN_STYLE: Manual` / `CODE_SIGN_IDENTITY: "-"`の2行を削除して`make app`
 - **TCC**: ad-hoc署名でrebuildすると再許可が要る可能性（未確認）。appが子processで起動したdaemonのマイク／システム音声許可は親app（Notetake.app）に帰属。`tccutil reset Microphone/AudioCapture io.github.bash0c7.notetake`でリセット可
 - **`swift package resolve`のbinaryTarget取得はkeychain照会で落ちる**（`Failed to find credentials for 'https://github.com' in keychain: status -128`）。`swift package --disable-keychain --disable-netrc resolve`で回避。Bash sandbox内ではgit cloneが途中で止まるためsandbox外で実行
 - **ネットワークが要る初回処理**: FluidAudioモデル（Hugging Face）、`swift package resolve`のbinaryTarget（GitHub releases）、ja-JP音声モデル（済み）。オフライン化（モデルのapp同梱）は未対応
