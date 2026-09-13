@@ -127,7 +127,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 
 - 設計spec（M0〜M6の全体設計、binding authority）: `docs/superpowers/specs/2026-09-12-notetake-design.md`
 - 実装計画: `docs/superpowers/plans/2026-09-12-m0-m2-mac-core.md`（完了）/ `2026-09-13-rotation.md` / `2026-09-13-m3-diarization.md` / `2026-09-13-m4-polish.md` / `2026-09-13-m5-iphone.md` / `2026-09-13-m6-watch.md`（いずれも`make verify`通過・実機検証待ち）
-- project instructions（モデル分担・SDDの手順・署名の注意）: `CLAUDE.md`
+- project instructions（モデル分担・SDDの手順・署名の注意）: `CLAUDE.md`。全体像: `README.md`。決定論的な手順のskill: `.claude/skills/`（`verify` / `mac-app` / `device` / `recordings`）
 
 ## いま動くもの（使い方）
 
