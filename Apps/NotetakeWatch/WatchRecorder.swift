@@ -98,9 +98,11 @@ final class WatchRecorder: NSObject {
 
         let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream()
         bufferContinuation = continuation
-        // このclosureはreal-time audio threadから呼ばれる。`continuation`はSendableな値型で、
-        // `self`やactorには触れないので、engineのtapとしてそのまま安全に使える。
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+        // このclosureはreal-time audio threadから呼ばれる。`AVAudioNodeTapBlock`はSDK上`@Sendable`で
+        // ないため、`@MainActor`なこのクラスの中で書いたclosureはそのままだとMainActor隔離と推論され、
+        // 実行時にexecutor検査で落ちる（2026-09-13の実機クラッシュ）。`@Sendable`を明示して隔離を外す。
+        // `continuation`はSendableな値型で、`self`やactorには触れない。
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { @Sendable buffer, _ in
             continuation.yield(CapturedBuffer(buffer: buffer))
         }
 
