@@ -154,10 +154,10 @@ final class MobileModel {
                 try await Transcriber.ensureAssets(locale: Self.locale)
                 let session = SessionStore.prefix(for: Date(), timeZone: .current)
                 let box = WeakBox(self)
-                try await self.recorder.start(locale: Self.locale) { piece, dbfs in
+                try await self.recorder.start(locale: Self.locale) { piece, dbfs, direction in
                     Task { @MainActor in
                         guard let model = box.value else { return }
-                        await model.handleFinalPiece(piece, dbfs: dbfs, session: session)
+                        await model.handleFinalPiece(piece, dbfs: dbfs, direction: direction, session: session)
                     }
                 }
             } catch {
@@ -179,10 +179,11 @@ final class MobileModel {
         }
     }
 
-    private func handleFinalPiece(_ piece: TranscriptPiece, dbfs: Double, session: String) async {
+    private func handleFinalPiece(_ piece: TranscriptPiece, dbfs: Double, direction: Direction?, session: String) async {
         guard !piece.text.isEmpty else { return }
         lastText = piece.text
         // seqは`PeerClient.enqueue`→`Outbox.appendAssigningSeq`が原子的に採番する（ここでは0）
+        let input = await recorder.currentInput()
         let segment = Segment(
             id: UUID(),
             session: session,
@@ -192,12 +193,13 @@ final class MobileModel {
             owner: settings.ownerName,
             platform: .ios,
             source: .mic,
-            input: InputDevice(name: "iPhone", uid: settings.deviceID, spatial: false),
+            input: input,
             start: piece.startMS,
             end: piece.endMS,
             text: piece.text,
             confidence: piece.confidence,
-            levelDBFS: dbfs
+            levelDBFS: dbfs,
+            direction: direction
         )
         await peerClient?.enqueue(segment)
         await refreshPendingCount()

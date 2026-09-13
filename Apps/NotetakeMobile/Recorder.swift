@@ -3,26 +3,59 @@ import Foundation
 import NotetakeCore
 
 enum RecorderError: Error {
-    /// `start(locale:onPiece:)`が既に開始済みの状態でもう一度呼ばれた
     case alreadyRunning
+    case microphoneUnavailable
 }
 
-/// マイク入力 → AudioConverter → Transcriber(SpeechAnalyzer) をつなぐ、iPhone側のcapture pipeline。
-/// MacのCaptureStream（Sources/notetaked/Pipeline/CaptureStream.swift）と同じ
-/// sampleTime/origin管理・`sending`によるbuffer受け渡しを踏襲するが、話者分離（Aligner）は無い
-/// （iOSではまだ話者分離を送らないため、finalピースをそのまま返す）。
+/// マイク入力（AVCaptureSession）→ AudioConverter → Transcriber(SpeechAnalyzer) をつなぐiPhone側のpipeline。
+/// 空間収録（FOA）対応機材ではW chをTranscriberへ、4chをDirectionEstimatorへ流し、final pieceごとに方位を付ける
 @available(iOS 26, *)
 actor Recorder {
-    /// installTapのcallback（real-time thread）からactorへ渡すための薄いラッパー。
-    /// `AVAudioPCMBuffer`自体はこの1回のyieldでactor側へ所有が移り、callback側では以後触らない
-    /// （`AudioConverter`と同じ根拠の`@unchecked Sendable`。`AVAudioPCMBuffer`は非Sendable）
     private struct CapturedBuffer: @unchecked Sendable {
         let buffer: AVAudioPCMBuffer
     }
 
-    private var engine: AVAudioEngine?
+    /// AVCaptureAudioDataOutputのdelegate。CMSampleBufferをAVAudioPCMBufferへコピーしてactorへ渡す
+    private final class SampleDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+        let continuation: AsyncStream<CapturedBuffer>.Continuation
+        let channelLayout: AVAudioChannelLayout?
+
+        init(continuation: AsyncStream<CapturedBuffer>.Continuation, channelLayout: AVAudioChannelLayout?) {
+            self.continuation = continuation
+            self.channelLayout = channelLayout
+        }
+
+        func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+            guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+                  let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)
+            else { return }
+            let format: AVAudioFormat?
+            if let channelLayout, asbd.pointee.mChannelsPerFrame == channelLayout.channelCount {
+                format = AVAudioFormat(streamDescription: asbd, channelLayout: channelLayout)
+            } else {
+                format = AVAudioFormat(streamDescription: asbd)
+            }
+            let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+            guard let format, frames > 0, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+            pcm.frameLength = frames
+            let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+                sampleBuffer, at: 0, frameCount: Int32(frames), into: pcm.mutableAudioBufferList)
+            guard status == noErr else { return }
+            continuation.yield(CapturedBuffer(buffer: pcm))
+        }
+    }
+
+    private var session: AVCaptureSession?
+    private var delegate: SampleDelegate?
+    private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.capture")
     private var transcriber: Transcriber?
+    /// 取り込みformat → Transcriber input format（非FOA時）、または W ch のmono float → Transcriber input format（FOA時）
     private var converter: AudioConverter?
+    /// 取り込みformat → 4ch Float32 非interleaved（FOA時のみ）
+    private var foaConverter: AudioConverter?
+    private var estimator = DirectionEstimator()
+    private var input = InputDevice(name: "iPhone", uid: "", spatial: false)
+    private var originMS: Int64 = 0
     private var sampleTime: AVAudioFramePosition = 0
     private var lastLevelDBFS: Double = -120
 
@@ -30,28 +63,27 @@ actor Recorder {
     private var feedTask: Task<Void, Never>?
     private var forwardTask: Task<Void, Never>?
 
-    /// マイクを開き、`locale`でTranscriberを起動する。finalなpieceのたびに`onPiece(piece, dbfs)`を呼ぶ
-    /// （呼び出しは`Recorder`のactor context外、`onPiece`は`@Sendable`なので呼び出し側で自由に扱える）
+    func currentInput() -> InputDevice { input }
+
     func start(
-        locale: Locale, onPiece: @escaping @Sendable (TranscriptPiece, Double) -> Void
+        locale: Locale,
+        onPiece: @escaping @Sendable (TranscriptPiece, Double, Direction?) -> Void
     ) async throws {
-        guard engine == nil else { throw RecorderError.alreadyRunning }
-
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(
-            .playAndRecord, mode: .default, options: [.allowBluetooth, .defaultToSpeaker])
-        try session.setActive(true)
-
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let tapFormat = input.outputFormat(forBus: 0)
+        guard session == nil else { throw RecorderError.alreadyRunning }
+        guard let microphone = AVCaptureDevice.default(.builtInMicrophone, for: .audio, position: .unspecified) else {
+            throw RecorderError.microphoneUnavailable
+        }
+        let deviceInput = try AVCaptureDeviceInput(device: microphone)
+        let spatial = deviceInput.isMultichannelAudioModeSupported(.firstOrderAmbisonics)
+        input = InputDevice(name: microphone.localizedName, uid: microphone.uniqueID, spatial: spatial)
 
         let origin = Date()
+        originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())
         let transcriber = try await Transcriber(locale: locale, origin: origin)
-        let converter = try AudioConverter(from: tapFormat, to: transcriber.inputFormat)
-
         self.transcriber = transcriber
-        self.converter = converter
+        self.converter = nil
+        self.foaConverter = nil
+        self.estimator = DirectionEstimator()
         self.sampleTime = 0
         self.lastLevelDBFS = -120
 
@@ -60,23 +92,32 @@ actor Recorder {
         let (bufferStream, bufferContinuation) = AsyncStream<CapturedBuffer>.makeStream()
         self.bufferContinuation = bufferContinuation
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { buffer, _ in
-            bufferContinuation.yield(CapturedBuffer(buffer: buffer))
-        }
+        let foaLayout = spatial ? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_HOA_ACN_SN3D | 4) : nil
+        let delegate = SampleDelegate(continuation: bufferContinuation, channelLayout: foaLayout)
+        let output = AVCaptureAudioDataOutput()
+        output.setSampleBufferDelegate(delegate, queue: queue)
 
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
+        let session = AVCaptureSession()
+        session.beginConfiguration()
+        guard session.canAddInput(deviceInput), session.canAddOutput(output) else {
+            session.commitConfiguration()
             bufferContinuation.finish()
             self.bufferContinuation = nil
             self.transcriber = nil
-            self.converter = nil
             try? await transcriber.finish()
-            throw error
+            throw RecorderError.microphoneUnavailable
         }
+        session.addInput(deviceInput)
+        session.addOutput(output)
+        if spatial {
+            deviceInput.multichannelAudioMode = .firstOrderAmbisonics
+            output.spatialAudioChannelLayoutTag = kAudioChannelLayoutTag_HOA_ACN_SN3D | 4
+        }
+        session.commitConfiguration()
+        session.startRunning()
 
-        self.engine = engine
+        self.session = session
+        self.delegate = delegate
 
         feedTask = Task {
             for await captured in bufferStream {
@@ -86,18 +127,17 @@ actor Recorder {
 
         forwardTask = Task {
             for await piece in pieces where piece.isFinal {
-                let level = await self.currentLevelDBFS()
-                onPiece(piece, level)
+                let (level, direction) = await self.finish(piece: piece)
+                onPiece(piece, level, direction)
             }
         }
     }
 
-    /// tapを外しengineを止め、transcriberを終了させる。呼び出しはpieceストリームが終わるまで待つ
     func stop() async throws {
-        guard let engine else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        self.engine = nil
+        guard let session else { return }
+        session.stopRunning()
+        self.session = nil
+        self.delegate = nil
 
         bufferContinuation?.finish()
         bufferContinuation = nil
@@ -107,6 +147,7 @@ actor Recorder {
         let transcriber = self.transcriber
         self.transcriber = nil
         self.converter = nil
+        self.foaConverter = nil
 
         do {
             try await transcriber?.finish()
@@ -120,15 +161,59 @@ actor Recorder {
     }
 
     private func ingest(_ buffer: sending AVAudioPCMBuffer) async {
-        guard let converter, let transcriber else { return }
-        guard let converted = try? converter.convert(buffer) else { return }
+        guard let transcriber else { return }
+        let sampleRate = buffer.format.sampleRate
+        let frames = AVAudioFramePosition(buffer.frameLength)
+        let startMS = originMS + Int64(Double(sampleTime) * 1000 / sampleRate)
+        let endMS = originMS + Int64(Double(sampleTime + frames) * 1000 / sampleRate)
+
+        let monoSource: AVAudioPCMBuffer
+        if input.spatial, buffer.format.channelCount == 4 {
+            guard let foa = try? foaBuffer(from: buffer), let data = foa.floatChannelData else { return }
+            let count = Int(foa.frameLength)
+            let w = Array(UnsafeBufferPointer(start: data[0], count: count))
+            let y = Array(UnsafeBufferPointer(start: data[1], count: count))
+            let x = Array(UnsafeBufferPointer(start: data[3], count: count))
+            estimator.add(w: w, y: y, x: x, startMS: startMS, endMS: endMS)
+            guard let mono = Self.monoBuffer(samples: w, sampleRate: foa.format.sampleRate) else { return }
+            monoSource = mono
+        } else {
+            monoSource = buffer
+        }
+
+        if converter == nil {
+            converter = try? AudioConverter(from: monoSource.format, to: transcriber.inputFormat)
+        }
+        guard let converter, let converted = try? converter.convert(monoSource) else { return }
         lastLevelDBFS = AudioLevel.dbfs(converted)
-        let frames = AVAudioFramePosition(converted.frameLength)
+        let convertedFrames = AVAudioFramePosition(converted.frameLength)
         await transcriber.feed(converted, at: sampleTime)
-        sampleTime += frames
+        sampleTime += convertedFrames
     }
 
-    private func currentLevelDBFS() -> Double {
-        lastLevelDBFS
+    /// 取り込みbufferを4ch Float32 非interleavedへ（初回にconverterを作る）
+    private func foaBuffer(from buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+        if foaConverter == nil {
+            guard let target = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: buffer.format.sampleRate, channels: 4, interleaved: false)
+            else { throw RecorderError.microphoneUnavailable }
+            foaConverter = try AudioConverter(from: buffer.format, to: target)
+        }
+        return try foaConverter!.convert(buffer)
+    }
+
+    private static func monoBuffer(samples: [Float], sampleRate: Double) -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+              let data = buffer.floatChannelData
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { data[0].update(from: $0.baseAddress!, count: samples.count) }
+        return buffer
+    }
+
+    private func finish(piece: TranscriptPiece) -> (Double, Direction?) {
+        let direction = input.spatial ? estimator.direction(from: piece.startMS, to: piece.endMS) : nil
+        return (lastLevelDBFS, direction)
     }
 }
