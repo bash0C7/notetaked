@@ -2,7 +2,13 @@ import SwiftUI
 
 @main
 struct NotetakeWatchApp: App {
+    @State private var recorder = WatchRecorder()
+
     var body: some Scene {
-        WindowGroup { Text("Notetake") }
+        WindowGroup {
+            NavigationStack {
+                WatchContentView(recorder: recorder)
+            }
+        }
     }
 }

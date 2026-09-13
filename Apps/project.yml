@@ -70,6 +70,9 @@ targets:
     type: application
     platform: watchOS
     sources: [NotetakeWatch]
+    dependencies:
+      - package: NotetakeCore
+        product: NotetakeCore
     info:
       path: NotetakeWatch/Info.plist
       properties:
