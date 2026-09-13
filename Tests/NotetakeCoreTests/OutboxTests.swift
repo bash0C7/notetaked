@@ -109,3 +109,15 @@ private func makeSegment(seq: Int, text: String = "hi") -> Segment {
     let pendingAfterAppend = try await outbox.pending()
     #expect(pendingAfterAppend.map(\.seq) == [3, 4])
 }
+
+@Test func appendAssigningSeqUsesNextSeqAndAdvances() async throws {
+    let outbox = Outbox(directory: makeTempDirectory())
+    let first = try await outbox.appendAssigningSeq(makeSegment(seq: 0, text: "a"))
+    let second = try await outbox.appendAssigningSeq(makeSegment(seq: 999, text: "b"))
+    #expect(first.seq == 1)
+    #expect(second.seq == 2)
+    #expect(await outbox.nextSeq() == 3)
+    let pending = try await outbox.pending()
+    #expect(pending.map(\.seq) == [1, 2])
+    #expect(pending.map(\.text) == ["a", "b"])
+}

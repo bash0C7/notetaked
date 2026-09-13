@@ -65,15 +65,17 @@ actor PeerClient {
         state = .idle
     }
 
-    /// outboxへappendし、接続中ならそのまま`.seg`として送る
+    /// outbox全体のseqを採番してappendし（`Outbox.appendAssigningSeq`、actor内で原子的）、
+    /// 接続中ならそのまま`.seg`として送る。呼び出し側の`segment.seq`は無視される
     func enqueue(_ segment: Segment) async {
+        let sequenced: Segment
         do {
-            try await outbox.append(segment)
+            sequenced = try await outbox.appendAssigningSeq(segment)
         } catch {
             return
         }
         if case .connected = state {
-            send(.seg(segment))
+            send(.seg(sequenced))
         }
     }
 
@@ -133,11 +135,13 @@ actor PeerClient {
         let pskDispatchData = pskData.withUnsafeBytes { DispatchData(bytes: $0) }
         let identityDispatchData = identityData.withUnsafeBytes { DispatchData(bytes: $0) }
         sec_protocol_options_add_pre_shared_key(
-            tls.securityProtocolOptions, pskDispatchData, identityDispatchData)
+            tls.securityProtocolOptions, pskDispatchData as __DispatchData,
+            identityDispatchData as __DispatchData)
         guard
             let ciphersuite = tls_ciphersuite_t(rawValue: UInt16(TLS_PSK_WITH_AES_128_GCM_SHA256))
         else {
             state = .failed("unsupported ciphersuite")
+            scheduleReconnect()
             return
         }
         sec_protocol_options_append_tls_ciphersuite(tls.securityProtocolOptions, ciphersuite)

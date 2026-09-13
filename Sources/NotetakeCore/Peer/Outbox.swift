@@ -46,6 +46,16 @@ public actor Outbox {
         lastAppendedSeq + 1
     }
 
+    /// `nextSeq()`を採番して`segment.seq`に入れ、そのままappendする（actor内で中断点なしに行うため、
+    /// 複数の呼び出し元（mic / Watch中継）が同じseqを取ることがない）。採番後のsegmentを返す
+    @discardableResult
+    public func appendAssigningSeq(_ segment: Segment) throws -> Segment {
+        var sequenced = segment
+        sequenced.seq = nextSeq()
+        try append(sequenced)
+        return sequenced
+    }
+
     /// seq > ackedSeqのもの、seq昇順
     public func pending() throws -> [Segment] {
         guard let text = try? String(contentsOf: outboxURL, encoding: .utf8) else { return [] }

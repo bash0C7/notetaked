@@ -138,8 +138,7 @@ final class MobileModel {
     /// 他のdeviceへ使い回すことはない）ため、Macの単調性チェック・重複排除・ack
     /// cursorの前進は壊れない。
     private func handleWatchSegment(_ segment: Segment) async {
-        var segment = segment
-        segment.seq = await outbox.nextSeq()
+        // seqの採番は`PeerClient.enqueue`→`Outbox.appendAssigningSeq`が原子的に行う
         await peerClient?.enqueue(segment)
         await refreshPendingCount()
     }
@@ -183,11 +182,11 @@ final class MobileModel {
     private func handleFinalPiece(_ piece: TranscriptPiece, dbfs: Double, session: String) async {
         guard !piece.text.isEmpty else { return }
         lastText = piece.text
-        let seq = await outbox.nextSeq()
+        // seqは`PeerClient.enqueue`→`Outbox.appendAssigningSeq`が原子的に採番する（ここでは0）
         let segment = Segment(
             id: UUID(),
             session: session,
-            seq: seq,
+            seq: 0,
             device: settings.deviceID,
             deviceName: settings.deviceName,
             owner: settings.ownerName,

@@ -15,7 +15,8 @@ enum RecorderError: Error {
 actor Recorder {
     /// installTapのcallback（real-time thread）からactorへ渡すための薄いラッパー。
     /// `AVAudioPCMBuffer`自体はこの1回のyieldでactor側へ所有が移り、callback側では以後触らない
-    private struct CapturedBuffer: Sendable {
+    /// （`AudioConverter`と同じ根拠の`@unchecked Sendable`。`AVAudioPCMBuffer`は非Sendable）
+    private struct CapturedBuffer: @unchecked Sendable {
         let buffer: AVAudioPCMBuffer
     }
 
