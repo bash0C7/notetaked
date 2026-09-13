@@ -10,9 +10,12 @@ public struct Utterance: Codable, Sendable, Equatable, Identifiable {
     public var text: String        // 採用本文
     public var confidence: Double?
     public var source: Source      // 採用本文のsource
+    public var platform: Platform  // 採用本文segのplatform
     public var ownerLabel: String  // 採用本文segのowner
+    public var input: String       // 採用本文segのinput.name
     public var sources: [UUID]     // 統合したseg id（受信順）
     public var devices: [String]   // 統合したdevice id
+    public var direction: Direction?  // 統合したsegのうちconfidence最大のdirection
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -23,8 +26,11 @@ public struct Utterance: Codable, Sendable, Equatable, Identifiable {
         case text
         case confidence
         case source
+        case platform
         case ownerLabel = "owner_label"
+        case input
         case sources
         case devices
+        case direction
     }
 }

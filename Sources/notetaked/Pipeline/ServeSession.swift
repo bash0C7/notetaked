@@ -25,6 +25,7 @@ actor ServeSession {
     private struct RunningStream {
         let source: Source
         let owner: String
+        let input: InputDevice
         let stream: CaptureStream
         let consumer: Task<Void, Never>
     }
@@ -172,14 +173,15 @@ actor ServeSession {
                     diarizerModels: diarizerModels)
                 let events = try await captureStream.start()
                 let streamOwner = ownerFor(owner)
+                let input: InputDevice = source == .system ? .system : InputDeviceProbe.current()
                 let consumer = Task { [weak self] in
                     for await event in events {
-                        await self?.handle(streamEvent: event, source: source, owner: streamOwner)
+                        await self?.handle(streamEvent: event, source: source, owner: streamOwner, input: input)
                     }
                 }
                 started.append(
                     RunningStream(
-                        source: source, owner: streamOwner, stream: captureStream,
+                        source: source, owner: streamOwner, input: input, stream: captureStream,
                         consumer: consumer))
             } catch {
                 startError = error
@@ -211,19 +213,19 @@ actor ServeSession {
 
     // MARK: - stream events
 
-    private func handle(streamEvent: StreamEvent, source: Source, owner: String) async {
+    private func handle(streamEvent: StreamEvent, source: Source, owner: String, input: InputDevice) async {
         switch streamEvent {
         case .volatile(let text):
             await control.send(.volatile(source: source, text: text))
         case .final(let piece, let levelDBFS):
-            await handleFinal(piece, levelDBFS: levelDBFS, source: source, owner: owner)
+            await handleFinal(piece, levelDBFS: levelDBFS, source: source, owner: owner, input: input)
         case .log(let message):
             await control.send(.log(message))
         }
     }
 
     private func handleFinal(
-        _ piece: AlignedPiece, levelDBFS: Double, source: Source, owner: String
+        _ piece: AlignedPiece, levelDBFS: Double, source: Source, owner: String, input: InputDevice
     ) async {
         guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let store else { return }
@@ -247,6 +249,7 @@ actor ServeSession {
             owner: owner,
             platform: .mac,
             source: source,
+            input: input,
             start: piece.startMS,
             end: piece.endMS,
             text: piece.text,

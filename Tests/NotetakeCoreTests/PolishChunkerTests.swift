@@ -11,9 +11,12 @@ private func utterance(
     text: String,
     confidence: Double? = nil,
     source: Source = .mic,
+    platform: Platform = .mac,
     ownerLabel: String? = nil,
+    input: String = "MacBook Airのマイク",
     sources: [UUID] = [],
-    devices: [String] = []
+    devices: [String] = [],
+    direction: Direction? = nil
 ) -> Utterance {
     Utterance(
         id: id,
@@ -24,9 +27,12 @@ private func utterance(
         text: text,
         confidence: confidence,
         source: source,
+        platform: platform,
         ownerLabel: ownerLabel ?? speaker,
+        input: input,
         sources: sources,
-        devices: devices
+        devices: devices,
+        direction: direction
     )
 }
 

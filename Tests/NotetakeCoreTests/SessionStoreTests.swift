@@ -18,6 +18,7 @@ private func makeSegment(platform: Platform, text: String) -> Segment {
         owner: "bash",
         platform: platform,
         source: .mic,
+        input: .test,
         start: 0,
         end: 1,
         text: text

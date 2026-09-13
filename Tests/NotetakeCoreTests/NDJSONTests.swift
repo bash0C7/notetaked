@@ -12,6 +12,7 @@ import Testing
         owner: "bash",
         platform: .ios,
         source: .mic,
+        input: .test,
         start: 1_000,
         end: 2_000,
         text: "こんにちは",
@@ -42,6 +43,7 @@ import Testing
         owner: "bash",
         platform: .mac,
         source: .system,
+        input: .test,
         start: 0,
         end: 100,
         text: "hello"
@@ -86,6 +88,7 @@ import Testing
         owner: "bash",
         platform: .mac,
         source: .mic,
+        input: .test,
         start: 0,
         end: 1,
         text: "hi"
@@ -100,6 +103,33 @@ import Testing
     }
 }
 
+@Test func segmentEncodesInputAndDirection() throws {
+    let segment = Segment(
+        id: UUID(), session: "s1", seq: 1, device: "iphone-1", deviceName: "bash iPhone",
+        owner: "bash", platform: .ios, source: .mic,
+        input: InputDevice(name: "iPhone マイク", uid: "mic-1", spatial: true),
+        start: 1_000, end: 2_000, text: "こんにちは",
+        direction: Direction(azimuthDeg: 57.3, confidence: 0.82)
+    )
+    let line = try NDJSON.encode(.segment(segment))
+    #expect(line.contains("\"input\":{"))
+    #expect(line.contains("\"spatial\":true"))
+    #expect(line.contains("\"azimuth_deg\":57.3"))
+    let decoded = try NDJSON.decode(line)
+    #expect(decoded == .segment(segment))
+}
+
+@Test func segmentWithoutDirectionOmitsKey() throws {
+    let segment = Segment(
+        id: UUID(), session: "s1", seq: 1, device: "mac-1", deviceName: "Mac",
+        owner: "bash", platform: .mac, source: .mic, input: .test,
+        start: 1_000, end: 2_000, text: "こんにちは"
+    )
+    let line = try NDJSON.encode(.segment(segment))
+    #expect(!line.contains("direction"))
+    #expect(line.contains("\"input\":{"))
+}
+
 @Test func decodeAllSkipsBlankAndCorruptLines() throws {
     let segment = Segment(
         id: UUID(),
@@ -110,6 +140,7 @@ import Testing
         owner: "bash",
         platform: .mac,
         source: .mic,
+        input: .test,
         start: 0,
         end: 1,
         text: "hi"

@@ -246,6 +246,7 @@ actor WatchRelay {
             owner: meta.owner,
             platform: .watchos,
             source: .watch,
+            input: InputDevice(name: "Apple Watch", uid: meta.device, spatial: false),
             start: piece.startMS,
             end: piece.endMS,
             text: piece.text,

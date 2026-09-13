@@ -18,6 +18,7 @@ private func makeSegment(seq: Int, text: String = "hi") -> Segment {
         owner: "bash",
         platform: .ios,
         source: .mic,
+        input: .test,
         start: 0,
         end: 1,
         text: text

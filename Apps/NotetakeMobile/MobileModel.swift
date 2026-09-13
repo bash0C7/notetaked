@@ -192,6 +192,7 @@ final class MobileModel {
             owner: settings.ownerName,
             platform: .ios,
             source: .mic,
+            input: InputDevice(name: "iPhone", uid: settings.deviceID, spatial: false),
             start: piece.startMS,
             end: piece.endMS,
             text: piece.text,

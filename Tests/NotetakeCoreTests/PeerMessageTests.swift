@@ -12,6 +12,7 @@ private func makeSegmentFixture() -> Segment {
         owner: "bash",
         platform: .ios,
         source: .mic,
+        input: .test,
         start: 1_000,
         end: 2_000,
         text: "こんにちは",

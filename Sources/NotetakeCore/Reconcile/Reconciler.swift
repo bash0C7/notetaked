@@ -104,9 +104,12 @@ public struct Reconciler: Sendable {
             text: seg.text,
             confidence: seg.confidence,
             source: seg.source,
+            platform: seg.platform,
             ownerLabel: seg.owner,
+            input: seg.input.name,
             sources: [seg.id],
-            devices: [seg.device]
+            devices: [seg.device],
+            direction: seg.direction
         )
         utterance.speaker = label(speakerID: utterance.speakerID, ownerLabel: utterance.ownerLabel)
         return utterance
@@ -123,7 +126,15 @@ public struct Reconciler: Sendable {
             merged.text = seg.text
             merged.confidence = seg.confidence
             merged.source = seg.source
+            merged.platform = seg.platform
             merged.ownerLabel = seg.owner
+            merged.input = seg.input.name
+        }
+
+        if let candidate = seg.direction,
+           merged.direction.map({ candidate.confidence > $0.confidence }) ?? true
+        {
+            merged.direction = candidate
         }
 
         if merged.speakerID == nil, let global = seg.speaker?.global {

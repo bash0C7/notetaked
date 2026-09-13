@@ -29,12 +29,14 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
     public var owner: String          // 話者の既定ラベル。systemは"リモート"
     public var platform: Platform
     public var source: Source
+    public var input: InputDevice
     public var start: Int64           // epoch ms（デバイス時計）
     public var end: Int64
     public var text: String
     public var confidence: Double?
     public var levelDBFS: Double?     // key: level_dbfs
     public var speaker: SpeakerTag?
+    public var direction: Direction? = nil
     public var clockOffsetMS: Int64   // key: clock_offset_ms、Macが受信時に付与。既定0
     public var receivedAt: Int64?     // key: received_at
 
@@ -47,12 +49,14 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         case owner
         case platform
         case source
+        case input
         case start
         case end
         case text
         case confidence
         case levelDBFS = "level_dbfs"
         case speaker
+        case direction
         case clockOffsetMS = "clock_offset_ms"
         case receivedAt = "received_at"
     }
@@ -66,12 +70,14 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         owner: String,
         platform: Platform,
         source: Source,
+        input: InputDevice,
         start: Int64,
         end: Int64,
         text: String,
         confidence: Double? = nil,
         levelDBFS: Double? = nil,
         speaker: SpeakerTag? = nil,
+        direction: Direction? = nil,
         clockOffsetMS: Int64 = 0,
         receivedAt: Int64? = nil
     ) {
@@ -83,12 +89,14 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         self.owner = owner
         self.platform = platform
         self.source = source
+        self.input = input
         self.start = start
         self.end = end
         self.text = text
         self.confidence = confidence
         self.levelDBFS = levelDBFS
         self.speaker = speaker
+        self.direction = direction
         self.clockOffsetMS = clockOffsetMS
         self.receivedAt = receivedAt
     }

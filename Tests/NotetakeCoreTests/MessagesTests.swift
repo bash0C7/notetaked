@@ -43,9 +43,12 @@ import Testing
         text: "こんにちは",
         confidence: 0.9,
         source: .mic,
+        platform: .mac,
         ownerLabel: "bash",
+        input: "MacBook Airのマイク",
         sources: [UUID()],
-        devices: ["mac-1"]
+        devices: ["mac-1"],
+        direction: nil
     )
     let utteranceEvent = Event.utterance(utterance)
     let volatileEvent = Event.volatile(source: .mic, text: "…")

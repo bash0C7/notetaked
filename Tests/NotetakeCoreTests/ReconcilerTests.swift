@@ -13,7 +13,9 @@ private func seg(
     text: String,
     confidence: Double? = nil,
     offset: Int64 = 0,
-    global: String? = nil
+    global: String? = nil,
+    input: InputDevice = .test,
+    direction: Direction? = nil
 ) -> Record {
     .segment(Segment(
         id: id,
@@ -24,12 +26,14 @@ private func seg(
         owner: owner,
         platform: platform,
         source: source,
+        input: input,
         start: start,
         end: end,
         text: text,
         confidence: confidence,
         levelDBFS: nil,
         speaker: global.map { SpeakerTag(global: $0) },
+        direction: direction,
         clockOffsetMS: offset,
         receivedAt: nil
     ))
@@ -201,4 +205,37 @@ private func seg(
     }
 
     #expect(folded == manual.utterances)
+}
+
+@Test func utteranceCarriesInputPlatformAndDirectionOfSegment() {
+    var r = Reconciler()
+    let d = Direction(azimuthDeg: 90, confidence: 0.9)
+    let out = r.apply(seg(device: "ip", platform: .ios, start: 0, end: 1000, text: "こんにちは",
+                          input: InputDevice(name: "iPhone マイク", uid: "m", spatial: true), direction: d))
+    #expect(out[0].input == "iPhone マイク")
+    #expect(out[0].platform == .ios)
+    #expect(out[0].direction == d)
+}
+
+@Test func mergeKeepsDirectionFromSpatialSegmentEvenWhenTextComesFromOther() {
+    var r = Reconciler()
+    let d = Direction(azimuthDeg: 90, confidence: 0.9)
+    r.apply(seg(device: "ip", platform: .ios, start: 0, end: 1000, text: "こんにちは", confidence: 0.5,
+                input: InputDevice(name: "iPhone マイク", uid: "m", spatial: true), direction: d))
+    let out = r.apply(seg(device: "mac", start: 100, end: 1100, text: "こんにちは。", confidence: 0.9))
+    #expect(out[0].text == "こんにちは。")
+    #expect(out[0].input == "MacBook Airのマイク")
+    #expect(out[0].platform == .mac)
+    #expect(out[0].direction == d)
+}
+
+@Test func mergePrefersHigherConfidenceDirection() {
+    var r = Reconciler()
+    let weak = Direction(azimuthDeg: 10, confidence: 0.3)
+    let strong = Direction(azimuthDeg: 200, confidence: 0.8)
+    r.apply(seg(device: "a", platform: .ios, start: 0, end: 1000, text: "こんにちは",
+                input: InputDevice(name: "a", uid: "a", spatial: true), direction: weak))
+    let out = r.apply(seg(device: "b", platform: .ios, start: 0, end: 1000, text: "こんにちは",
+                          input: InputDevice(name: "b", uid: "b", spatial: true), direction: strong))
+    #expect(out[0].direction == strong)
 }
