@@ -44,6 +44,8 @@ targets:
           SRC="$SRCROOT/../.build/release/notetaked"
           if [ ! -x "$SRC" ]; then echo "error: run 'make daemon' first ($SRC missing)"; exit 1; fi
           cp "$SRC" "$BUILT_PRODUCTS_DIR/$EXECUTABLE_FOLDER_PATH/notetaked"
+        inputFiles:
+          - $(SRCROOT)/../.build/release/notetaked
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/notetaked
   NotetakeMobile:
