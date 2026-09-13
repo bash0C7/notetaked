@@ -56,6 +56,7 @@ actor Recorder {
     private var estimator = DirectionEstimator()
     private var input = InputDevice(name: "iPhone", uid: "", spatial: false)
     private var originMS: Int64 = 0
+    private var clock: SampleClock?
     private var sampleTime: AVAudioFramePosition = 0
     private var lastLevelDBFS: Double = -120
 
@@ -70,7 +71,7 @@ actor Recorder {
         onPiece: @escaping @Sendable (TranscriptPiece, Double, Direction?) -> Void
     ) async throws {
         guard session == nil else { throw RecorderError.alreadyRunning }
-        guard let microphone = AVCaptureDevice.default(.builtInMicrophone, for: .audio, position: .unspecified) else {
+        guard let microphone = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified) else {
             throw RecorderError.microphoneUnavailable
         }
         let deviceInput = try AVCaptureDeviceInput(device: microphone)
@@ -81,6 +82,7 @@ actor Recorder {
         originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())
         let transcriber = try await Transcriber(locale: locale, origin: origin)
         self.transcriber = transcriber
+        self.clock = SampleClock(originMS: originMS, sampleRate: transcriber.inputFormat.sampleRate)
         self.converter = nil
         self.foaConverter = nil
         self.estimator = DirectionEstimator()
@@ -127,7 +129,7 @@ actor Recorder {
 
         forwardTask = Task {
             for await piece in pieces where piece.isFinal {
-                let (level, direction) = await self.finish(piece: piece)
+                let (level, direction) = self.finish(piece: piece)
                 onPiece(piece, level, direction)
             }
         }
@@ -146,6 +148,7 @@ actor Recorder {
 
         let transcriber = self.transcriber
         self.transcriber = nil
+        self.clock = nil
         self.converter = nil
         self.foaConverter = nil
 
@@ -161,20 +164,17 @@ actor Recorder {
     }
 
     private func ingest(_ buffer: sending AVAudioPCMBuffer) async {
-        guard let transcriber else { return }
-        let sampleRate = buffer.format.sampleRate
-        let frames = AVAudioFramePosition(buffer.frameLength)
-        let startMS = originMS + Int64(Double(sampleTime) * 1000 / sampleRate)
-        let endMS = originMS + Int64(Double(sampleTime + frames) * 1000 / sampleRate)
+        guard let transcriber, let clock else { return }
 
         let monoSource: AVAudioPCMBuffer
+        var foaChannels: (w: [Float], y: [Float], x: [Float])?
         if input.spatial, buffer.format.channelCount == 4 {
             guard let foa = try? foaBuffer(from: buffer), let data = foa.floatChannelData else { return }
             let count = Int(foa.frameLength)
             let w = Array(UnsafeBufferPointer(start: data[0], count: count))
             let y = Array(UnsafeBufferPointer(start: data[1], count: count))
             let x = Array(UnsafeBufferPointer(start: data[3], count: count))
-            estimator.add(w: w, y: y, x: x, startMS: startMS, endMS: endMS)
+            foaChannels = (w, y, x)
             guard let mono = Self.monoBuffer(samples: w, sampleRate: foa.format.sampleRate) else { return }
             monoSource = mono
         } else {
@@ -185,8 +185,16 @@ actor Recorder {
             converter = try? AudioConverter(from: monoSource.format, to: transcriber.inputFormat)
         }
         guard let converter, let converted = try? converter.convert(monoSource) else { return }
-        lastLevelDBFS = AudioLevel.dbfs(converted)
         let convertedFrames = AVAudioFramePosition(converted.frameLength)
+
+        // 時刻はTranscriberと同じ変換後サンプル数の時計で作る（親spec「時刻基準」）
+        if let foaChannels {
+            estimator.add(
+                w: foaChannels.w, y: foaChannels.y, x: foaChannels.x,
+                startMS: clock.ms(atFrame: sampleTime),
+                endMS: clock.ms(atFrame: sampleTime + convertedFrames))
+        }
+        lastLevelDBFS = AudioLevel.dbfs(converted)
         await transcriber.feed(converted, at: sampleTime)
         sampleTime += convertedFrames
     }
