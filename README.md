@@ -1,5 +1,7 @@
 # Notetake / notetaked
 
+ツール名（daemon / ツール全体）は`notetaked`、読みは「のたてけでぃー」（ローマ字読み）。語源はnotetake（速記）+ daemonの`d`。
+
 Macのメニューバーappとdaemonで会議音声（マイク + システム音声）をリアルタイムに文字起こしし、iPhone / Apple Watchで拾った音声も同じ収録に統合してMarkdownの議事録にする。全てローカルで動く（Speech / FluidAudio / Foundation Models）。
 
 ## 構成
