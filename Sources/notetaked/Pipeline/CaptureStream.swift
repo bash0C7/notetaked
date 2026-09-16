@@ -55,6 +55,11 @@ actor CaptureStream {
     private static let levelRetentionMS: Int64 = 120_000
     private var bufferContinuation: AsyncStream<Converted>.Continuation?
     private var feedTask: Task<Void, Never>?
+    /// diarizer.feedの呼び出しを`ingest`の本流から切り離すchain。1つ前の呼び出しの完了を
+    /// 待ってから次を実行することで、実時間の音声取り込み（transcriber feed / level記録）が
+    /// diarizerの推論速度（実時間より遅れうる）に引きずられないようにする。turnの時刻は
+    /// 呼び出し順に依存するため、chainの順序（＝ingestが呼ばれた順）を保つ
+    private var diarizerChain: Task<Void, Never>?
     private var forwardTask: Task<Void, Never>?
     /// aligner.drain(nowMS:)をhold-limit経過だけで定期的に走らせるタイマー。
     /// 新しいbuffer/pieceが来ない間もhold-limit超過分が出るようにする。
@@ -174,10 +179,26 @@ actor CaptureStream {
 
     /// diarizerに残っている音声をflushしてalignerへ反映し、alignerに残っている保留piece
     /// 全部を今あるturnsだけで分割して出してから、event streamを終了する。
+    /// diarizerChainの完了待ちと`diarizer.flush()`自体にそれぞれ5秒の上限を設け、
+    /// backlogが残っていてもstop/rotateが長時間ハングしないようにする（issue #13）。
+    /// 上限超過分は話者タグが遅れて付かないだけで、音声データ自体は失われない
     private func finishAfterFlush() async {
         if let diarizer {
-            if let output = try? await diarizer.flush() {
-                aligner.add(turns: output.turns, coveredUntilMS: output.coveredUntilMS)
+            let caughtUp = await Self.wait(for: diarizerChain, timeoutSeconds: 5)
+            if caughtUp == nil {
+                eventContinuation?.yield(
+                    .log("diarizer backlog did not clear within 5s, finalizing without waiting further"))
+            }
+            let flushTask = Task<Diarizer.Output?, Never> {
+                try? await diarizer.flush()
+            }
+            if let flushResult = await Self.wait(for: flushTask, timeoutSeconds: 5) {
+                if let output = flushResult {
+                    aligner.add(turns: output.turns, coveredUntilMS: output.coveredUntilMS)
+                }
+            } else {
+                eventContinuation?.yield(
+                    .log("diarizer flush did not complete within 5s, finalizing without it"))
             }
         }
         for aligned in aligner.flush() {
@@ -185,6 +206,25 @@ actor CaptureStream {
                 .final(aligned, levelDBFS: levelForPiece(startMS: aligned.startMS, endMS: aligned.endMS)))
         }
         eventContinuation?.finish()
+    }
+
+    /// `task`の完了を`timeoutSeconds`まで待つ。間に合えば結果（`T`）を、タイムアウトなら
+    /// `nil`を返す（taskはキャンセルしない。バックグラウンドで完了自体は続き、
+    /// `applyDiarizerOutput`が呼ばれた時点でevent streamが既に`finish()`済みなら
+    /// `eventContinuation?.yield`は無視されるだけで安全）。`task`が`nil`（chainが
+    /// 一度も走っていない等）の場合もタイムアウトと区別せず`nil`を返す
+    private static func wait<T: Sendable>(for task: Task<T, Never>?, timeoutSeconds: Double) async -> T? {
+        guard let task else { return nil }
+        return await withTaskGroup(of: T?.self) { group in
+            group.addTask { await task.value }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     private func ingest(
@@ -201,17 +241,35 @@ actor CaptureStream {
         sampleTime += frames
 
         guard let diarizer, let samples = converted.mono16k, !samples.isEmpty else { return }
+        let previous = diarizerChain
+        diarizerChain = Task.detached { [weak self] in
+            _ = await previous?.value
+            guard let self else { return }
+            await self.runDiarizerFeed(diarizer, samples: samples)
+        }
+    }
+
+    /// chainの1コマ分。diarizerの推論（CoreML、同期・重い）はこのdetached task上で行われ、
+    /// 結果の反映（aligner更新・event送出）だけ`await self.xxx`でCaptureStream actorへ戻す
+    private func runDiarizerFeed(_ diarizer: Diarizer, samples: [Float]) async {
         do {
             if let output = try await diarizer.feed(samples) {
-                aligner.add(turns: output.turns, coveredUntilMS: output.coveredUntilMS)
-                emitDrained(nowMS: Self.nowMS())
+                applyDiarizerOutput(output)
             }
         } catch {
-            if !diarizerErrorReported {
-                diarizerErrorReported = true
-                eventContinuation?.yield(.log("diarizer feed failed: \(error)"))
-            }
+            reportDiarizerError(error)
         }
+    }
+
+    private func applyDiarizerOutput(_ output: Diarizer.Output) {
+        aligner.add(turns: output.turns, coveredUntilMS: output.coveredUntilMS)
+        emitDrained(nowMS: Self.nowMS())
+    }
+
+    private func reportDiarizerError(_ error: Error) {
+        guard !diarizerErrorReported else { return }
+        diarizerErrorReported = true
+        eventContinuation?.yield(.log("diarizer feed failed: \(error)"))
     }
 
     /// 新しい音声もfinal pieceも来ない間、hold-limit超過分をタイマーから出すための入口
