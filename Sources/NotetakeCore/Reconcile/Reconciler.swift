@@ -7,6 +7,8 @@ public struct Reconciler: Sendable {
         public var overlapRatio: Double = 0.5
         public var toleranceMS: Int64 = 1000
         public var textThreshold: Double = 0.5
+        /// speakerが付かないsegについて、直前の同一device utteranceの話者を継承してよい最大の間隔（ms）（issue #8）
+        public var speakerInheritanceGapMS: Int64 = 5_000
         public init() {}
     }
 
@@ -99,7 +101,7 @@ public struct Reconciler: Sendable {
             id: seg.id,
             start: start,
             end: end,
-            speakerID: seg.speaker?.global,
+            speakerID: seg.speaker?.global ?? inheritedSpeakerID(for: seg, start: start),
             speaker: "",
             text: seg.text,
             confidence: seg.confidence,
@@ -109,10 +111,26 @@ public struct Reconciler: Sendable {
             input: seg.input.name,
             sources: [seg.id],
             devices: [seg.device],
-            direction: seg.direction
+            direction: seg.direction,
+            locationInput: seg.input.name,
+            locationPlatform: seg.platform,
+            locationSource: seg.source,
+            locationDirection: seg.direction,
+            locationLevelDBFS: seg.levelDBFS
         )
         utterance.speaker = label(speakerID: utterance.speakerID, ownerLabel: utterance.ownerLabel)
         return utterance
+    }
+
+    /// speakerが付かないsegについて、同じdeviceの直前のutteranceの話者を、時間差が
+    /// `config.speakerInheritanceGapMS`以内なら継承する。継承元が無い（そのdeviceの
+    /// 最初の発話）場合や閾値を超える場合はnilのまま（呼び出し側がownerLabelにfallbackする）（issue #8）
+    private func inheritedSpeakerID(for seg: Segment, start: Int64) -> String? {
+        for utterance in utterances.reversed() where utterance.devices.contains(seg.device) {
+            guard start - utterance.end <= config.speakerInheritanceGapMS else { return nil }
+            return utterance.speakerID
+        }
+        return nil
     }
 
     private func merge(seg: Segment, into utterance: Utterance, start: Int64, end: Int64) -> Utterance {
@@ -131,14 +149,24 @@ public struct Reconciler: Sendable {
             merged.input = seg.input.name
         }
 
+        if let level = seg.levelDBFS,
+           merged.locationLevelDBFS.map({ level > $0 }) ?? true
+        {
+            merged.locationLevelDBFS = level
+            merged.locationInput = seg.input.name
+            merged.locationPlatform = seg.platform
+            merged.locationSource = seg.source
+            merged.locationDirection = seg.direction
+        }
+
         if let candidate = seg.direction,
            merged.direction.map({ candidate.confidence > $0.confidence }) ?? true
         {
             merged.direction = candidate
         }
 
-        if merged.speakerID == nil, let global = seg.speaker?.global {
-            merged.speakerID = global
+        if merged.speakerID == nil {
+            merged.speakerID = seg.speaker?.global ?? inheritedSpeakerID(for: seg, start: start)
         }
         merged.speaker = label(speakerID: merged.speakerID, ownerLabel: merged.ownerLabel)
         return merged

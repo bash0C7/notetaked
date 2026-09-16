@@ -32,7 +32,12 @@ private func utterance(
         input: input,
         sources: sources,
         devices: devices,
-        direction: direction
+        direction: direction,
+        locationInput: input,
+        locationPlatform: platform,
+        locationSource: source,
+        locationDirection: direction,
+        locationLevelDBFS: nil
     )
 }
 

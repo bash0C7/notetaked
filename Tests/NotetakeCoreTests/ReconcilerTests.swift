@@ -15,7 +15,8 @@ private func seg(
     offset: Int64 = 0,
     global: String? = nil,
     input: InputDevice = .test,
-    direction: Direction? = nil
+    direction: Direction? = nil,
+    levelDBFS: Double? = nil
 ) -> Record {
     .segment(Segment(
         id: id,
@@ -31,7 +32,7 @@ private func seg(
         end: end,
         text: text,
         confidence: confidence,
-        levelDBFS: nil,
+        levelDBFS: levelDBFS,
         speaker: global.map { SpeakerTag(global: $0) },
         direction: direction,
         clockOffsetMS: offset,
@@ -238,4 +239,31 @@ private func seg(
     let out = r.apply(seg(device: "b", platform: .ios, start: 0, end: 1000, text: "こんにちは",
                           input: InputDevice(name: "b", uid: "b", spatial: true), direction: strong))
     #expect(out[0].direction == strong)
+}
+
+@Test func speakerlessSegmentInheritsPriorSameDeviceSpeakerWithinGap() {
+    var r = Reconciler()
+    r.apply(seg(device: "mac1", owner: "小芝", start: 0, end: 1000, text: "うん", global: "g2"))
+    let out = r.apply(seg(device: "mac1", owner: "小芝", start: 1500, end: 2500, text: "連絡きたの"))
+    #expect(out[0].speakerID == "g2")
+}
+
+@Test func speakerlessSegmentFallsBackToOwnerWhenGapExceedsThreshold() {
+    var r = Reconciler()
+    r.apply(seg(device: "mac1", owner: "小芝", start: 0, end: 1000, text: "うん", global: "g2"))
+    let out = r.apply(seg(device: "mac1", owner: "小芝", start: 10_000, end: 11_000, text: "連絡きたの"))
+    #expect(out[0].speakerID == nil)
+    #expect(out[0].speaker == "小芝")
+}
+
+@Test func locationLabelFollowsHighestLevelSegNotTextWinner() {
+    var r = Reconciler()
+    r.apply(seg(device: "ip", platform: .ios, start: 0, end: 1000, text: "こんにちは", confidence: 0.9, levelDBFS: -10))
+    let out = r.apply(seg(device: "mac", start: 100, end: 1100, text: "こんにちは。", confidence: 0.95, levelDBFS: -30))
+    // 本文はconfidenceの高いmac側（現状のtextWins仕様のまま）
+    #expect(out[0].text == "こんにちは。")
+    #expect(out[0].platform == .mac)
+    // 場所ラベルはlevel_dbfsが高い(=話者に近い)ip側
+    #expect(out[0].locationPlatform == .ios)
+    #expect(LocationLabel.text(for: out[0]) == "iPhone")
 }
