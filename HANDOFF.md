@@ -134,7 +134,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 - daemon再起動後に同じ接頭辞で収録を再開する要件（spec）は未実装
 - `DaemonClient`: stdout chunkごとのTask hopがFIFO前提 → AsyncStreamで直列化（未対応）
 - Transcriber: 変換ごとの`AudioConverter.reset()`が認識品質に与える影響のA/B未実施
-- `--source both`でヘッドホン無しの場合、リモート音声がmicとtapの両方に入り、同一deviceなので統合されず重複する（spec追記候補）
+- **内蔵マイク+内蔵/外部スピーカーで`--source both`を使う場合、スピーカーの音をマイクが拾ってしまい（音響的な回り込み）、system音声とほぼ同じ内容がmic側にも別発話として二重に載る（2026-09-16、user確認・意図的に未対応のまま残す判断）**。`Reconciler.bestCandidateIndex`は`!utterance.devices.contains(seg.device)`（同一`device`同士は統合しない。`sameDeviceNeverMerges`テストが担保するdevice内自己重複防止のためのガード）を条件にしており、Macの`--source both`ではmic segとsystem segが同じ`device` idを持つため、テキストが似ていてもこのガードで弾かれ統合対象にならない。既定のアプリ内`polish`（Foundation Models、`Sources/notetaked/Polish/Polisher.swift`）はこの重複を解消しない設計: instructionsに「要約しない」「本文turnと同じ件数・同じ順で返す」と明記しており、`PolishChunker.turns`も連続する同一speakerラベルのutteranceしか結合しない（mic側とsystem側は通常ownerラベルが違うため結合対象にすら入らない）ため、重複はpolish後もそのまま残る可能性が高い。**回避策として、アプリ側の重複排除は実装せず、`final.md`を外部の汎用AI（ChatGPT/Claude等）へコピペして「読みやすい議事録にして」と整形依頼する運用に委ねる方針とした**（外部AIへの一般的な整形依頼はpolishのような「同じ件数で返す」制約が無いため、隣接する類似内容の行を自然にまとめてくれる想定。ただしmic側とsystem側で話者ラベルが違うため、話者取り違えのリスクは残る）。ヘッドホン使用（AirPods等）で物理的に回り込みを断つのが最も確実な回避策で、これは既に対応済み（#14の入力デバイス追随修正により接続するだけで機能する）。アプリ側のReconciler修正（同一device+テキスト類似の統合除外）は行わない判断
 - iPhone側の話者分離・埋め込み送信、Watchのownerを`WCSession.applicationContext`で同期、`hello`のowner名変更の即時反映は未実装
 
 ## ドキュメント
