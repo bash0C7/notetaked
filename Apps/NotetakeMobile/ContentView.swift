@@ -70,8 +70,8 @@ struct ContentView: View {
         switch model.peerState {
         case .idle: return "未接続"
         case .browsing: return "検索中…"
-        case .connecting(let name): return "接続中: \(name)"
-        case .connected(let name): return name
+        case .connecting(let name): return "接続試行中: \(name)"
+        case .connected(let name): return "接続済み: \(name)"
         case .failed(let reason): return "エラー: \(reason)"
         }
     }

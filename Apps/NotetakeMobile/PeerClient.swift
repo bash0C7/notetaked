@@ -28,6 +28,12 @@ actor PeerClient {
     private var backoffSeconds: Double = 1
     private var stopped = true
 
+    /// `.waiting`が連続何回観測されたか。ネットワーク変更で到達不能になった接続は
+    /// `.failed`ではなく`.waiting`のまま留まることが多いため、これが閾値に達したら
+    /// `.failed`と同様に扱い再接続する（issue #11）
+    private var consecutiveWaitingCount = 0
+    private static let waitingThreshold = 3
+
     private var state: PeerClientState = .idle {
         didSet {
             // 実機の接続不良を`devicectl device process launch --console`で追えるようstderrへ出す
@@ -167,6 +173,7 @@ actor PeerClient {
     private func handleConnectionState(_ newState: NWConnection.State, description: String) async {
         switch newState {
         case .ready:
+            consecutiveWaitingCount = 0
             state = .connected(description)
             backoffSeconds = 1
             send(.hello(hello))
@@ -174,6 +181,11 @@ actor PeerClient {
             await resendPending()
         case .waiting(let error):
             Diag.log("peer client: waiting \(error)")
+            consecutiveWaitingCount += 1
+            if consecutiveWaitingCount >= Self.waitingThreshold {
+                consecutiveWaitingCount = 0
+                handleDisconnect(reason: "\(error)")
+            }
         case .failed(let error):
             handleDisconnect(reason: "\(error)")
         case .cancelled:
@@ -188,6 +200,7 @@ actor PeerClient {
         current.cancel()
         connection = nil
         receiveBuffer.removeAll()
+        consecutiveWaitingCount = 0
         guard !stopped else {
             state = .idle
             return
