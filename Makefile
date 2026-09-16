@@ -4,6 +4,9 @@ DERIVED := .build/DerivedData
 LOGS := .build/logs
 # compiler diagnostics with a file position; tool-level notices (e.g. AppIntents metadata) do not match
 DIAG := '\.swift:[0-9]+:[0-9]+: (warning|error):'
+# xcodebuild's own scheme-level failures (missing platform runtime, provisioning, etc.) are not
+# compiler diagnostics and can occur even when xcodebuild's own exit code is unreliable (issue #10)
+XCODEBUILD_ERROR := '^xcodebuild: error:'
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
@@ -33,9 +36,11 @@ verify:
 	swift test 2>&1 | tee $(LOGS)/verify-test.log; test $${PIPESTATUS[0]} -eq 0
 	$(MAKE) app 2>&1 | tee $(LOGS)/verify-app.log; test $${PIPESTATUS[0]} -eq 0
 	! grep -E $(DIAG) $(LOGS)/verify-app.log
+	! grep -E $(XCODEBUILD_ERROR) $(LOGS)/verify-app.log
 	xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' \
 	  -derivedDataPath $(DERIVED) CODE_SIGNING_ALLOWED=NO build 2>&1 | tee $(LOGS)/verify-ios.log; test $${PIPESTATUS[0]} -eq 0
 	! grep -E $(DIAG) $(LOGS)/verify-ios.log
+	! grep -E $(XCODEBUILD_ERROR) $(LOGS)/verify-ios.log
 	@echo "verify: OK"
 
 clean:
