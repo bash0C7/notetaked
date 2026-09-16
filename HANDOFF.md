@@ -13,7 +13,13 @@
 - **気づき**: issue #7 / #8 / #3に転記済み
 - **人の操作が要る残り**: なし（2-4・2-5はuser判断事項として残るが検証は完了扱い）
 - **実機検証はuser宣言で完了（2026-09-14）。後回しの要望と気づきはissue化済み（優先順位は未定、userの指示で今は付けない）**: #3 ライブパネルのtoolbar overflow（ハンバーガー位置） / #4 ペアリングコード廃止・iCloud識別 / #5 Macセッション開始とiPhone取り込み開始の概念整理 / #6 場所ラベルは`level_dbfs`最大のsegの機器（決定済み） / #7 daemon再起動後のiPhone「接続」表示とCLOSE_WAIT / #8 分離結果の無い短い発話が所有者名に割れる / #2 方位の軸校正 / #10 `make verify`がxcodebuildのスキームレベル失敗（watchOSランタイム未導入など）を検出せず`verify: OK`を出す（別セッションからの報告、未再現） / #11 iPhone `PeerClient`が`.waiting`を無視しネットワーク変更後「接続中」のまま復帰しない。「接続中」がconnecting / connectedのどちらか読めない表示も併せて直す / #12 ツール名は`notetaked`、読みは「のたてけでぃー」（語源: notetake = 速記 + daemon）をREADMEに記載
-- **次: issue #2〜#12から着手するものをuserが選び、issueごとにbranchを切って進める**
+- **issue #13 / #14 / #10 / #11 実装済み・未検証（2026-09-16、Claude Code on the web、Linux）**: このセッションはSwiftツールチェーンが無く`make verify`・実機確認ができないため、コード変更のみでMac側の検証が未実施。plan: `docs/superpowers/plans/2026-09-15-control-responsiveness-and-reliability-fixes.md`
+  - #13: `CaptureStream.ingest`が`diarizer.feed`を直接awaitしていたのをchained `Task.detached`へ逃がし（`diarizerChain`）、`finishAfterFlush`でのchain完了待ち・`diarizer.flush()`それぞれに5秒の上限を設けた（`Sources/notetaked/Pipeline/CaptureStream.swift`）。stop/rotateが無期限にハングしなくなるが、issue本文の「24時間運用でのバックログ・メモリ推移」「データロス防止（プロセス分離等）」は未対応のままissueに残す。`stopCapture()`がstreams（mic/system）を順に`stop()`しているため、両方が同時にbacklogを抱えていると最悪合計約20秒待つ（並列化は未対応）
+  - #14: `MicCapture`が`AVAudioEngineConfigurationChangeNotification`を購読しtapを張り直す（`Sources/notetaked/Audio/MicCapture.swift`）。`ServeSession.startCapture`のconsumer Taskがmicの`input`を毎回`InputDeviceProbe.current()`で取り直すよう変更（`Sources/notetaked/Pipeline/ServeSession.swift`）。issue本文の項目1（自動追随）のみ対応。項目2（明示的デバイス選択）・項目3（入力レベルのリアルタイム表示）は未対応のままissueに残す
+  - #10: `Makefile`の`verify`ターゲットの各ステップに`; test ${PIPESTATUS[0]} -eq 0`を追加し、grepによる警告検出とは別にプロセス自体の終了コードを見るようにした。再現（watchOS Simulatorランタイム未導入等）はこのセッションでは実施できず、ロジックレビューのみ
+  - #11: `PeerClient`が`.waiting`を3回連続観測したら`.failed`と同様`handleDisconnect`を呼ぶようにした（`Apps/NotetakeMobile/PeerClient.swift`）。`ContentView.peerStatusText`を「接続試行中: <名前>」「接続済み: <名前>」に変えconnecting/connectedを読み分けられるようにした
+  - **次にMac側セッションでやること**: `make verify`（4件とも影響するtargetを含む）→ 実機確認（#13: 2話者長時間録音で分離ありのままstop/rotateが数秒で反映されること、#14: 内蔵マイク→AirPods接続/切断で収録が止まらずsegmentのinput名が追随すること、#11: iPhoneのWi-Fiを切り替えて数秒〜十数秒で再接続すること、#10: 可能なら意図的なビルド失敗で`verify`が非0で止まることを確認）。通れば「実装済み・検証済み」に書き換え、GitHub issueをcloseする
+- **次: issue #2〜#9から着手するものをuserが選び、issueごとにbranchを切って進める**（#2 iPhone実機での方位軸校正、#9 実機でのメモリ推移計測は実機操作が必須でこのセッションでは対応不可）
 
 ### branchに入っているもの（段階順 = 検証順）
 
