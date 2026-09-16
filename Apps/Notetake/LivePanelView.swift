@@ -32,27 +32,49 @@ struct LivePanelView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(appModel.utterances) { utterance in
-                        UtteranceRow(utterance: utterance, appModel: appModel, timeFormatter: Self.timeFormatter)
-                    }
-                    ForEach(orderedVolatile, id: \.source) { entry in
-                        VolatileRow(source: entry.source, text: entry.text)
-                    }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchorID)
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button("セッション開始") { appModel.startRecording() }
+                        .disabled(appModel.outputDirectory == nil || appModel.isRecording)
+                    Button("セッション終了") { appModel.stopRecording() }
+                        .disabled(!appModel.isRecording)
+                    Button("区切る") { appModel.rotateRecording() }
+                        .disabled(!appModel.isRecording)
+                    Button("整形") { appModel.polishLastRecording() }
+                        .disabled(appModel.lastFinishedPrefix == nil || appModel.isPolishing)
+                    Toggle("常に前面", isOn: $floating)
+                        .onChange(of: floating) {
+                            applyFloating(floating)
+                        }
+                    Button("全文コピー") { appModel.copyAllToPasteboard() }
                 }
-                .padding()
+                .padding(.horizontal)
+                .padding(.vertical, 6)
             }
-            .textSelection(.enabled)
-            .onChange(of: appModel.utterances.count) {
-                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-            }
-            .onChange(of: orderedVolatile.map(\.text).joined()) {
-                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(appModel.utterances) { utterance in
+                            UtteranceRow(utterance: utterance, appModel: appModel, timeFormatter: Self.timeFormatter)
+                        }
+                        ForEach(orderedVolatile, id: \.source) { entry in
+                            VolatileRow(source: entry.source, text: entry.text)
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomAnchorID)
+                    }
+                    .padding()
+                }
+                .textSelection(.enabled)
+                .onChange(of: appModel.utterances.count) {
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
+                .onChange(of: orderedVolatile.map(\.text).joined()) {
+                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                }
             }
         }
         .frame(minWidth: 480, minHeight: 320)
@@ -61,37 +83,12 @@ struct LivePanelView: View {
                 Text(statusText)
                     .foregroundStyle(.secondary)
             }
-            ToolbarItem(placement: .automatic) {
-                Button("収録開始") { appModel.startRecording() }
-                    .disabled(appModel.outputDirectory == nil || appModel.isRecording)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button("収録停止") { appModel.stopRecording() }
-                    .disabled(!appModel.isRecording)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button("区切る") { appModel.rotateRecording() }
-                    .disabled(!appModel.isRecording)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button("整形") { appModel.polishLastRecording() }
-                    .disabled(appModel.lastFinishedPrefix == nil || appModel.isPolishing)
-            }
-            ToolbarItem(placement: .automatic) {
-                Toggle("常に前面", isOn: $floating)
-                    .onChange(of: floating) {
-                        applyFloating(floating)
-                    }
-            }
-            ToolbarItem(placement: .automatic) {
-                Button("全文コピー") { appModel.copyAllToPasteboard() }
-            }
         }
     }
 
     private var statusText: String {
-        guard appModel.isRecording else { return "停止中" }
-        var text = "収録中 \(appModel.prefix ?? "")"
+        guard appModel.isRecording else { return "セッション無し" }
+        var text = "セッション中 \(appModel.prefix ?? "")"
         if !appModel.sources.isEmpty {
             text += " " + appModel.sources.map(\.rawValue).joined(separator: "/")
         }
