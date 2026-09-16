@@ -27,7 +27,8 @@
   - #5: Mac側のボタン・状態文言を「セッション開始」「セッション終了」「セッション中」「セッション無し」に、iPhone側を「取り込み開始」「取り込み中（タップで終了）」・セクション見出し「取り込み」に変え、iPhone側に「Macでセッションを開始してから使う」旨の説明文を足した（`Apps/Notetake/LivePanelView.swift`、`Apps/NotetakeMobile/ContentView.swift`）。**残課題**: `Apps/Notetake/MenuContent.swift`（メニューバーメニュー）は同じ`appModel.startRecording()`/`stopRecording()`に対して依然「収録開始」「収録停止」のままで、ライブパネルの「セッション開始」と文言が食い違う。`.claude/skills/mac-app/SKILL.md`の`ntmenu.sh`自動操作がこの文字列に依存しているため、今回は変更を見送った（変更する場合はskillの文字列も合わせて直し、Mac側で自動操作が通るか確認すること）。Macの現在prefixをiPhoneへ伝えるプロトコル変更（iPhone側に「Macのセッション: <prefix>」と出す）はスコープ外のままissueに残す
   - #4: コード変更なし。ペアリングコード方式の代替はCloudKit案・`NSUbiquitousKeyValueStore`案を比較し、後者（既存のBonjour+TLS PSK経路は残し鍵配布だけをiCloud経由にする）を推奨として`docs/superpowers/specs/2026-09-16-icloud-pairing-design.md`にまとめた。iCloudアカウント・entitlement操作の実機検証が前提のため実装はしていない
   - **次にMac側セッションでやること**: `make verify` → 実機確認（#7: daemon再起動後にiPhone appが自動で再接続すること、#8: 2話者の短い相槌が分裂しないこと、#6: 2デバイス同時収録で場所ラベルが音量の大きい方になること、#3: window幅を狭めてボタン行が横スクロールで使えること、#5: 文言が意図通り出ること）。通れば「実装済み・検証済み」に書き換え、GitHub issueをcloseする
-- **次**: #2（iPhone実機での方位軸校正）・#9（実機でのメモリ推移計測）は実機操作が必須でこのセッションでは対応不可。#4はuserがiCloud/CloudKit実装に進むか判断してから着手。それ以外の残issueは無し（このセッションで着手可能な範囲は完了）
+- **issue #9 実機検証済み・close（2026-09-16、Mac実機、約6.5時間の連続運転）**: `--source both`+分離あり+iPhone/Watch peer接続ありの状態で`ps`ベースのメモリ推移を長時間観測。`notetaked`（daemon）は130MB→92〜101MBの範囲で終始横ばい〜微減、増加傾向なし。Notetake.app（メニューバーapp）は205MB→228MBまで緩やかに増えたあと163MBへ大きく落ち、以後170MB前後で安定（単調増加ではなく「増えて減る」波を1回観測）。CPUは全時間帯で瞬間値のみでスパイク張り付き無し、プロセス落ちも無し。daemon側は明確に安定と言える。app側は1波のみの観測のためOSの通常のメモリ管理（未使用ページ解放）か特定イベントに連動した解放かは未切り分けで、「リークではない」とは言えるが「あらゆる条件下で安定」とまでは言い切れない。issue本文が求めた24時間運用に対しては今回の約6.5時間・1波のデータは部分的な裏付けにとどまる（再発したら再度計測・issue再オープン）
+- **次**: #2（iPhone実機での方位軸校正）は実機操作が必須でこのセッションでは対応不可。#4はuserがiCloud/CloudKit実装に進むか判断してから着手。それ以外の残issueは無し（このセッションで着手可能な範囲は完了）
 
 ### branchに入っているもの（段階順 = 検証順）
 
@@ -156,7 +157,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 - system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
 - ja-JP音声モデルはダウンロード済み。日本語TTS voiceはKyoko / Otoya
 - 実機probe（2026-09-13）: Macに繋がる機材（内蔵マイク / AirPods Pro 3 / ContinuityのiPhone）はいずれも`isMultichannelAudioModeSupported(.firstOrderAmbisonics)`がfalse、入力1ch。空間収録はiPhone本体でのみ試せる（iPhone 16eの対応可否は実機で判定）
-- **メモリ**: 収録（分離あり）中に`make verify`と実機向けxcodebuildを並行させると24GBでもメモリ不足になりbackground taskが落ちる（issue #9）。ビルドは直列に。収録中のdaemonのRSSは未計測
+- **メモリ**: 収録（分離あり）中に`make verify`と実機向けxcodebuildを並行させると24GBでもメモリ不足になりbackground taskが落ちる。ビルドは直列に。収録中のdaemon/appのRSS推移は計測済み（issue #9、2026-09-16、約6.5時間でdaemonは92〜101MBで横ばい、appは205→228→163→170MB前後で安定。詳細は上の状態欄）
 - `make app`で`.build/release/notetaked`を更新してもbundle内が古いままの場合は`Apps/project.yml`のEmbed scriptの`inputFiles`を確認（16d68b1で追加済み）
 - Claude Code on the web（Linux）にはSwiftツールチェーンが無く、swift.orgもproxyで403。Swiftの実行が要る作業はMac側セッションで
 
