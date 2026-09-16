@@ -184,8 +184,9 @@ actor CaptureStream {
     /// 上限超過分は話者タグが遅れて付かないだけで、音声データ自体は失われない
     private func finishAfterFlush() async {
         if let diarizer {
-            let caughtUp = await Self.wait(for: diarizerChain, timeoutSeconds: 5)
-            if caughtUp == nil {
+            // diarizerChainがnilなのは「一度もfeedしていない」場合もあるため、
+            // その場合まで「backlogが残っている」と誤報しないようchainの有無で分ける
+            if diarizerChain != nil, await Self.wait(for: diarizerChain, timeoutSeconds: 5) == nil {
                 eventContinuation?.yield(
                     .log("diarizer backlog did not clear within 5s, finalizing without waiting further"))
             }
