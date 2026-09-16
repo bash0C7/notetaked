@@ -136,7 +136,8 @@ actor PeerListener {
     }
 
     private func handleDisconnect(_ id: PeerConnectionID) async {
-        guard connections[id] != nil else { return }
+        guard let connection = connections[id] else { return }
+        connection.cancel()
         connections[id] = nil
         lineBuffers[id] = nil
         await onDisconnect(id)
