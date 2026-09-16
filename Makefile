@@ -28,13 +28,13 @@ app: daemon project
 # the mac app builds, and the iOS app (with the embedded watch app) compiles without signing.
 verify:
 	mkdir -p $(LOGS)
-	swift build 2>&1 | tee $(LOGS)/verify-build.log
+	swift build 2>&1 | tee $(LOGS)/verify-build.log; test $${PIPESTATUS[0]} -eq 0
 	! grep -E $(DIAG) $(LOGS)/verify-build.log
-	swift test 2>&1 | tee $(LOGS)/verify-test.log
-	$(MAKE) app 2>&1 | tee $(LOGS)/verify-app.log
+	swift test 2>&1 | tee $(LOGS)/verify-test.log; test $${PIPESTATUS[0]} -eq 0
+	$(MAKE) app 2>&1 | tee $(LOGS)/verify-app.log; test $${PIPESTATUS[0]} -eq 0
 	! grep -E $(DIAG) $(LOGS)/verify-app.log
 	xcodebuild -project Apps/Notetake.xcodeproj -scheme NotetakeMobile -destination 'generic/platform=iOS' \
-	  -derivedDataPath $(DERIVED) CODE_SIGNING_ALLOWED=NO build 2>&1 | tee $(LOGS)/verify-ios.log
+	  -derivedDataPath $(DERIVED) CODE_SIGNING_ALLOWED=NO build 2>&1 | tee $(LOGS)/verify-ios.log; test $${PIPESTATUS[0]} -eq 0
 	! grep -E $(DIAG) $(LOGS)/verify-ios.log
 	@echo "verify: OK"
 
