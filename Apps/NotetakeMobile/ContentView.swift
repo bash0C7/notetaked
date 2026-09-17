@@ -15,14 +15,17 @@ struct ContentView: View {
                     LabeledContent("Watch", value: "\(model.watchStreams) stream")
                 }
 
-                Section("収録") {
-                    Button(model.isRecording ? "収録停止" : "収録開始") {
+                Section("取り込み") {
+                    Button(model.isRecording ? "取り込み中（タップで終了）" : "取り込み開始") {
                         if model.isRecording {
                             model.stopRecording()
                         } else {
                             model.startRecording()
                         }
                     }
+                    Text("Macでセッションを開始してから使ってください。取り込んだ音声は時刻でMacのセッションに自動的に統合されます。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     if !model.lastText.isEmpty {
                         Text(model.lastText)
                             .foregroundStyle(.secondary)
@@ -70,8 +73,8 @@ struct ContentView: View {
         switch model.peerState {
         case .idle: return "未接続"
         case .browsing: return "検索中…"
-        case .connecting(let name): return "接続中: \(name)"
-        case .connected(let name): return name
+        case .connecting(let name): return "接続試行中: \(name)"
+        case .connected(let name): return "接続済み: \(name)"
         case .failed(let reason): return "エラー: \(reason)"
         }
     }

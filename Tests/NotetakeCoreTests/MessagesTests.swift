@@ -48,7 +48,12 @@ import Testing
         input: "MacBook Airのマイク",
         sources: [UUID()],
         devices: ["mac-1"],
-        direction: nil
+        direction: nil,
+        locationInput: "MacBook Airのマイク",
+        locationPlatform: .mac,
+        locationSource: .mic,
+        locationDirection: nil,
+        locationLevelDBFS: nil
     )
     let utteranceEvent = Event.utterance(utterance)
     let volatileEvent = Event.volatile(source: .mic, text: "…")

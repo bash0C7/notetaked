@@ -24,7 +24,7 @@ public enum LocationLabel {
     }
 
     public static func text(for utterance: Utterance) -> String {
-        text(inputName: utterance.input, platform: utterance.platform, source: utterance.source,
-             direction: utterance.direction)
+        text(inputName: utterance.locationInput, platform: utterance.locationPlatform, source: utterance.locationSource,
+             direction: utterance.locationDirection)
     }
 }

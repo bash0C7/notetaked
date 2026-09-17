@@ -28,6 +28,20 @@ actor PeerClient {
     private var backoffSeconds: Double = 1
     private var stopped = true
 
+    /// `.waiting`が連続何回観測されたか。ネットワーク変更で到達不能になった接続は
+    /// `.failed`ではなく`.waiting`のまま留まることが多いため、これが閾値に達したら
+    /// `.failed`と同様に扱い再接続する（issue #11）
+    private var consecutiveWaitingCount = 0
+    private static let waitingThreshold = 3
+
+    /// 最後に何か（helloAck/ping/ack等）を受信した時刻。Macは接続中60秒毎にpingを送り続けるため、
+    /// これが一定時間更新されなければ相手が死んでいる（daemon再起動等でTCPのFINが来ない/遅れる場合の
+    /// 保険）と見なし再接続する（issue #7）
+    private var lastActivityAt: Date = .distantPast
+    private var watchdogTask: Task<Void, Never>?
+    private static let watchdogTimeoutSeconds: Double = 150
+    private static let watchdogCheckIntervalSeconds: Double = 30
+
     private var state: PeerClientState = .idle {
         didSet {
             // 実機の接続不良を`devicectl device process launch --console`で追えるようstderrへ出す
@@ -61,6 +75,8 @@ actor PeerClient {
         stopped = true
         reconnectTask?.cancel()
         reconnectTask = nil
+        watchdogTask?.cancel()
+        watchdogTask = nil
         browser?.cancel()
         browser = nil
         connection?.cancel()
@@ -167,6 +183,9 @@ actor PeerClient {
     private func handleConnectionState(_ newState: NWConnection.State, description: String) async {
         switch newState {
         case .ready:
+            consecutiveWaitingCount = 0
+            lastActivityAt = Date()
+            startWatchdog()
             state = .connected(description)
             backoffSeconds = 1
             send(.hello(hello))
@@ -174,6 +193,11 @@ actor PeerClient {
             await resendPending()
         case .waiting(let error):
             Diag.log("peer client: waiting \(error)")
+            consecutiveWaitingCount += 1
+            if consecutiveWaitingCount >= Self.waitingThreshold {
+                consecutiveWaitingCount = 0
+                handleDisconnect(reason: "\(error)")
+            }
         case .failed(let error):
             handleDisconnect(reason: "\(error)")
         case .cancelled:
@@ -185,9 +209,12 @@ actor PeerClient {
 
     private func handleDisconnect(reason: String) {
         guard let current = connection else { return }
+        watchdogTask?.cancel()
+        watchdogTask = nil
         current.cancel()
         connection = nil
         receiveBuffer.removeAll()
+        consecutiveWaitingCount = 0
         guard !stopped else {
             state = .idle
             return
@@ -215,6 +242,27 @@ actor PeerClient {
     private func restartAfterBackoff() {
         guard !stopped else { return }
         startBrowsing()
+    }
+
+    // MARK: - Watchdog
+
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.watchdogCheckIntervalSeconds))
+                if Task.isCancelled { return }
+                guard let self else { return }
+                await self.checkWatchdog()
+            }
+        }
+    }
+
+    private func checkWatchdog() {
+        guard connection != nil else { return }
+        guard Date().timeIntervalSince(lastActivityAt) > Self.watchdogTimeoutSeconds else { return }
+        Diag.log("peer client: watchdog timeout, no activity for \(Self.watchdogTimeoutSeconds)s")
+        handleDisconnect(reason: "watchdog timeout")
     }
 
     // MARK: - Receiving
@@ -260,6 +308,7 @@ actor PeerClient {
     }
 
     private func handleMessage(_ message: PeerMessage) async {
+        lastActivityAt = Date()
         switch message {
         case .helloAck(let ack):
             if !ack.accepted {

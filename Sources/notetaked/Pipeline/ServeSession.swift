@@ -181,9 +181,16 @@ actor ServeSession {
                 let events = try await captureStream.start()
                 let streamOwner = ownerFor(owner)
                 let input: InputDevice = source == .system ? .system : InputDeviceProbe.current()
+                let inputAt: @Sendable () -> InputDevice
+                if source == .system {
+                    inputAt = { .system }
+                } else {
+                    inputAt = { InputDeviceProbe.current() }
+                }
                 let consumer = Task { [weak self] in
                     for await event in events {
-                        await self?.handle(streamEvent: event, source: source, owner: streamOwner, input: input)
+                        await self?.handle(
+                            streamEvent: event, source: source, owner: streamOwner, input: inputAt())
                     }
                 }
                 started.append(

@@ -43,6 +43,10 @@ make project  # Apps/Notetake.xcodeproj をxcodegenで生成
 
 CLI単体: `.build/release/notetaked serve --output <dir> --owner <名前> --source both [--pair-code 123456] [--no-diarize]`（stdinに`{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdoutに`status` / `utterance` / `volatile` / `peer` / `log` / `error`イベント）。
 
+## 既知の制限
+
+- 内蔵マイク+スピーカーで`--source both`収録すると、スピーカーの音をマイクが拾ってしまい、system音声とほぼ同じ内容がmic側にも別発話として二重に載ることがある（同一Mac上のmic/system segは統合しない設計のため）。アプリ内`polish`もこの重複はそのまま残す（要約しない設計のため）。回避策: ヘッドホン（AirPods等）をマイクにする、または`final.md`を外部の汎用AI（ChatGPT/Claude等）へ渡して整形してもらう。詳細は`HANDOFF.md`
+
 ## ドキュメント
 
 - `HANDOFF.md`: 現在の状態・環境の注意・次にやること（作業はここから）
