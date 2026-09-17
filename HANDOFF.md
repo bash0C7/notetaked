@@ -30,7 +30,15 @@
   - **Mac側実機検証の結果、#3 close済み・#5はMac側のみ確認（2026-09-16）**: #3はwindow幅480pxまで狭めてボタン行が横スクロールで使え`.toolbar`にはステータス文言のみ残ることを確認。#5はMac側のボタン・状態文言（「セッション開始/終了」「セッション無し」等）は確認したがiPhone側（「取り込み開始/中」）はiPhone実機未接続のため未検証、issueはopenのまま。#7（daemon再起動後の自動再接続・CLOSE_WAIT）、#8（短い相槌の話者分裂）、#6（場所ラベルの機器切り替え）はいずれもiPhone/AirPods等の物理操作が要り、このMac側セッションでは未検証のまま持ち越し
   - **`make verify`で1件ビルド失敗→修正・反映済み（2026-09-16、Mac実機で発見、このLinuxセッションでdiffを受け取り適用）**: `ServeSession.swift`の三項演算子がクロージャを構築する式（`source == .system ? { .system } : { InputDeviceProbe.current() }`）でswift-frontendが内部エラー（`failed to produce diagnostic for expression`）を起こしたため、if/elseで同じ`@Sendable`クロージャを組み立てる形に書き換えて回避（挙動は変えていない）。Mac側セッションのローカルcommit（`aa927ee`）は未push・別containerのため、このLinuxセッションでは同内容を別commitとして直接適用してpush
 - **issue #9 実機検証済み・close（2026-09-16、Mac実機、約6.5時間の連続運転）**: `--source both`+分離あり+iPhone/Watch peer接続ありの状態で`ps`ベースのメモリ推移を長時間観測。`notetaked`（daemon）は130MB→92〜101MBの範囲で終始横ばい〜微減、増加傾向なし。Notetake.app（メニューバーapp）は205MB→228MBまで緩やかに増えたあと163MBへ大きく落ち、以後170MB前後で安定（単調増加ではなく「増えて減る」波を1回観測）。CPUは全時間帯で瞬間値のみでスパイク張り付き無し、プロセス落ちも無し。daemon側は明確に安定と言える。app側は1波のみの観測のためOSの通常のメモリ管理（未使用ページ解放）か特定イベントに連動した解放かは未切り分けで、「リークではない」とは言えるが「あらゆる条件下で安定」とまでは言い切れない。issue本文が求めた24時間運用に対しては今回の約6.5時間・1波のデータは部分的な裏付けにとどまる（再発したら再度計測・issue再オープン）
-- **次**: #2（iPhone実機での方位軸校正）は実機操作が必須でこのセッションでは対応不可。#4はuserがiCloud/CloudKit実装に進むか判断してから着手。#15（データロス防止のプロセス分離）は設計判断（実装コストと耐障害性のトレードオフ）待ちで着手前の方針決定が必要。それ以外の残issueは無し（このセッションで着手可能な範囲は完了）
+- **PR #16の実機検証、#7 #11 #5 close済み・#8は不発・#6 #14はAirPods未接続で持ち越し（2026-09-18、Mac実機+iPhone 16e無線接続）**: `make verify`通過（171テスト、警告ゼロ）後に実施
+  - #13（再検証）: チャンク未feedのまま開始→即停止しても偽のdiarizer backlog警告が出ないことを確認（回帰無し）
+  - #8: `say`合成音声では分離処理のレース条件（短い相槌が分離結果の間に合わない状況）を意図的に再現できず、実機的な検証は不発。誤マージ・クラッシュ等の異常は無し。継承ロジック自体はユニットテストで担保済みのため、issueはopenのまま次回実際の会話で確認
+  - #7 close: daemon（Notetake.app）再起動（peer listenerポートが54098→54099に変わる＝旧プロセス完全終了）から5秒以内にiPhoneが自動再接続。旧ポートにCLOSE_WAIT残留無し
+  - #11 close: iPhoneのWi-Fiオフから約60秒でMac側が切断検知（メニュー表示消失、ソケットもクリーンに消滅）、Wi-Fiオンから10秒以内に自動再接続
+  - #5 close: iPhone側「取り込み開始/取り込み中」表示をuser目視確認、違和感なし
+  - #6 #14: AirPods Pro 3はペアリング済みだが今回のセッション中Bluetooth未接続（`audioin.sh`の入力一覧に出ない）。物理接続待ちで未検証のまま持ち越し
+  - **わかったこと**: iPhoneがロックされているとdevicectlでの起動自体が`FBSOpenApplicationErrorDomain error 7 (Locked)`で拒否され、backgroundサスペンドでwatchdog/reconnectの検証が不可能になる。無線devicectl consoleトンネルは不安定（数十秒で切れる、`connection was invalidated`／`device disconnected immediately after connecting`が散発）。実機再接続テストはiPhoneの画面ロック解除＋Wi-Fi物理操作がuser依存（devicectlにUI tap/screenshot機能が無いため）。AirPodsのBluetooth接続確立もSystem Events経由の自動化を試みたが安定せず断念、物理操作が必要
+- **次**: #2（iPhone実機での方位軸校正）は実機操作が必須でこのセッションでは対応不可。#4はuserがiCloud/CloudKit実装に進むか判断してから着手。#15（データロス防止のプロセス分離）は設計判断（実装コストと耐障害性のトレードオフ）待ちで着手前の方針決定が必要。#6 #14はAirPods接続後に再開。#8は実際の会話での再検証待ち
 
 ### branchに入っているもの（段階順 = 検証順）
 
