@@ -895,7 +895,7 @@ struct CaptureDaemon: AsyncParsableCommand {
         let eventChannel = CaptureControlChannel<CaptureEvent>(fileURL: CaptureStatePaths.captureEventURL)
 
         signal(SIGTERM, SIG_IGN)
-        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         sigtermSource.setEventHandler {
             Task {
                 await runner.stop()
