@@ -68,11 +68,12 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
             !frames.isEmpty
         else { return }
         for frame in frames {
+            guard frame.sampleRate == format.sampleRate,
+                AVAudioChannelCount(frame.channelCount) == format.channelCount
+            else { continue }
             guard
-                let frameFormat = AVAudioFormat(
-                    standardFormatWithSampleRate: frame.sampleRate, channels: AVAudioChannelCount(frame.channelCount)),
                 let buffer = AVAudioPCMBuffer(
-                    pcmFormat: frameFormat, frameCapacity: AVAudioFrameCount(frame.samples.count / frame.channelCount))
+                    pcmFormat: format, frameCapacity: AVAudioFrameCount(frame.samples.count / frame.channelCount))
             else { continue }
             buffer.frameLength = buffer.frameCapacity
             guard let channelData = buffer.floatChannelData else { continue }
