@@ -114,6 +114,8 @@ struct Serve: AsyncParsableCommand {
         await stdioControl.send(
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))
 
+        await session.resumeIfNeeded()
+
         if let pairCode {
             await session.handle(.pairCode(pairCode))
         }
@@ -139,6 +141,14 @@ struct Serve: AsyncParsableCommand {
         }
         signal(SIGTERM, SIG_IGN)
         sigtermSource.resume()
+
+        let heartbeatTask = Task {
+            while !Task.isCancelled {
+                try? Heartbeat.write(to: CaptureStatePaths.processHeartbeatURL)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+        defer { heartbeatTask.cancel() }
 
         if startImmediately {
             await session.handle(.start)

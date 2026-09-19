@@ -124,7 +124,15 @@ actor ServeSession {
         guard let data = try? Data(contentsOf: CaptureStatePaths.currentSessionMarkerURL),
             let marker = try? JSONDecoder().decode(SessionMarker.self, from: data)
         else { return }
-        _ = await startCapture(resumePrefix: marker.prefix)
+        if await startCapture(resumePrefix: marker.prefix), let store {
+            await control.send(
+                .status(
+                    StatusEvent(
+                        recording: true, prefix: store.prefix,
+                        sources: streams.map(\.source),
+                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
+                        outputDirectory: outputDirectory.path)))
+        }
     }
 
     /// inputFallback eventのポーリングを（まだ動いていなければ）開始する。
