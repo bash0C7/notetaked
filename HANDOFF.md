@@ -42,7 +42,13 @@
 - **入力デバイス明示選択機能を実装・実機検証済み（2026-09-19、AirPods Pro 3実機）**: user発案（会話中のbrainstorming、issue番号無し）。ライブパネルに「入力デバイス」Picker（既定/特定デバイス）を追加、選択したデバイスへ固定（pin）し、pin先が切断されたら録音を止めずに自動でOS既定へフォールバック・Pickerの表示も「既定」に戻る（前回pinしていたデバイスは覚えない、user決定）。デバイス選択欄はSettings WindowでなくLivePanelViewに置く（user指定: 「デバイス選択はライブパネルのみに置いてほしい」）
   - **実装の経緯（systematic-debuggingで根本原因を特定）**: 当初`AVAudioEngine.inputNode`へ`kAudioOutputUnitProperty_CurrentDevice`を直接設定する方式で実装したが、実機（AirPods Pro 3）で(a)`installTap`時に`format.sampleRate == inputHWFormat.sampleRate`のassertionでクラッシュ（`AudioUnitSetProperty`直後は`outputFormat(forBus:)`がハードウェアformatへ未追従）、(b)クラッシュを避けても無音（`CaptureStream`の`AudioConverter`が`init`時に固定formatで構築されるため、pin適用のタイミング次第で誤formatのまま毎回黙って変換失敗）の2系統の不具合が出た。4回の修正（`reset()`→`Uninitialize`/`Initialize`→通知ガード→pin適用をinit()へ前倒し）を重ねても解決せず、Web調査で同種の問題が他の開発者の間でも「どの対策も効かない」既知の制約と判明したため、Technical Note TN2091（生のAUHAL AudioUnit、AVAudioEngineを介さない）方式へ全面的に書き換えた（`AUHALPinnedCapture`、`Sources/notetaked/Audio/MicCapture.swift`）。TN2091の正式な記述（デバイス実formatはinput scope element 1、client formatはoutput scope element 1にset）に沿って、当初の実装がoutput scopeを何もsetせずgetしていた誤りも修正。pin無し（既定入力追随、issue #14）の経路は無変更
   - **実機検証結果**: CLI（`--input-device <uid>`）・mac app（ライブパネルのPicker）の両方でAirPods pin経由の発話認識を確認（`input.uid`がAirPodsのUID、`input.name: "ゆふAirPods Pro 3"`で正しくsegに記録）。pin先切断時のフォールバックも、一時的なdebugログ（`reinstallTap`の`engine.start()`結果）を仕込んだCLIテストで`engine.start()`成功・`isRunning=true`・有効なformat取得・`.input_reset`イベント送出まで一連の流れを確認（該当debugログはcommit前に削除済み）。mac app UIでの初回確認時は新しい発話が反映されず見えたが、これは観測タイミングの問題（CLIでの再現テストでは正常動作）と判断
-- **次**: #2（iPhone実機での方位軸校正）は実機操作が必須でこのセッションでは対応不可。#4はuserがiCloud/CloudKit実装に進むか判断してから着手。#15（データロス防止のプロセス分離）は設計判断（実装コストと耐障害性のトレードオフ）待ちで着手前の方針決定が必要。#8は実際の会話での再検証待ち
+- **次の優先順位（2026-09-19、user指定）**: 高=#15（データロス防止のプロセス分離）・#8（短い相槌の話者分裂、実際の会話での再検証）。低=#2（iPhone実機での方位軸校正）。中=#4（iCloud/CloudKitペアリング）・下記のWebアプリケーション版
+- **Webアプリケーション版（新規構想、2026-09-19、issue未作成）**: user要件を整理
+  - Googleログイン必須。データはGoogle Driveを正（source of truth）とし、ローカルはバッファ扱い（永続化不要）
+  - 認可はGoogle OAuthで取得。**keychain等の複雑な秘匿保存は絶対NG**。ログインの都度取得し、セッションは可能な限り更新し続ける設計
+  - フロントエンドはPicoRuby:wasmで完結させたい（サーバー側の役割を極小化する方向）
+  - 任意のGoogleアカウント（Google Workspace含む）を許可するか、特定のWorkspaceドメインのみに絞るかを、**サーバー起動時の設定で固定**できるようにする
+  - **次にやること**: Google OAuth（Authorization Code + PKCE、Google Identity Servicesのブラウザ完結フロー等）でトークンをメモリ上のみで扱い永続化しない実装パターン、PicoRuby wasmからのHTTPS/fetch呼び出し可否、Google Drive REST APIでのファイル読み書き範囲（scope）を先に調査すること。まだ設計・spec化前の段階
 
 ### branchに入っているもの（段階順 = 検証順）
 
