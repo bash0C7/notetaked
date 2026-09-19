@@ -28,6 +28,14 @@ actor ServeSession {
         let input: InputDevice
         let stream: CaptureStream
         let consumer: Task<Void, Never>
+        /// raw file経由のsource（mic/system）ならその`RawAudioReaderCapture`。
+        /// `.watch`（未実装）はnil
+        let rawCapture: RawAudioReaderCapture?
+    }
+
+    /// `CaptureStatePaths.currentSessionMarkerURL`へ書く再開マーカーの中身
+    private struct SessionMarker: Codable {
+        let prefix: String
     }
 
     /// peer接続1本ぶんの状態（hello情報・clock offset・ping往復管理）
@@ -83,6 +91,15 @@ actor ServeSession {
     /// 進行中の収録で既にDeviceRecordを書いたdevice id集合。新しいprefixで開始するたびリセットする
     private var recordedPeerDevices: Set<String> = []
 
+    // MARK: - capture-daemon control channel
+
+    private let captureCommandChannel = CaptureControlChannel<CaptureCommand>(fileURL: CaptureStatePaths.captureCommandURL)
+    private let captureEventChannel = CaptureControlChannel<CaptureEvent>(fileURL: CaptureStatePaths.captureEventURL)
+    private var lastCaptureEventSeenAt: Date?
+    private var captureEventPollTask: Task<Void, Never>?
+    /// source名（"mic"/"system"） -> そのsourceのcheckpointファイルURL。startCaptureのたび更新
+    private var checkpointURLs: [String: URL] = [:]
+
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
         control: StdioControl, device: DeviceIdentity, diarizerModels: DiarizerModels?,
@@ -99,6 +116,57 @@ actor ServeSession {
         self.profileStore = profileStore
         self.inputDeviceUID = inputDeviceUID
         self.sessions = SessionIndex.scan(directory: outputDirectory)
+    }
+
+    /// crash後の再起動で、直前に収録中だったsessionがあれば同じprefixで再開する。
+    /// actor外（`ServeCommand`の起動処理）から呼ばれる
+    func resumeIfNeeded() async {
+        guard let data = try? Data(contentsOf: CaptureStatePaths.currentSessionMarkerURL),
+            let marker = try? JSONDecoder().decode(SessionMarker.self, from: data)
+        else { return }
+        if await startCapture(resumePrefix: marker.prefix), let store {
+            await control.send(
+                .status(
+                    StatusEvent(
+                        recording: true, prefix: store.prefix,
+                        sources: streams.map(\.source),
+                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
+                        outputDirectory: outputDirectory.path)))
+        }
+    }
+
+    /// inputFallback eventのポーリングを（まだ動いていなければ）開始する。
+    /// actorのinit内で`Task { [weak self] in ... }`を組むとself未完全初期化扱いでコンパイルが通らないため、
+    /// 最初の`startCapture()`で遅延起動する
+    private func ensureCaptureEventPolling() {
+        guard captureEventPollTask == nil else { return }
+        // channelファイルは前回processのeventを消さずに残るため、このinstanceのpolling開始時点を
+        // 「既読」として扱う。こうしないと再起動直後に前回runの`.inputFallback`を誤って再生してしまう。
+        lastCaptureEventSeenAt = Date()
+        captureEventPollTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                await self.pollCaptureEvents()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
+
+    private func pollCaptureEvents() async {
+        guard let (event, seenAt) = captureEventChannel.poll(after: lastCaptureEventSeenAt) else { return }
+        lastCaptureEventSeenAt = seenAt
+        if case .inputFallback = event {
+            await handleInputFallback()
+        }
+    }
+
+    /// "yyyy-MM-dd_HHmmss"（`SessionStore.prefix(for:timeZone:)`と同じformat）をDateへ復元する。
+    /// resumeでは`SessionStore(directory:start:)`にこのDateを渡すことで、同じprefix文字列を再現する
+    private static func date(fromPrefix prefix: String, timeZone: TimeZone) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+        return formatter.date(from: prefix)
     }
 
     func handle(_ command: Command) async {
@@ -139,11 +207,24 @@ actor ServeSession {
 
     /// storeの作成・session/deviceレコード書き込み・CaptureStream起動までを行い、
     /// 成功時は`store` / `reconciler` / `seq` / `streams` / `recording` / `lastPrefix`を更新する。
-    /// 失敗時は今までと同じ`.error(...)`を送って`false`を返す（呼び出し元がstatusを出す）
-    private func startCapture() async -> Bool {
-        var startDate = Date()
-        while SessionStore.prefix(for: startDate, timeZone: .current) == lastPrefix {
-            startDate.addTimeInterval(1)
+    /// 失敗時は今までと同じ`.error(...)`を送って`false`を返す（呼び出し元がstatusを出す）。
+    /// `resumePrefix`が指定された場合（crash後の再開）は衝突回避の日時ずらしを行わず、
+    /// そのprefixを再現するDateから`SessionStore`を作る
+    private func startCapture(resumePrefix: String? = nil) async -> Bool {
+        ensureCaptureEventPolling()
+        let startDate: Date
+        if let resumePrefix {
+            guard let parsed = ServeSession.date(fromPrefix: resumePrefix, timeZone: .current) else {
+                await control.send(.error("failed to resume session: invalid prefix \(resumePrefix)"))
+                return false
+            }
+            startDate = parsed
+        } else {
+            var date = Date()
+            while SessionStore.prefix(for: date, timeZone: .current) == lastPrefix {
+                date.addTimeInterval(1)
+            }
+            startDate = date
         }
         let store = SessionStore(directory: outputDirectory, start: startDate)
         do {
@@ -164,24 +245,40 @@ actor ServeSession {
             return false
         }
 
+        let sessionDirectory = CaptureSessionPaths.sessionDirectory(prefix: store.prefix)
+        let sourceNames = sourceOption.sources.map { $0.source == .system ? "system" : "mic" }
+        do {
+            try captureCommandChannel.send(
+                .startSession(
+                    directory: sessionDirectory.path, sources: sourceNames, inputDeviceUID: inputDeviceUID))
+        } catch {
+            await store.close()
+            await control.send(.error("failed to start capture: \(error)"))
+            return false
+        }
+
         var started: [RunningStream] = []
         var startError: Error?
+        var newCheckpointURLs: [String: URL] = [:]
 
         for (source, ownerFor) in sourceOption.sources {
             do {
                 let capture: any AudioCapture
-                var micCapture: MicCapture?
+                var rawCapture: RawAudioReaderCapture?
                 switch source {
-                case .mic:
-                    let mic = MicCapture(
-                        pinnedUID: inputDeviceUID,
-                        onFallback: { [weak self] in
-                            Task { await self?.handleInputFallback() }
-                        })
-                    micCapture = mic
-                    capture = mic
-                case .system:
-                    capture = try SystemAudioCapture()
+                case .mic, .system:
+                    let sourceName = source == .system ? "system" : "mic"
+                    let rawFileURL = CaptureSessionPaths.rawFileURL(
+                        sessionDirectory: sessionDirectory, source: sourceName)
+                    let checkpointURL = CaptureSessionPaths.checkpointFileURL(
+                        sessionDirectory: sessionDirectory, source: sourceName)
+                    newCheckpointURLs[sourceName] = checkpointURL
+                    // checkpointは常にディスクから読み直す（crash後に再構築されたServeSessionは
+                    // in-memoryのcheckpointを持たないため、これがsource of truth）
+                    let startOffset = CaptureCheckpoint.load(from: checkpointURL).offsets[sourceName] ?? 0
+                    let raw = try await RawAudioReaderCapture(fileURL: rawFileURL, startOffset: startOffset)
+                    rawCapture = raw
+                    capture = raw
                 case .watch:
                     throw CaptureStreamError.sourceNotImplemented(source)
                 }
@@ -193,9 +290,10 @@ actor ServeSession {
                 let inputAt: @Sendable () -> InputDevice
                 if source == .system {
                     inputAt = { .system }
-                } else if let micCapture {
-                    inputAt = { micCapture.currentInputDevice() }
                 } else {
+                    // mic capture自体はcapture-daemonプロセス側にあるため、このprocessからは
+                    // 生きたMicCaptureへ問い合わせられない。pin中かどうかに関わらずOS既定入力を返す
+                    // （非pin時は元の挙動と同じだが、pin中はcurrentInputDevice()相当の情報が失われる）
                     inputAt = { InputDeviceProbe.current() }
                 }
                 let input: InputDevice = inputAt()
@@ -208,7 +306,7 @@ actor ServeSession {
                 started.append(
                     RunningStream(
                         source: source, owner: streamOwner, input: input, stream: captureStream,
-                        consumer: consumer))
+                        consumer: consumer, rawCapture: rawCapture))
             } catch {
                 startError = error
                 break
@@ -221,25 +319,45 @@ actor ServeSession {
                 await running.consumer.value
             }
             await store.close()
+            try? captureCommandChannel.send(.stopSession)
             await control.send(.error("failed to start capture: \(startError)"))
             return false
         }
 
+        // 既存のtimed.jsonl（resumeなら前回crash分、新規sessionなら存在しない）を畳み込み、
+        // final.mdがcrash前の内容を失わないようreconciler/seqを復元する
+        var resumedReconciler = Reconciler()
+        var resumedSeq = 0
+        if let text = try? String(contentsOf: store.timedURL, encoding: .utf8) {
+            for record in NDJSON.decodeAll(text) {
+                resumedReconciler.apply(record)
+                if case .segment(let seg) = record {
+                    resumedSeq = max(resumedSeq, seg.seq)
+                }
+            }
+        }
+
         self.store = store
-        self.reconciler = Reconciler()
+        self.reconciler = resumedReconciler
         self.nameAnnouncer = ProfileNameAnnouncer()
-        self.seq = 0
+        self.seq = resumedSeq
         self.streams = started
         self.currentInput = started.first(where: { $0.source == .mic })?.input
         self.recording = true
         self.lastPrefix = store.prefix
         self.recordedPeerDevices = []
+        self.checkpointURLs = newCheckpointURLs
         refreshSessions()
+
+        if let data = try? JSONEncoder().encode(SessionMarker(prefix: store.prefix)) {
+            try? data.write(to: CaptureStatePaths.currentSessionMarkerURL, options: .atomic)
+        }
 
         return true
     }
 
-    /// pin中の入力デバイスが切断されOS既定へフォールバックした時、`MicCapture`から呼ばれる
+    /// pin中の入力デバイスが切断されOS既定へフォールバックした時、capture-daemonが送る
+    /// `.inputFallback` eventを`pollCaptureEvents()`が受けて呼ぶ
     private func handleInputFallback() async {
         await control.send(.inputReset)
     }
@@ -311,6 +429,21 @@ actor ServeSession {
         } catch {
             await control.send(.error("failed to append segment: \(error)"))
             return
+        }
+
+        let sourceName = source == .system ? "system" : "mic"
+        if let runningStream = streams.first(where: { $0.source == source }),
+            let rawCapture = runningStream.rawCapture,
+            let checkpointURL = checkpointURLs[sourceName]
+        {
+            // checkpointは「読み終えた位置」ではなく「finalizeされた音声の終端位置」を記録する。
+            // readerは最大12秒超のhold-limit（＋diarizer backlog）ぶん先まで読み進んでいるため、
+            // read位置をそのまま使うとcrash後の再開で未処理区間を読み飛ばし、data lossになる
+            let originMS = Int64((runningStream.stream.origin.timeIntervalSince1970 * 1000).rounded())
+            let audioElapsedMS = piece.endMS - originMS
+            var checkpoint = CaptureCheckpoint.load(from: checkpointURL)
+            checkpoint.offsets[sourceName] = rawCapture.offset(atOrBeforeAudioMS: audioElapsedMS)
+            try? checkpoint.save(to: checkpointURL)
         }
 
         for utterance in reconciler.apply(.segment(segment)) {
@@ -417,6 +550,10 @@ actor ServeSession {
         currentInput = nil
         recording = false
         refreshSessions()
+
+        try? captureCommandChannel.send(.stopSession)
+        checkpointURLs.removeAll()
+        try? FileManager.default.removeItem(at: CaptureStatePaths.currentSessionMarkerURL)
     }
 
     // MARK: - rotate
@@ -453,6 +590,7 @@ actor ServeSession {
     // MARK: - quit
 
     private func quit() async {
+        captureEventPollTask?.cancel()
         if recording {
             await stop()
         }

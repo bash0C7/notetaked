@@ -6,7 +6,7 @@ struct Notetaked: AsyncParsableCommand {
         commandName: "notetaked",
         abstract: "Notetake transcription daemon",
         version: "0.1.0",
-        subcommands: [Serve.self, Render.self, Transcribe.self, Capture.self, Polish.self]
+        subcommands: [Serve.self, Render.self, Transcribe.self, Capture.self, CaptureDaemon.self, Polish.self]
     )
 
     func run() async throws {
