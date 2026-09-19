@@ -812,6 +812,7 @@ EOF
 import Foundation
 import AVFoundation
 import class NotetakeCore.RawAudioWriter
+import enum NotetakeCore.CaptureSessionPaths
 
 actor CaptureSessionRunner {
     private var micCapture: MicCapture?
@@ -877,7 +878,7 @@ actor CaptureSessionRunner {
 // Sources/notetaked/Commands/CaptureDaemonCommand.swift
 import ArgumentParser
 import Foundation
-import class NotetakeCore.CaptureControlChannel
+import struct NotetakeCore.CaptureControlChannel
 import enum NotetakeCore.CaptureCommand
 import enum NotetakeCore.CaptureEvent
 import enum NotetakeCore.CaptureStatePaths
@@ -1138,11 +1139,24 @@ let sourceName = source == .system ? "system" : "mic"
 let rawFileURL = CaptureSessionPaths.rawFileURL(sessionDirectory: sessionDirectory, source: sourceName)
 let checkpointURL = CaptureSessionPaths.checkpointFileURL(sessionDirectory: sessionDirectory, source: sourceName)
 checkpointURLs[sourceName] = checkpointURL
-let startOffset = checkpoint.offsets[sourceName] ?? 0
+// checkpointは actor 内の in-memory プロパティではなく、必ずディスクから読み直す
+// （process がクラッシュ後に再構築された ServeSession は in-memory checkpoint を持たないため）
+let startOffset = CaptureCheckpoint.load(from: checkpointURL).offsets[sourceName] ?? 0
+checkpoint.offsets[sourceName] = startOffset
 let capture = try await RawAudioReaderCapture(fileURL: rawFileURL, startOffset: startOffset)
 ```
 
 この`capture`（`any AudioCapture`準拠）を、既存どおり`CaptureStream(source:capture:locale:diarizerModels:)`へ渡す。`.watch`は既存のまま`sourceNotImplemented`。
+
+**必要なimport**（ファイル冒頭、既存の`import class NotetakeCore.AudioConverter`等と同じ書式で追加）:
+```swift
+import struct NotetakeCore.CaptureCheckpoint
+import enum NotetakeCore.CaptureSessionPaths
+import enum NotetakeCore.CaptureStatePaths
+import enum NotetakeCore.CaptureCommand
+import enum NotetakeCore.CaptureEvent
+import struct NotetakeCore.CaptureControlChannel
+```
 
 5. **`handleFinal`でcheckpointを更新**。既存の`store.append(.segment(segment))`の直後に、該当sourceの`RawAudioReaderCapture.currentOffset`を`checkpoint.offsets[sourceName]`へ反映し`checkpoint.save(to: checkpointURLs[sourceName]!)`を呼ぶ（`RunningStream`に`rawCapture: RawAudioReaderCapture?`を追加し、`source`から引けるようにする）。
 
