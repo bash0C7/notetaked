@@ -1170,11 +1170,21 @@ import struct NotetakeCore.CaptureControlChannel
 func resumeIfNeeded() async {
     guard let data = try? Data(contentsOf: CaptureStatePaths.currentSessionMarkerURL),
           let marker = try? JSONDecoder().decode(SessionMarker.self, from: data) else { return }
-    _ = await startCapture(resumePrefix: marker.prefix)
+    if await startCapture(resumePrefix: marker.prefix), let store {
+        await control.send(
+            .status(
+                StatusEvent(
+                    recording: true, prefix: store.prefix,
+                    sources: streams.map(\.source),
+                    inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
+                    outputDirectory: outputDirectory.path)))
+    }
 }
 
 private struct SessionMarker: Codable { let prefix: String }
 ```
+
+（この`.status`送信は`start()`と全く同じ形。無いと、resume成功後もメニューバーappの`AppModel`は「recording」状態を知る手段が無く、UIが更新されない — Task 9完了後にTask 10のdispatch準備中に見つかった欠落として2026-09-19に追記）
 
 - [ ] **Step 1: ビルド確認**
 
