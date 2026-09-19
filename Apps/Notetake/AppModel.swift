@@ -71,6 +71,8 @@ final class AppModel {
     var connectedPeers: [String: String] = [:]
 
     private var client: DaemonClient?
+    private let captureSupervisor: CaptureDaemonSupervisor?
+    private var heartbeatMonitorTask: Task<Void, Never>?
     /// 現在の収録（`prefix`）が開始した時刻。自動区切りの期限計算の起点。
     private var recordingStartedAt: Date?
     /// 自動区切りを待機している`Task`。設定変更・収録状態の変化のたびに取り消して張り直す。
@@ -114,6 +116,29 @@ final class AppModel {
             let generated = Self.generatePairingCode()
             defaults.set(generated, forKey: DefaultsKey.pairingCode)
             pairingCode = generated
+        }
+        if let executableURL = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("notetaked")
+        {
+            captureSupervisor = CaptureDaemonSupervisor(executableURL: executableURL)
+        } else {
+            captureSupervisor = nil
+        }
+        heartbeatMonitorTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !self.isShuttingDown else { continue }
+                if let captureSupervisor = self.captureSupervisor, !captureSupervisor.isHealthy {
+                    await captureSupervisor.gracefulRestart()
+                }
+                if Heartbeat.currentStatus(of: CaptureStatePaths.processHeartbeatURL, threshold: 15) == .stale,
+                   self.daemonRunning {
+                    self.lastError = "processがハングしたため再起動します"
+                    await self.client?.terminate(wasRecording: self.isRecording)
+                    self.scheduleRestart()
+                }
+            }
         }
     }
 
@@ -169,6 +194,7 @@ final class AppModel {
     /// 都度計算し直す。
     func ensureDaemon() {
         guard !isShuttingDown else { return }
+        captureSupervisor?.start()
         guard let outputDirectory else { return }
         if restartInFlight {
             restartPending = true
@@ -284,6 +310,8 @@ final class AppModel {
     func shutdownDaemon() async {
         clearRotation()
         isShuttingDown = true
+        heartbeatMonitorTask?.cancel()
+        await captureSupervisor?.stop()
         await restartTask?.value
         restartInFlight = false
         restartPending = false
