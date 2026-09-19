@@ -41,6 +41,11 @@ struct Serve: AsyncParsableCommand {
         help: "6-digit pairing code: starts the iPhone/Watch peer listener on launch")
     var pairCode: String?
 
+    @Option(
+        name: .customLong("input-device"),
+        help: "Pin mic input to this device UID if connected (optional; falls back to OS default)")
+    var inputDeviceUID: String?
+
     func run() async throws {
         #if canImport(Speech)
         guard #available(macOS 26, iOS 26, *) else {
@@ -88,19 +93,22 @@ struct Serve: AsyncParsableCommand {
                 session = ServeSession(
                     outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
                     locale: selectedLocale, control: stdioControl, device: device,
-                    diarizerModels: models, registry: registry, profileStore: profileStore)
+                    diarizerModels: models, registry: registry, profileStore: profileStore,
+                    inputDeviceUID: inputDeviceUID)
             } catch {
                 await stdioControl.send(.error("diarizer unavailable: \(error)"))
                 session = ServeSession(
                     outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
                     locale: selectedLocale, control: stdioControl, device: device,
-                    diarizerModels: nil, registry: registry, profileStore: profileStore)
+                    diarizerModels: nil, registry: registry, profileStore: profileStore,
+                    inputDeviceUID: inputDeviceUID)
             }
         } else {
             session = ServeSession(
                 outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
                 locale: selectedLocale, control: stdioControl, device: device,
-                diarizerModels: nil, registry: registry, profileStore: profileStore)
+                diarizerModels: nil, registry: registry, profileStore: profileStore,
+                inputDeviceUID: inputDeviceUID)
         }
 
         await stdioControl.send(

@@ -60,9 +60,10 @@ import Testing
     let errorEvent = Event.error("something failed")
     let logEvent = Event.log("started recording")
     let peerEvent = Event.peer(device: "iphone-1", deviceName: "bash iPhone", connected: true)
+    let inputResetEvent = Event.inputReset
 
     let events: [Event] = [
-        statusEvent, utteranceEvent, volatileEvent, errorEvent, logEvent, peerEvent,
+        statusEvent, utteranceEvent, volatileEvent, errorEvent, logEvent, peerEvent, inputResetEvent,
     ]
     for event in events {
         let line = try event.encodedLine()
@@ -107,6 +108,10 @@ import Testing
     let status = StatusEvent(recording: false, sources: [], outputDirectory: "/tmp")
     let line = try Event.status(status).encodedLine()
     #expect(!line.contains("input_name"))
+}
+
+@Test func inputResetEventExactString() throws {
+    #expect(try Event.inputReset.encodedLine() == "{\"ev\":\"input_reset\"}")
 }
 
 @Test func unknownEventThrows() {

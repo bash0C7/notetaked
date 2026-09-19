@@ -12,6 +12,7 @@ final class AppModel {
         static let ownerName = "ownerName"
         static let rotationIntervalHours = "rotationIntervalHours"
         static let pairingCode = "pairingCode"
+        static let preferredInputDeviceUID = "preferredInputDeviceUID"
     }
 
     private static let maxRestartsPerWindow = 5
@@ -24,6 +25,12 @@ final class AppModel {
 
     var ownerName: String {
         didSet { UserDefaults.standard.set(ownerName, forKey: DefaultsKey.ownerName) }
+    }
+
+    /// 固定したい入力デバイスのUID。nil=既定（OSに合わせる）。設定すると次のdaemon起動引数
+    /// （`--input-device`）に乗る。daemonがpin先の切断でフォールバックした時（`.inputReset`）はnilに戻る
+    var preferredInputDeviceUID: String? {
+        didSet { persistPreferredInputDeviceUID() }
     }
 
     var rotationIntervalHours: Double {
@@ -87,6 +94,11 @@ final class AppModel {
             outputDirectory = nil
         }
         ownerName = defaults.string(forKey: DefaultsKey.ownerName) ?? "私"
+        if let uid = defaults.string(forKey: DefaultsKey.preferredInputDeviceUID), !uid.isEmpty {
+            preferredInputDeviceUID = uid
+        } else {
+            preferredInputDeviceUID = nil
+        }
         // didSetはinit中は発火しないため、ここでは正規化のみ行い、scheduleRotation()は呼ばない
         // （収録中でない起動直後は呼んでも何もしない）。
         if defaults.object(forKey: DefaultsKey.rotationIntervalHours) == nil {
@@ -123,16 +135,29 @@ final class AppModel {
         }
     }
 
+    private func persistPreferredInputDeviceUID() {
+        let defaults = UserDefaults.standard
+        if let preferredInputDeviceUID {
+            defaults.set(preferredInputDeviceUID, forKey: DefaultsKey.preferredInputDeviceUID)
+        } else {
+            defaults.removeObject(forKey: DefaultsKey.preferredInputDeviceUID)
+        }
+    }
+
     // MARK: - Daemon lifecycle
 
     private func desiredArguments(outputDirectory: URL) -> [String] {
-        [
+        var arguments = [
             "serve",
             "--output", outputDirectory.path,
             "--owner", ownerName,
             "--source", "both",
             "--control", "stdio",
         ]
+        if let preferredInputDeviceUID {
+            arguments += ["--input-device", preferredInputDeviceUID]
+        }
+        return arguments
     }
 
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
@@ -447,6 +472,8 @@ final class AppModel {
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
+        case .inputReset:
+            preferredInputDeviceUID = nil
         }
     }
 }

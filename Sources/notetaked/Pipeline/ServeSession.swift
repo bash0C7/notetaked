@@ -48,6 +48,8 @@ actor ServeSession {
     private let device: DeviceIdentity
     private let diarizerModels: DiarizerModels?
     private let profileStore: SpeakerProfileStore?
+    /// micを固定したい入力デバイスのUID。nilなら常にOS既定（#14の既存動作のまま）
+    private let inputDeviceUID: String?
 
     private var store: SessionStore?
     private var reconciler = Reconciler()
@@ -84,7 +86,7 @@ actor ServeSession {
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
         control: StdioControl, device: DeviceIdentity, diarizerModels: DiarizerModels?,
-        registry: SpeakerRegistry, profileStore: SpeakerProfileStore?
+        registry: SpeakerRegistry, profileStore: SpeakerProfileStore?, inputDeviceUID: String? = nil
     ) {
         self.outputDirectory = outputDirectory
         self.owner = owner
@@ -95,6 +97,7 @@ actor ServeSession {
         self.diarizerModels = diarizerModels
         self.registry = registry
         self.profileStore = profileStore
+        self.inputDeviceUID = inputDeviceUID
         self.sessions = SessionIndex.scan(directory: outputDirectory)
     }
 
@@ -167,9 +170,16 @@ actor ServeSession {
         for (source, ownerFor) in sourceOption.sources {
             do {
                 let capture: any AudioCapture
+                var micCapture: MicCapture?
                 switch source {
                 case .mic:
-                    capture = MicCapture()
+                    let mic = MicCapture(
+                        pinnedUID: inputDeviceUID,
+                        onFallback: { [weak self] in
+                            Task { await self?.handleInputFallback() }
+                        })
+                    micCapture = mic
+                    capture = mic
                 case .system:
                     capture = try SystemAudioCapture()
                 case .watch:
@@ -180,13 +190,15 @@ actor ServeSession {
                     diarizerModels: diarizerModels)
                 let events = try await captureStream.start()
                 let streamOwner = ownerFor(owner)
-                let input: InputDevice = source == .system ? .system : InputDeviceProbe.current()
                 let inputAt: @Sendable () -> InputDevice
                 if source == .system {
                     inputAt = { .system }
+                } else if let micCapture {
+                    inputAt = { micCapture.currentInputDevice() }
                 } else {
                     inputAt = { InputDeviceProbe.current() }
                 }
+                let input: InputDevice = inputAt()
                 let consumer = Task { [weak self] in
                     for await event in events {
                         await self?.handle(
@@ -225,6 +237,11 @@ actor ServeSession {
         refreshSessions()
 
         return true
+    }
+
+    /// pin中の入力デバイスが切断されOS既定へフォールバックした時、`MicCapture`から呼ばれる
+    private func handleInputFallback() async {
+        await control.send(.inputReset)
     }
 
     // MARK: - stream events

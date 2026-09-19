@@ -6,11 +6,15 @@ import NotetakeCore
 /// のみ`appModel`へ反映する。`--owner`はdaemonの起動引数に含まれるため、確定していない値で毎回daemonを
 /// 再起動しないようにするため。間隔は`RotationSchedule.normalizedIntervalHours`で正規化してから反映する。
 struct SettingsView: View {
+    /// Picker上で「既定（OSに合わせる）」を表す選択肢のtag（`appModel.preferredInputDeviceUID == nil`に対応）
+    private static let defaultDeviceTag = ""
+
     @Bindable var appModel: AppModel
     @State private var ownerNameDraft: String = ""
     @FocusState private var ownerNameFieldFocused: Bool
     @State private var rotationIntervalDraft: String = ""
     @FocusState private var rotationFieldFocused: Bool
+    @State private var availableInputDevices: [InputDevice] = []
 
     var body: some View {
         Form {
@@ -22,6 +26,12 @@ struct SettingsView: View {
                         .truncationMode(.head)
                     Spacer()
                     Button("選択…") { chooseOutputDirectory() }
+                }
+            }
+            Picker("入力デバイス", selection: inputDeviceSelection) {
+                Text("既定（OSに合わせる）").tag(Self.defaultDeviceTag)
+                ForEach(availableInputDevices, id: \.uid) { device in
+                    Text(device.name).tag(device.uid)
                 }
             }
             TextField("自分の名前", text: $ownerNameDraft)
@@ -52,6 +62,7 @@ struct SettingsView: View {
         .onAppear {
             ownerNameDraft = appModel.ownerName
             rotationIntervalDraft = Self.formatHours(appModel.rotationIntervalHours)
+            availableInputDevices = InputDeviceProbe.all()
         }
         .onChange(of: ownerNameFieldFocused) { wasFocused, isFocused in
             if wasFocused, !isFocused {
@@ -69,6 +80,18 @@ struct SettingsView: View {
         }
         .padding()
         .frame(minWidth: 360)
+    }
+
+    /// `appModel.preferredInputDeviceUID`（`nil`=既定）と、Pickerのtag（`nil`を表せないため
+    /// `Self.defaultDeviceTag`で代用）を橋渡しするbinding。選択したら即座に確定してdaemonへ反映する
+    private var inputDeviceSelection: Binding<String> {
+        Binding(
+            get: { appModel.preferredInputDeviceUID ?? Self.defaultDeviceTag },
+            set: { newValue in
+                appModel.preferredInputDeviceUID = newValue == Self.defaultDeviceTag ? nil : newValue
+                appModel.ensureDaemon()
+            }
+        )
     }
 
     private func commitOwnerName() {
