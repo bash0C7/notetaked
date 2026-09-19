@@ -324,10 +324,23 @@ actor ServeSession {
             return false
         }
 
+        // 既存のtimed.jsonl（resumeなら前回crash分、新規sessionなら存在しない）を畳み込み、
+        // final.mdがcrash前の内容を失わないようreconciler/seqを復元する
+        var resumedReconciler = Reconciler()
+        var resumedSeq = 0
+        if let text = try? String(contentsOf: store.timedURL, encoding: .utf8) {
+            for record in NDJSON.decodeAll(text) {
+                resumedReconciler.apply(record)
+                if case .segment(let seg) = record {
+                    resumedSeq = max(resumedSeq, seg.seq)
+                }
+            }
+        }
+
         self.store = store
-        self.reconciler = Reconciler()
+        self.reconciler = resumedReconciler
         self.nameAnnouncer = ProfileNameAnnouncer()
-        self.seq = 0
+        self.seq = resumedSeq
         self.streams = started
         self.currentInput = started.first(where: { $0.source == .mic })?.input
         self.recording = true
@@ -419,11 +432,17 @@ actor ServeSession {
         }
 
         let sourceName = source == .system ? "system" : "mic"
-        if let rawCapture = streams.first(where: { $0.source == source })?.rawCapture,
+        if let runningStream = streams.first(where: { $0.source == source }),
+            let rawCapture = runningStream.rawCapture,
             let checkpointURL = checkpointURLs[sourceName]
         {
+            // checkpointは「読み終えた位置」ではなく「finalizeされた音声の終端位置」を記録する。
+            // readerは最大12秒超のhold-limit（＋diarizer backlog）ぶん先まで読み進んでいるため、
+            // read位置をそのまま使うとcrash後の再開で未処理区間を読み飛ばし、data lossになる
+            let originMS = Int64((runningStream.stream.origin.timeIntervalSince1970 * 1000).rounded())
+            let audioElapsedMS = piece.endMS - originMS
             var checkpoint = CaptureCheckpoint.load(from: checkpointURL)
-            checkpoint.offsets[sourceName] = rawCapture.currentOffset
+            checkpoint.offsets[sourceName] = rawCapture.offset(atOrBeforeAudioMS: audioElapsedMS)
             try? checkpoint.save(to: checkpointURL)
         }
 

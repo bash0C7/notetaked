@@ -16,11 +16,33 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
     private let lock = NSLock()
     private var offset: Int
     private var pollTask: Task<Void, Never>?
+    /// このinstanceが読み始めてから配信したaudioの累積長（ms）と、その時点のoffsetの対応表。
+    /// `handleFinal`がwall-clock（read位置）ではなくaudio時間軸でcheckpointを取れるようにする
+    private var cumulativeAudioMS: Int64 = 0
+    private var audioMsLog: [(audioMS: Int64, offset: Int)] = []
 
     var currentOffset: Int {
         lock.lock()
         defer { lock.unlock() }
         return offset
+    }
+
+    /// `targetMS`（このinstanceが読み始めてからのaudio経過ms）以前で最も遅いoffsetを返す。
+    /// ログに無いほど古い（2分より前の）targetMSは、保持している最古のoffsetにfall backする
+    /// （データ欠損よりreprocessingを選ぶ、安全側の丸め）
+    func offset(atOrBeforeAudioMS targetMS: Int64) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !audioMsLog.isEmpty else { return offset }
+        var result = audioMsLog.first!.offset
+        for entry in audioMsLog {
+            if entry.audioMS <= targetMS {
+                result = entry.offset
+            } else {
+                break
+            }
+        }
+        return result
     }
 
     /// 最初のフレームが読めるまで0.1秒間隔でポーリングし、そのsampleRate/channelCountからformatを構築する
@@ -67,6 +89,7 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
         guard let (frames, newOffset) = try? RawAudioReader.readFrames(fileURL: fileURL, from: readFrom),
             !frames.isEmpty
         else { return }
+        var batchDurationMS: Int64 = 0
         for frame in frames {
             guard frame.sampleRate == format.sampleRate,
                 AVAudioChannelCount(frame.channelCount) == format.channelCount
@@ -83,9 +106,19 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
                 }
             }
             handler(buffer)
+            let channelCount = max(frame.channelCount, 1)
+            let sampleFrameCount = frame.samples.count / channelCount
+            if frame.sampleRate > 0 {
+                batchDurationMS += Int64((Double(sampleFrameCount) / frame.sampleRate * 1000).rounded())
+            }
         }
         lock.lock()
         offset = newOffset
+        cumulativeAudioMS += batchDurationMS
+        audioMsLog.append((cumulativeAudioMS, offset))
+        while audioMsLog.count > 1, let first = audioMsLog.first, cumulativeAudioMS - first.audioMS > 120_000 {
+            audioMsLog.removeFirst()
+        }
         lock.unlock()
     }
 }
