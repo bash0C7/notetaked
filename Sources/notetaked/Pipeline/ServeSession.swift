@@ -140,6 +140,9 @@ actor ServeSession {
     /// 最初の`startCapture()`で遅延起動する
     private func ensureCaptureEventPolling() {
         guard captureEventPollTask == nil else { return }
+        // channelファイルは前回processのeventを消さずに残るため、このinstanceのpolling開始時点を
+        // 「既読」として扱う。こうしないと再起動直後に前回runの`.inputFallback`を誤って再生してしまう。
+        lastCaptureEventSeenAt = Date()
         captureEventPollTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 await self.pollCaptureEvents()

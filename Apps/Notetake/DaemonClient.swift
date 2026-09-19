@@ -85,9 +85,12 @@ final class DaemonClient {
         }
     }
 
-    /// `quit`を送りProcessの終了を待ってから、なお生きていれば強制終了する。MainActorをブロックしない非同期待ち。
+    /// `quit`を送りProcessの終了を待ってから、なお生きていればSIGTERM、それでも生きていればSIGKILLで
+    /// 強制終了する。MainActorをブロックしない非同期待ち。
     /// `wasRecording`が真の場合は収録中の`SpeechAnalyzer`のfinalizationに時間がかかりうるため
-    /// 10秒、そうでなければ2秒を締め切りとする。
+    /// 10秒、そうでなければ2秒を締め切りとする。SIGTERM後はさらに3秒待ってからSIGKILLへ
+    /// エスカレーションする（`ServeCommand`がSIGTERMをclean shutdown経路として使うため、
+    /// actorがハングしている場合に備えた最終手段）。
     func terminate(wasRecording: Bool = false) async {
         guard process.isRunning else { return }
         send(.quit)
@@ -96,8 +99,14 @@ final class DaemonClient {
         while process.isRunning, Date() < deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        guard process.isRunning else { return }
+        process.terminate()
+        let killDeadline = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < killDeadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
         if process.isRunning {
-            process.terminate()
+            kill(process.processIdentifier, SIGKILL)
         }
     }
 }

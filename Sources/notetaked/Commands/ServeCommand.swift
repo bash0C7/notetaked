@@ -70,6 +70,10 @@ struct Serve: AsyncParsableCommand {
         try FileManager.default.createDirectory(
             at: outputURL, withIntermediateDirectories: true)
 
+        // 資産取得・モデル読込・resumeより前にheartbeatファイルを存在させておく。
+        // これらは数秒〜数十秒かかりうるため、無いと起動直後にAppModel側からハング扱いされる。
+        try? Heartbeat.write(to: CaptureStatePaths.processHeartbeatURL)
+
         let selectedLocale = Locale(identifier: locale)
         try await Transcriber.ensureAssets(locale: selectedLocale)
 
