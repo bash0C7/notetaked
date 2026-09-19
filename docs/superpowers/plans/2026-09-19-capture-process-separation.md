@@ -797,7 +797,7 @@ EOF
 **Files:**
 - Create: `Sources/notetaked/Capture/CaptureSessionRunner.swift`
 - Create: `Sources/notetaked/Commands/CaptureDaemonCommand.swift`
-- Modify: `Sources/notetaked/notetaked.swift`（or existing `@main` entry point — subcommand登録。実ファイル名は`Sources/notetaked/`直下の`@main struct Notetaked: AsyncParsableCommand`定義箇所を検索して`subcommands`配列に`CaptureDaemon.self`を追加する）
+- Modify: `Sources/notetaked/Notetaked.swift`（or existing `@main` entry point — subcommand登録。実ファイル名は`Sources/notetaked/`直下の`@main struct Notetaked: AsyncParsableCommand`定義箇所を検索して`subcommands`配列に`CaptureDaemon.self`を追加する）
 
 **Interfaces:**
 - Consumes: `MicCapture`/`SystemAudioCapture`（既存、`AudioCapture`準拠）、`RawAudioWriter`（Task 6）、`CaptureControlChannel<CaptureCommand>`/`CaptureControlChannel<CaptureEvent>`（Task 4, 5）、`Heartbeat.write(to:)`/`CaptureStatePaths`（Task 3）
@@ -941,7 +941,7 @@ struct CaptureDaemon: AsyncParsableCommand {
 }
 ```
 
-`Sources/notetaked/notetaked.swift`（`@main`の`subcommands:`配列）に`CaptureDaemon.self`を追加する。既存の`Serve.self`等が並んでいる箇所と同じ配列。
+`Sources/notetaked/Notetaked.swift`（`@main`の`subcommands:`配列）に`CaptureDaemon.self`を追加する。既存の`Serve.self`等が並んでいる箇所と同じ配列。
 
 - [ ] **Step 3: ビルド確認**
 
@@ -951,7 +951,7 @@ Expected: 空（エラー無し）
 - [ ] **Step 4: commit**
 
 ```bash
-git add Sources/notetaked/Capture/CaptureSessionRunner.swift Sources/notetaked/Commands/CaptureDaemonCommand.swift Sources/notetaked/notetaked.swift
+git add Sources/notetaked/Capture/CaptureSessionRunner.swift Sources/notetaked/Commands/CaptureDaemonCommand.swift Sources/notetaked/Notetaked.swift
 git commit -m "$(cat <<'EOF'
 feat(capture): add capture-daemon subcommand for isolated audio capture
 
