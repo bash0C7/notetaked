@@ -1162,7 +1162,7 @@ import struct NotetakeCore.CaptureControlChannel
 
 6. **`stopCapture()`の末尾**で`captureCommandChannel.send(.stopSession)`を呼び、`checkpointURLs`をクリアする。
 
-7. **`start()`（`.start`コマンド処理）の成功時**、`CaptureStatePaths.currentSessionMarkerURL`へ`{"prefix": lastPrefix}`相当のJSONを書く。`stop()`成功時はこのファイルを削除する。
+7. **`startCapture()`の成功時**（`self.recording = true`を設定した直後、`start()`/`rotate()`どちらから呼ばれても同じ場所を通る）、`CaptureStatePaths.currentSessionMarkerURL`へ`{"prefix": store.prefix}`相当のJSONを書く。**`stopCapture()`の末尾**（`self.recording = false`を設定した直後）でこのファイルを削除する。`start()`/`stop()`自体には手を入れない — `rotate()`は`stopCapture()`→`startCapture()`を直接呼ぶため、marker書き込み/削除をそちらに置くと`rotate()`時にmarkerが更新されない。
 
 8. **`resumeIfNeeded()`（新規public method、actor外から`await session.resumeIfNeeded()`で呼ぶ）**:
 
