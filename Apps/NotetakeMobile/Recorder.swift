@@ -225,9 +225,12 @@ actor Recorder {
         sampleTime += convertedFrames
     }
 
-    /// FOA 4ch buffer（ACN順: 0=W, 1=Y, 2=Z, 3=X）からW / Y / Xを取り出す。
-    /// Float32のinterleaved / non-interleavedの両方を受け付け、AVAudioConverterは使わない
-    /// （4chのtarget formatはchannel layout無しでは作れず、layout付きでも並びが保たれる保証が無いため）
+    /// FOA 4ch buffer（ACN順: 0=W, 1=Y, 2=Z, 3=X）から、平置き（画面上向き）を前提に
+    /// 水平面の2成分を取り出す。issue #2の実機データから、平置き時は+X（ambisonics数学上の
+    /// 前後軸）が画面法線（鉛直方向）を指しており、水平面はY（左右軸）とZ（本来は上下軸）が
+    /// 張っていると推定される（Apple公式文書には物理筐体との対応の記載が無く、この対応は
+    /// 未確認の仮説。平置き以外の姿勢は非対応、DirectionEstimatorへの第3引数名は`x`のまま
+    /// だが実体はZ chである点に注意）
     private static func foaChannels(from buffer: AVAudioPCMBuffer) -> (w: [Float], y: [Float], x: [Float])? {
         guard buffer.format.commonFormat == .pcmFormatFloat32, let data = buffer.floatChannelData else { return nil }
         let count = Int(buffer.frameLength)
@@ -235,18 +238,18 @@ actor Recorder {
             let interleaved = data[0]
             var w = [Float](repeating: 0, count: count)
             var y = w
-            var x = w
+            var z = w
             for i in 0..<count {
                 w[i] = interleaved[i * 4]
                 y[i] = interleaved[i * 4 + 1]
-                x[i] = interleaved[i * 4 + 3]
+                z[i] = interleaved[i * 4 + 2]
             }
-            return (w, y, x)
+            return (w, y, z)
         }
         return (
             Array(UnsafeBufferPointer(start: data[0], count: count)),
             Array(UnsafeBufferPointer(start: data[1], count: count)),
-            Array(UnsafeBufferPointer(start: data[3], count: count)))
+            Array(UnsafeBufferPointer(start: data[2], count: count)))
     }
 
     private static func monoBuffer(samples: [Float], sampleRate: Double) -> AVAudioPCMBuffer? {
