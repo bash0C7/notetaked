@@ -5,6 +5,7 @@ import SwiftUI
 /// （iPhone側は個別に「ペアリングを解除」する必要がある）
 struct PairingQRView: View {
     let appModel: AppModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 16) {
@@ -28,5 +29,10 @@ struct PairingQRView: View {
         }
         .padding(24)
         .frame(minWidth: 320, minHeight: 380)
+        .onChange(of: appModel.connectedPeers.isEmpty) { wasEmpty, isEmpty in
+            if wasEmpty, !isEmpty {
+                dismiss()
+            }
+        }
     }
 }
