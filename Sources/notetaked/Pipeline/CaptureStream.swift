@@ -20,6 +20,35 @@ enum CaptureStreamError: Error {
     case diarizerFormatUnavailable
 }
 
+/// captureコールバック（real-time thread、単一）が届けるbufferのformatが初期化時のものと
+/// 食い違ったら（pinしたデバイスの切断でOS既定へフォールバックした場合等）、その場で
+/// 目標formatへの`AudioConverter`を再構築してから変換する（issue #18）。NSLockは、
+/// このclassの唯一のstate遷移（`converter`の差し替え）をformat比較と不可分にするためのもの
+private final class RebuildableAudioConverter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let outputFormat: AVAudioFormat
+    private var inputFormat: AVAudioFormat
+    private var converter: AudioConverter
+
+    init(from inputFormat: AVAudioFormat, to outputFormat: AVAudioFormat) throws {
+        self.inputFormat = inputFormat
+        self.outputFormat = outputFormat
+        self.converter = try AudioConverter(from: inputFormat, to: outputFormat)
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) throws -> sending AVAudioPCMBuffer {
+        lock.lock()
+        defer { lock.unlock() }
+        if buffer.format.sampleRate != inputFormat.sampleRate
+            || buffer.format.channelCount != inputFormat.channelCount
+        {
+            inputFormat = buffer.format
+            converter = try AudioConverter(from: buffer.format, to: outputFormat)
+        }
+        return try converter.convert(buffer)
+    }
+}
+
 /// capture → AudioConverter → Transcriber をつなぐpipeline。
 /// `diarizerModels`が渡されていれば、同じcaptureからもう1系統16kHz monoへ変換し、
 /// `Diarizer`で話者turnを求め、`Aligner`でTranscriberのfinal pieceを話者境界で分割する。
@@ -42,9 +71,9 @@ actor CaptureStream {
 
     private let capture: any AudioCapture
     private let transcriber: Transcriber
-    private let converter: AudioConverter
+    private let converter: RebuildableAudioConverter
     private let diarizer: Diarizer?
-    private let diarizerConverter: AudioConverter?
+    private let diarizerConverter: RebuildableAudioConverter?
     private var aligner = Aligner()
     /// diarizerのfeedが投げたエラーは(毎buffer起こりうるため)1回だけ`.log`で報告する
     private var diarizerErrorReported = false
@@ -79,7 +108,7 @@ actor CaptureStream {
         let origin = Date()
         self.origin = origin
         self.transcriber = try await Transcriber(locale: locale, origin: origin)
-        self.converter = try AudioConverter(from: capture.format, to: transcriber.inputFormat)
+        self.converter = try RebuildableAudioConverter(from: capture.format, to: transcriber.inputFormat)
 
         if let diarizerModels {
             guard
@@ -89,7 +118,7 @@ actor CaptureStream {
             else {
                 throw CaptureStreamError.diarizerFormatUnavailable
             }
-            self.diarizerConverter = try AudioConverter(from: capture.format, to: monoFormat)
+            self.diarizerConverter = try RebuildableAudioConverter(from: capture.format, to: monoFormat)
             let originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())
             self.diarizer = Diarizer(models: diarizerModels, originMS: originMS)
         } else {

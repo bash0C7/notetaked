@@ -8,24 +8,37 @@ enum RawAudioReaderCaptureError: Error {
 }
 
 /// capture-daemonが書き続ける生audioファイルをtail読みし、`AudioCapture`として配信する。
-/// `@unchecked Sendable`の根拠: `offset`はNSLockで保護され、`pollTask`は所有者
-/// （CaptureStream actor）からのみ書き換えられる
+/// `@unchecked Sendable`の根拠: `offset`・`currentFormat`等の可変stateはNSLockで保護され、
+/// `pollTask`は所有者（CaptureStream actor）からのみ書き換えられる
 final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
-    let format: AVAudioFormat
     private let fileURL: URL
     private let lock = NSLock()
     private var offset: Int
     private var pollTask: Task<Void, Never>?
-    /// このinstanceが読み始めてから配信したaudioの累積sample frame数（丸め無し・正確値）。
-    /// msへの変換はログ記録・比較の直前に一度だけ行い、丸め誤差の累積を避ける
-    private var cumulativeSampleFrames: Int64 = 0
-    /// 上記sample frame数をformat.sampleRateで換算した累積ms（audioMsLog末尾との比較・trim判定に使う）
+    /// pinしたデバイスの切断でOS既定へフォールバックする等sampleRate/channelCountが変わっても、
+    /// dropせずこのformatを再構築して配信を続ける（issue #18）
+    private var currentFormat: AVAudioFormat
+    /// `currentFormat`のsampleRate/channelCountが変わらずに続いている現segment内での、
+    /// 累積sample frame数（丸め無し・正確値）
+    private var segmentSampleFrames: Int64 = 0
+    /// 現segmentが始まる前（過去の全formatセグメント分）に確定済みの累積ms
+    private var segmentBaselineMS: Int64 = 0
+    /// このinstanceが読み始めてから配信したaudioの累積ms（`segmentBaselineMS` + 現segment分。
+    /// audioMsLog末尾との比較・trim判定に使う）
     private var cumulativeAudioMS: Int64 = 0
     /// このinstanceが読み始めてから配信したaudioの累積長（ms）と、その時点のoffsetの対応表。
     /// `handleFinal`がwall-clock（read位置）ではなくaudio時間軸でcheckpointを取れるようにする。
     /// frame単位で1 entryずつ記録する（poll batch単位だとresume直後の大きなbacklog一括読みで
     /// 粒度が粗くなり、finalizeのcheckpointがbacklog末尾まで先走ってしまうため）
     private var audioMsLog: [(audioMS: Int64, offset: Int)] = []
+
+    /// capture側のnative format。sampleRate/channelCountが変われば追従する
+    /// （`MicCapture.format`と同様、都度現在値を返すcomputed property）
+    var format: AVAudioFormat {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentFormat
+    }
 
     var currentOffset: Int {
         lock.lock()
@@ -69,7 +82,7 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
         }
-        format = resolvedFormat!
+        currentFormat = resolvedFormat!
     }
 
     func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
@@ -87,28 +100,38 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
     }
 
     private func pollOnce(handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
-        let readFrom: Int = {
+        let (readFrom, startFormat, startSegmentFrames, startBaselineMS): (Int, AVAudioFormat, Int64, Int64) = {
             lock.lock()
             defer { lock.unlock() }
-            return offset
+            return (offset, currentFormat, segmentSampleFrames, segmentBaselineMS)
         }()
         guard let (frames, newOffset) = try? RawAudioReader.readFrames(fileURL: fileURL, from: readFrom),
             !frames.isEmpty
         else { return }
-        // frameのencoded()レイアウト（16バイトheader + samples.count * 4バイト）と一致させ、
-        // format不一致でskipされたframeの分もoffsetの位置を正しく追跡する
         var runningOffsetCursor = readFrom
-        var sampleFrameDelta: Int64 = 0
+        var workingFormat = startFormat
+        var segmentFrames = startSegmentFrames
+        var baselineMS = startBaselineMS
         var newLogEntries: [(audioMS: Int64, offset: Int)] = []
         for frame in frames {
             let frameByteSize = 16 + frame.samples.count * 4
             runningOffsetCursor += frameByteSize
-            guard frame.sampleRate == format.sampleRate,
-                AVAudioChannelCount(frame.channelCount) == format.channelCount
-            else { continue }
+            // sampleRate/channelCountがそれまでのformatと食い違ったら、dropせず現segmentまでの
+            // 経過msを確定してから新formatへ切り替えて処理を続ける（issue #18）
+            if frame.sampleRate != workingFormat.sampleRate
+                || AVAudioChannelCount(frame.channelCount) != workingFormat.channelCount
+            {
+                baselineMS += Self.ms(forSampleFrames: segmentFrames, sampleRate: workingFormat.sampleRate)
+                segmentFrames = 0
+                guard
+                    let rebuilt = AVAudioFormat(
+                        standardFormatWithSampleRate: frame.sampleRate, channels: AVAudioChannelCount(frame.channelCount))
+                else { continue }
+                workingFormat = rebuilt
+            }
             guard
                 let buffer = AVAudioPCMBuffer(
-                    pcmFormat: format, frameCapacity: AVAudioFrameCount(frame.samples.count / frame.channelCount))
+                    pcmFormat: workingFormat, frameCapacity: AVAudioFrameCount(frame.samples.count / frame.channelCount))
             else { continue }
             buffer.frameLength = buffer.frameCapacity
             guard let channelData = buffer.floatChannelData else { continue }
@@ -119,21 +142,27 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
             }
             handler(buffer)
             let channelCount = max(frame.channelCount, 1)
-            sampleFrameDelta += Int64(frame.samples.count / channelCount)
+            segmentFrames += Int64(frame.samples.count / channelCount)
             // sample frame数（丸め無し）からその時点の累積msを一度だけ算出してログに残す。
             // 1フレームごとにentryを積むことで、resume直後の大きなbacklog一括読みでも
             // 粒度が粗くならない
-            let audioMS = Int64((Double(cumulativeSampleFrames + sampleFrameDelta) / format.sampleRate * 1000).rounded())
+            let audioMS = baselineMS + Self.ms(forSampleFrames: segmentFrames, sampleRate: workingFormat.sampleRate)
             newLogEntries.append((audioMS, runningOffsetCursor))
         }
         lock.lock()
         offset = newOffset
-        cumulativeSampleFrames += sampleFrameDelta
-        cumulativeAudioMS = Int64((Double(cumulativeSampleFrames) / format.sampleRate * 1000).rounded())
+        currentFormat = workingFormat
+        segmentSampleFrames = segmentFrames
+        segmentBaselineMS = baselineMS
+        cumulativeAudioMS = baselineMS + Self.ms(forSampleFrames: segmentFrames, sampleRate: workingFormat.sampleRate)
         audioMsLog.append(contentsOf: newLogEntries)
         while audioMsLog.count > 1, let first = audioMsLog.first, cumulativeAudioMS - first.audioMS > 120_000 {
             audioMsLog.removeFirst()
         }
         lock.unlock()
+    }
+
+    private static func ms(forSampleFrames sampleFrames: Int64, sampleRate: Double) -> Int64 {
+        Int64((Double(sampleFrames) / sampleRate * 1000).rounded())
     }
 }
