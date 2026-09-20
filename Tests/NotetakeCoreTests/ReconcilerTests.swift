@@ -256,6 +256,50 @@ private func seg(
     #expect(out[0].speaker == "小芝")
 }
 
+@Test func resolveFallbackSpeakersInheritsFromFollowingUtteranceWhenPriorGapExceedsThreshold() {
+    var r = Reconciler()
+    r.apply(seg(device: "mac1", owner: "小芝", start: 0, end: 1000, text: "会議の件だけど", global: "g2"))
+    // 直前(g2)との間隔は10秒で閾値超過のため、既存の因果的継承（issue #8一次対応）は取りこぼす
+    r.apply(seg(device: "mac1", owner: "小芝", start: 10_000, end: 10_500, text: "うん"))
+    // 直後(g2)との間隔は1.5秒で閾値以内、かつ同じspeakerIDを持つ
+    r.apply(seg(device: "mac1", owner: "小芝", start: 12_000, end: 13_000, text: "それでお願いします", global: "g2"))
+
+    let unresolved = r.utterances[1]
+    #expect(unresolved.speakerID == nil)
+
+    let resolved = r.resolveFallbackSpeakers()
+    #expect(resolved[1].speakerID == "g2")
+    #expect(resolved[1].speaker == "g2")
+}
+
+@Test func resolveFallbackSpeakersKeepsOwnerLabelWhenPriorAndFollowingSpeakersConflict() {
+    var r = Reconciler()
+    // 直前になる発話をわざと後から届かせ、適用時点では因果的継承（issue #8一次対応）が
+    // 先行発話を見つけられず`speakerID == nil`のまま確定する状況を作る。それでも最終的な
+    // 並び（start昇順）では直前・直後の両方が異なるspeakerIDを持つため、第二パスの
+    // 矛盾検出（ownerLabelへのfallback維持）を検証できる
+    r.apply(seg(device: "mac1", owner: "小芝", start: 1_500, end: 2_000, text: "うん"))
+    r.apply(seg(device: "mac1", owner: "小芝", start: 0, end: 1000, text: "会議の件だけど", global: "g1"))
+    r.apply(seg(device: "mac1", owner: "小芝", start: 2_500, end: 3_500, text: "それでお願いします", global: "g2"))
+
+    let unresolved = r.utterances[1]
+    #expect(unresolved.speakerID == nil)
+
+    let resolved = r.resolveFallbackSpeakers()
+    #expect(resolved[1].speakerID == nil)
+    #expect(resolved[1].speaker == "小芝")
+}
+
+@Test func resolveFallbackSpeakersKeepsOwnerLabelWhenNoNeighborOnSameDevice() {
+    var r = Reconciler()
+    let out = r.apply(seg(device: "mac1", owner: "小芝", start: 0, end: 1000, text: "うん"))
+    #expect(out[0].speakerID == nil)
+
+    let resolved = r.resolveFallbackSpeakers()
+    #expect(resolved[0].speakerID == nil)
+    #expect(resolved[0].speaker == "小芝")
+}
+
 @Test func locationLabelFollowsHighestLevelSegNotTextWinner() {
     var r = Reconciler()
     r.apply(seg(device: "ip", platform: .ios, start: 0, end: 1000, text: "こんにちは", confidence: 0.9, levelDBFS: -10))

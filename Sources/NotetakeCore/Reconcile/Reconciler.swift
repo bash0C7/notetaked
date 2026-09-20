@@ -133,6 +133,70 @@ public struct Reconciler: Sendable {
         return nil
     }
 
+    // MARK: - fallback speaker resolution (second pass)
+
+    /// 区切り/停止のタイミングで呼ぶ第二パス。`speakerID`が無くownerLabelへfallbackしている
+    /// utteranceについて、直前・直後両方向の同一device utteranceを見て再解決する。
+    /// `inheritedSpeakerID`（リアルタイム・過去方向のみ）はライブ表示用にそのまま残し、
+    /// このメソッドはfinal.md再生成時にのみ別途呼ぶ（issue #8二次対応）
+    public func resolveFallbackSpeakers() -> [Utterance] {
+        var result = utterances
+        for index in result.indices where result[index].speakerID == nil {
+            guard let resolved = resolveFallbackSpeakerID(at: index) else { continue }
+            result[index].speakerID = resolved
+            result[index].speaker = label(speakerID: resolved, ownerLabel: result[index].ownerLabel)
+        }
+        return result
+    }
+
+    /// 直前・直後それぞれの同一device utteranceのspeakerIDが一致すればそれを採用、
+    /// 片方のみ得られればそれを採用、無いか矛盾すればnil（呼び出し側がfallbackを維持する）
+    private func resolveFallbackSpeakerID(at index: Int) -> String? {
+        let target = utterances[index]
+        let before = nearestBeforeSpeakerID(before: index, target: target)
+        let after = nearestAfterSpeakerID(after: index, target: target)
+        switch (before, after) {
+        case let (b?, a?) where b == a:
+            return b
+        case let (b?, nil):
+            return b
+        case let (nil, a?):
+            return a
+        default:
+            return nil
+        }
+    }
+
+    /// `index`より前で同一deviceを持つ直近のutteranceを探し、時間差が
+    /// `config.speakerInheritanceGapMS`以内ならそのspeakerIDを返す
+    private func nearestBeforeSpeakerID(before index: Int, target: Utterance) -> String? {
+        var i = index - 1
+        while i >= 0 {
+            let candidate = utterances[i]
+            if candidate.devices.contains(where: target.devices.contains) {
+                guard target.start - candidate.end <= config.speakerInheritanceGapMS else { return nil }
+                return candidate.speakerID
+            }
+            i -= 1
+        }
+        return nil
+    }
+
+    /// `index`より後で同一deviceを持つ直近のutteranceを探し、時間差が
+    /// `config.speakerInheritanceGapMS`以内ならそのspeakerIDを返す
+    private func nearestAfterSpeakerID(after index: Int, target: Utterance) -> String? {
+        var i = index + 1
+        while i < utterances.count {
+            let candidate = utterances[i]
+            if candidate.devices.contains(where: target.devices.contains) {
+                guard candidate.start - target.end <= config.speakerInheritanceGapMS else { return nil }
+                return candidate.speakerID
+            }
+            i += 1
+        }
+        return nil
+    }
+
     private func merge(seg: Segment, into utterance: Utterance, start: Int64, end: Int64) -> Utterance {
         var merged = utterance
         merged.sources.append(seg.id)
