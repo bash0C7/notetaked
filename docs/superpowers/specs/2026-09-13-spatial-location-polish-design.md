@@ -71,7 +71,9 @@
 - seg方位: segの時間範囲に入るフレームの単位ベクトルを `c` で重み付けした円平均。合成ベクトルの長さ（重み和で正規化）を `confidence` とする。`c < 0.2` のフレームは捨てる。有効フレームが無ければ `direction` を付けない
 - 出力の `azimuth_deg` は時計回り・上基準に変換: `azimuth_deg = (360 − deg(θ) + azimuthOffsetDeg) mod 360`。`azimuthOffsetDeg` はFOA座標系と機材の「上」がずれていた場合の補正定数（既定0、実機で確認して決める。verification参照）
 
-`ch0=W, ch1=Y, ch2=Z, ch3=X` と「前=+X、左=+Y、上=+Z、反時計回り、右手系」は一般的なACN/SN3D（ambiX）規約通りで、Apple公式のWWDC25セッション251「Enhance your app's audio recording capabilities」の説明（"3 perpendicular dipoles, in the X, Y, and Z directions or front-back, left-right, and up-down"）とも一致する。ただしこれは軸の数学的な役割（どのchが前後/左右/上下を表すか）の確認に留まる。**iPhone実機の物理筐体のどの方向がFOA座標系の「前（+X）」に対応するか**（例: 背面カメラが向く方向か、機材上端方向か、画面法線かなど）はApple公式ドキュメント・WWDC資料のどこにも記載が無く、未確認（issue #4参照）。`azimuthOffsetDeg` は「上」の回転ずれのみを補正する定数であり、+Xが水平面ではなく画面法線寄りを向いているようなケース（回転では直らない軸の取り違え）には効かない。この場合はDirectionEstimatorへ渡すch組み合わせ自体（現状W/Y/Xの3ch）を見直す必要があるが、実機での軸確認（verification参照）ができるまでは着手しない
+`ch0=W, ch1=Y, ch2=Z, ch3=X` と「前=+X、左=+Y、上=+Z、反時計回り、右手系」は一般的なACN/SN3D（ambiX）規約通りで、Apple公式のWWDC25セッション251「Enhance your app's audio recording capabilities」の説明（"3 perpendicular dipoles, in the X, Y, and Z directions or front-back, left-right, and up-down"）とも一致する。ただしこれは軸の数学的な役割（どのchが前後/左右/上下を表すか）の確認に留まる。**iPhone実機の物理筐体のどの方向がFOA座標系の「前（+X）」に対応するか**（例: 背面カメラが向く方向か、機材上端方向か、画面法線かなど）はApple公式ドキュメント・WWDC資料のどこにも記載が無く、未確認（issue #4参照）。`azimuthOffsetDeg` は「上」の回転ずれのみを補正する定数であり、+Xが水平面ではなく画面法線寄りを向いているようなケース（回転では直らない軸の取り違え）には効かない。
+
+**平置き限定の暫定対応（2026-09-20、issue #2、実機未確認の仮説）**: issue #2の実機データ（平置きでどこから話しても`azimuth_deg`が0°付近に固まる）から、平置き時は+X（数学上の前後軸）が画面法線（鉛直方向）を向いていると推定した。3軸は直交するため、+Xが鉛直を向くなら残るY・Zが水平面を張っているはずである。このため`Recorder.foaChannels(from:)`が`DirectionEstimator`へ渡す3ch目を、従来のch3（X）からch2（Z）へ差し替えた（`Apps/NotetakeMobile/Recorder.swift`）。`DirectionEstimator`自体はw/y/xを引数名として受け取るだけの汎用計算のため無変更、実体としてZ chを渡している点はRecorder側のコメントに明記した。**この対応は平置き（画面上向き）姿勢のみを前提とし、他の姿勢では非対応（軸の入れ替えを姿勢に応じて動的に切り替える設計にはしていない）。回転方向の正負（どちらが時計回りに対応するか）も実機未確認で、`azimuthOffsetDeg`では直せない鏡像反転の可能性が残る。userの合意（2026-09-20）で「概ね方向を判別できるか」を試す位置付けとし、実機で機能しなくても許容する**
 
 テスト: 合成FOA（既知方位の平面波 `W=s, X=s·cosθ, Y=s·sinθ, Z=0`）で方位が±2°以内で復元される、拡散音（各chが独立ノイズ）で `confidence` が小さい、円平均が0°/359°境界をまたいでも正しい。0°/90°/180°/270°の代表方位を個別にテストする。
 
@@ -80,7 +82,7 @@
 - 取り込みを `AVAudioEngine` から `AVCaptureSession` + `AVCaptureDeviceInput(builtInMicrophone)` + `AVCaptureAudioDataOutput` に置き換える（対応・非対応で同じ経路にする）
 - 開始時: `isMultichannelAudioModeSupported(.firstOrderAmbisonics)` を判定し、trueなら `multichannelAudioMode = .firstOrderAmbisonics` と `spatialAudioChannelLayoutTag = kAudioChannelLayoutTag_HOA_ACN_SN3D | 4`、falseなら `.none`（layout tag は既定のまま）。判定結果を `input.spatial` に、`localizedName` / `uniqueID` を `input` に入れる
 - 受け取った `CMSampleBuffer` を `AVAudioPCMBuffer` に変換。FOA時はW chをmonoとして既存Transcriberへ、4ch全体を `DirectionEstimator` へ。非FOA時はそのままTranscriberへ
-- FOA bufferの分解は `AVAudioConverter` を使わず、Float32のbufferから直接W / Y / X（ACN 0 / 1 / 3）を取り出す（interleaved / non-interleavedの両対応）。理由: 4chのtarget formatはchannel layout無しでは `AVAudioFormat` が作れず（実機で確認、2026-09-13）、layout付きでも変換後の並びが保たれる保証が無い。実機（iPhone 16e）が届けるformatは `4 ch, 48000 Hz, Float32, interleaved`
+- FOA bufferの分解は `AVAudioConverter` を使わず、Float32のbufferから直接W / Y / Z（ACN 0 / 1 / 2）を取り出す（interleaved / non-interleavedの両対応。2026-09-20、issue #2の平置き限定対応でch3=XからACN 2=Zへ差し替え、上記「方位推定」節参照）。理由: 4chのtarget formatはchannel layout無しでは `AVAudioFormat` が作れず（実機で確認、2026-09-13）、layout付きでも変換後の並びが保たれる保証が無い。実機（iPhone 16e）が届けるformatは `4 ch, 48000 Hz, Float32, interleaved`
 - segを切るたびに、そのsegの時間範囲のフレームから seg方位を出して `direction` に付ける
 - 時刻基準: segの時刻と `DirectionEstimator` へ渡すフレーム時刻は、どちらもTranscriberの入力format（変換後）のサンプル数を `SampleClock(originMS:sampleRate:)`（NotetakeCore、`ms(atFrame:) = originMS + round(frame / sampleRate * 1000)`）で換算した値。生マイクのサンプルレートは時刻に使わない。取り込みbufferは先に変換し、変換後のフレーム数で `startMS` / `endMS` を求めてから `DirectionEstimator.add` と `Transcriber.feed` に渡す
 - `Recorder.currentInput()` は `start()` 成功後にのみ有効
@@ -117,7 +119,7 @@
 ### 実機
 
 - Mac（今すぐ）: `serve` で内蔵マイク→segに `input` が付く。AirPods Pro 3を既定入力にして `rotate` → 新しいprefixのsegの `input.name` がAirPodsになる。final.mdの各行に `（Mac）` / `（AirPods）`。パネルの状態行に入力名と「空間: 非対応」
-- iPhone（証明書再発行後）: 初回起動で `input.spatial` の値を確認。trueなら机に平置きし、上端側・右側・下端側・左側の4方向それぞれから `say` を鳴らして `azimuth_deg` を確認する。4方向とも近い値に固まる（issue #2の症状）場合は単純な回転ずれではなく軸の取り違えなので `azimuthOffsetDeg` では直らない — DirectionEstimatorへ渡すch組み合わせの見直しが必要（上記「方位推定」節参照）。4方向が個別の値に分かれ、期待値から一律にずれているだけならそのずれ量を `azimuthOffsetDeg` に設定する。falseなら `direction` 無し・`input.name` のみで、それ以上の作業はしない
+- iPhone（証明書再発行後）: 初回起動で `input.spatial` の値を確認。trueなら机に平置きし、上端側・右側・下端側・左側の4方向それぞれから `say` を鳴らして `azimuth_deg` を確認する。**2026-09-20時点、ch2(Z)への差し替え済み（上記「方位推定」節参照）**: 4方向が個別の値に分かれれば軸の入れ替えは機能している（回転方向が逆・オフセットがずれている場合は符号反転や `azimuthOffsetDeg` で追加調整）。4方向とも依然近い値に固まる場合は、軸の入れ替え自体が誤り（Y・Zの組み合わせも違う、あるいは平置きの仮説自体が誤り）ということなので、その旨をissue #2に記録し、これ以上の当てずっぽうな調整はしない（userと相談）。falseなら `direction` 無し・`input.name` のみで、それ以上の作業はしない
 
 ## 割り切り・未実装
 
