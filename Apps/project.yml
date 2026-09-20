@@ -59,6 +59,7 @@ targets:
       properties:
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: 会議の音声を文字起こしするためにマイクを使います。
+        NSCameraUsageDescription: Macとペアリングする際にQRコードを読み取るためにカメラを使います。
         NSLocalNetworkUsageDescription: 同じネットワーク上のMacへ文字起こし結果を送るために使います。
         NSBonjourServices: [_notetake._tcp]
         UIBackgroundModes: [audio]
