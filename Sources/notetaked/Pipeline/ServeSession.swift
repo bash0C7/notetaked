@@ -522,7 +522,7 @@ actor ServeSession {
         }
         streams = []
 
-        let markdown = TranscriptRenderer.markdown(reconciler.utterances, timeZone: .current)
+        let markdown = TranscriptRenderer.markdown(reconciler.resolveFallbackSpeakers(), timeZone: .current)
         do {
             try await store.writeFinal(markdown)
         } catch {
@@ -811,7 +811,11 @@ actor ServeSession {
             try handle.close()
 
             let text = try String(contentsOf: timedURL, encoding: .utf8)
-            let utterances = Reconciler.fold(NDJSON.decodeAll(text))
+            var reconciler = Reconciler()
+            for record in NDJSON.decodeAll(text) {
+                reconciler.apply(record)
+            }
+            let utterances = reconciler.resolveFallbackSpeakers()
             let markdown = TranscriptRenderer.markdown(utterances, timeZone: .current)
             let finalURL = SessionIndex.finalURL(directory: outputDirectory, prefix: prefix)
             try Data(markdown.utf8).write(to: finalURL, options: .atomic)
