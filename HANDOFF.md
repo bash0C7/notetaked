@@ -54,8 +54,10 @@
       2. **（Important）resume直後の再処理区間がReconcilerで重複除去されない** — 上記(d)の修正で「無制限の無言消失」は解消したが、`Reconciler.applySegment`のsame-device除外guard（cross-device統合専用）が同一device内の再処理utteranceを吸収しないため、crash直前の数秒〜十数秒分がfinal.mdに近い内容で二重に見える可能性がある。境界は動くが消失はしない
       3. **（Important）capture-daemon自身のcommand再生・`.error`イベント黙殺** — capture-daemonも`lastCommandSeenAt`を毎回nilから始めるため再起動時に直前commandを再生しうる（通常は収束するが特定のresume失敗と重なると停止できないphantom recordingが残り得る）。また`ServeSession.pollCaptureEvents`は`.inputFallback`以外（`.error`含む）を無視するため、capture起動失敗（TCC拒否等）はuserに伝わらず「recording: true」なのに無音、というだけになる
       4. **（Minor、複数）**: `CaptureControlChannel`の壁時計比較（NTP/手動時刻変更で影響を受けうる）、`send()`失敗時の一時ファイル残留、破損channelファイルの黙った無限停止、他にTask 2/6/9で既に記録済みの軽微項目
-    - 詳細な議論・review全文の要旨・rulingはSDD ledger（`.superpowers/sdd/2026-09-19-capture-process-separation/progress.md`）参照
-- **次の優先順位（2026-09-19、user指定）**: 高=#15（データロス防止のプロセス分離、上記の通り実装済み・実機検証待ち）・#8（短い相槌の話者分裂、実際の会話での再検証）。低=#2（iPhone実機での方位軸校正）。中=#4（iCloud/CloudKitペアリング）・下記のWebアプリケーション版
+    - 詳細な議論・review全文の要旨・rulingはgit commit履歴（`docs(plan):`/`fix(capture):`系のcommit message）とこのHANDOFF記載を正とする。SDD ledger本体（`.superpowers/sdd/2026-09-19-capture-process-separation/progress.md`）は完了後に削除済み（git管理外・plan完了時の既定動作）
+  - **PR #17作成済み**: https://github.com/bash0C7/notetaked/pull/17 （branch `worktree-capture-process-separation`、worktree`.claude/worktrees/capture-process-separation`に保持中）。mergeは実機検証完了までuserから切り出すまで話題にしない
+  - **実機検証は着手・未完了（2026-09-20）**: user指示「実機検証はclaudeがやる、人間は体験のみ評価する」を踏まえCLIでの自律検証を開始したが、初手でworktree isolationのpath quoting・複雑コマンドの弾かれ・前回testの残骸heartbeatファイルの誤認等、手順が定まらないまま試行錯誤していた。userの指摘で一旦停止し、`.claude/skills/daemon-realtest/SKILL.md`（新規）に手順を体系化した。**次にやること**: このskillに沿って検証1（serve crash→resume）・検証2（capture-daemon crash耐性）・検証3（tmp領域増加）をCLIで自律実行する。GUI app本体が要る範囲（heartbeat staleness→SIGKILL昇格→自動再起動）はuserの本番appとのUserDefaults衝突を避けるため、本番appを一時終了してもらう協力が要る（物理操作ではないので該当箇所の検証準備が整ってから1回だけ頼む）。AirPods等の物理操作が要るのはC5（pinデバイスformat変化）の再現確認のみ
+- **次の優先順位（2026-09-19、user指定）**: 高=#15（データロス防止のプロセス分離、上記の通り実装済み・実機検証未完了）・#8（短い相槌の話者分裂、実際の会話での再検証）。低=#2（iPhone実機での方位軸校正）。中=#4（iCloud/CloudKitペアリング）・下記のWebアプリケーション版
 - **Webアプリケーション版（新規構想、2026-09-19、issue未作成）**: user要件を整理
   - Googleログイン必須。データはGoogle Driveを正（source of truth）とし、ローカルはバッファ扱い（永続化不要）
   - 認可はGoogle OAuthで取得。**keychain等の複雑な秘匿保存は絶対NG**。ログインの都度取得し、セッションは可能な限り更新し続ける設計
