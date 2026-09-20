@@ -38,6 +38,18 @@ private func planeWave(thetaDeg: Double, frames: Int = 480, seed: UInt64 = 1) ->
     #expect(abs(e.azimuthDeg - 300) < 2)
 }
 
+@Test func backSourceIsOneEightyDegrees() {
+    let p = planeWave(thetaDeg: 180)   // 後ろ → 時計回りで180°
+    let e = DirectionEstimator.frameEstimate(w: p.w, y: p.y, x: p.x)!
+    #expect(abs(e.azimuthDeg - 180) < 2)
+}
+
+@Test func leftSourceIsTwoSeventyDegreesClockwise() {
+    let p = planeWave(thetaDeg: 90)   // 左 = 数学座標で90°（Yは左が正）→ 時計回り表記で270°
+    let e = DirectionEstimator.frameEstimate(w: p.w, y: p.y, x: p.x)!
+    #expect(abs(e.azimuthDeg - 270) < 2)
+}
+
 @Test func diffuseNoiseHasLowConfidence() {
     let a = planeWave(thetaDeg: 0, seed: 1), b = planeWave(thetaDeg: 0, seed: 2), c = planeWave(thetaDeg: 0, seed: 3)
     let e = DirectionEstimator.frameEstimate(w: a.w, y: b.w, x: c.w)!   // 各chが独立ノイズ

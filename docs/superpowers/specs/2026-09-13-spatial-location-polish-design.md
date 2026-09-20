@@ -71,7 +71,9 @@
 - seg方位: segの時間範囲に入るフレームの単位ベクトルを `c` で重み付けした円平均。合成ベクトルの長さ（重み和で正規化）を `confidence` とする。`c < 0.2` のフレームは捨てる。有効フレームが無ければ `direction` を付けない
 - 出力の `azimuth_deg` は時計回り・上基準に変換: `azimuth_deg = (360 − deg(θ) + azimuthOffsetDeg) mod 360`。`azimuthOffsetDeg` はFOA座標系と機材の「上」がずれていた場合の補正定数（既定0、実機で確認して決める。verification参照）
 
-テスト: 合成FOA（既知方位の平面波 `W=s, X=s·cosθ, Y=s·sinθ, Z=0`）で方位が±2°以内で復元される、拡散音（各chが独立ノイズ）で `confidence` が小さい、円平均が0°/359°境界をまたいでも正しい。
+`ch0=W, ch1=Y, ch2=Z, ch3=X` と「前=+X、左=+Y、上=+Z、反時計回り、右手系」は一般的なACN/SN3D（ambiX）規約通りで、Apple公式のWWDC25セッション251「Enhance your app's audio recording capabilities」の説明（"3 perpendicular dipoles, in the X, Y, and Z directions or front-back, left-right, and up-down"）とも一致する。ただしこれは軸の数学的な役割（どのchが前後/左右/上下を表すか）の確認に留まる。**iPhone実機の物理筐体のどの方向がFOA座標系の「前（+X）」に対応するか**（例: 背面カメラが向く方向か、機材上端方向か、画面法線かなど）はApple公式ドキュメント・WWDC資料のどこにも記載が無く、未確認（issue #4参照）。`azimuthOffsetDeg` は「上」の回転ずれのみを補正する定数であり、+Xが水平面ではなく画面法線寄りを向いているようなケース（回転では直らない軸の取り違え）には効かない。この場合はDirectionEstimatorへ渡すch組み合わせ自体（現状W/Y/Xの3ch）を見直す必要があるが、実機での軸確認（verification参照）ができるまでは着手しない
+
+テスト: 合成FOA（既知方位の平面波 `W=s, X=s·cosθ, Y=s·sinθ, Z=0`）で方位が±2°以内で復元される、拡散音（各chが独立ノイズ）で `confidence` が小さい、円平均が0°/359°境界をまたいでも正しい。0°/90°/180°/270°の代表方位を個別にテストする。
 
 ## iPhone側（`Apps/NotetakeMobile/Recorder`）
 
@@ -115,7 +117,7 @@
 ### 実機
 
 - Mac（今すぐ）: `serve` で内蔵マイク→segに `input` が付く。AirPods Pro 3を既定入力にして `rotate` → 新しいprefixのsegの `input.name` がAirPodsになる。final.mdの各行に `（Mac）` / `（AirPods）`。パネルの状態行に入力名と「空間: 非対応」
-- iPhone（証明書再発行後）: 初回起動で `input.spatial` の値を確認。trueなら机に平置きし、上端側から `say` を鳴らして `azimuth_deg ≈ 0`、右側から鳴らして `≈ 90` を確認。ずれていれば `azimuthOffsetDeg` を決める。falseなら `direction` 無し・`input.name` のみで、それ以上の作業はしない
+- iPhone（証明書再発行後）: 初回起動で `input.spatial` の値を確認。trueなら机に平置きし、上端側・右側・下端側・左側の4方向それぞれから `say` を鳴らして `azimuth_deg` を確認する。4方向とも近い値に固まる（issue #2の症状）場合は単純な回転ずれではなく軸の取り違えなので `azimuthOffsetDeg` では直らない — DirectionEstimatorへ渡すch組み合わせの見直しが必要（上記「方位推定」節参照）。4方向が個別の値に分かれ、期待値から一律にずれているだけならそのずれ量を `azimuthOffsetDeg` に設定する。falseなら `direction` 無し・`input.name` のみで、それ以上の作業はしない
 
 ## 割り切り・未実装
 
