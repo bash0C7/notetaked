@@ -33,5 +33,6 @@ let package = Package(
             exclude: ["Info.plist"]
         ),
         .testTarget(name: "NotetakeCoreTests", dependencies: ["NotetakeCore"]),
+        .testTarget(name: "notetakedTests", dependencies: ["notetaked"]),
     ]
 )
