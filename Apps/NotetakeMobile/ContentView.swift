@@ -3,8 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var model: MobileModel
 
-    @State private var pairingCodeInput = ""
-    @State private var didLoadPairingCode = false
+    @State private var showPairingSheet = false
 
     var body: some View {
         NavigationStack {
@@ -37,21 +36,15 @@ struct ContentView: View {
                     TextField("名前", text: $model.settings.ownerName)
                 }
 
-                Section("ペアリングコード") {
-                    Text("Macの設定Windowに表示されている6桁のコードを入力してください。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    TextField("123456", text: $pairingCodeInput)
-                        .keyboardType(.numberPad)
-                        .onChange(of: pairingCodeInput) { _, newValue in
-                            let digitsOnly = newValue.filter(\.isNumber)
-                            pairingCodeInput = String(digitsOnly.prefix(6))
+                Section("ペアリング") {
+                    if model.settings.pairingCode.isEmpty {
+                        Button("Macとペアリング") { showPairingSheet = true }
+                    } else {
+                        Button("ペアリングを解除") {
+                            model.settings.pairingCode = ""
+                            model.pairingCodeDidChange()
                         }
-                    Button("保存") {
-                        model.settings.pairingCode = pairingCodeInput
-                        model.pairingCodeDidChange()
                     }
-                    .disabled(pairingCodeInput.count != 6)
                 }
 
                 if let error = model.lastError {
@@ -61,10 +54,8 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Notetake")
-            .onAppear {
-                guard !didLoadPairingCode else { return }
-                didLoadPairingCode = true
-                pairingCodeInput = model.settings.pairingCode
+            .sheet(isPresented: $showPairingSheet) {
+                PairingSheet(model: model)
             }
         }
     }

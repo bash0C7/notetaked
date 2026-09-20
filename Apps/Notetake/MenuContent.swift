@@ -42,6 +42,10 @@ struct MenuContent: View {
             NSApp.activate()
             openWindow(id: "live")
         }
+        Button("iPhoneとペアリング") {
+            NSApp.activate()
+            openWindow(id: "pairing")
+        }
         Button("フォルダを開く") { appModel.openOutputFolder() }
             .disabled(appModel.outputDirectory == nil)
         Button("直前の収録を整形") { appModel.polishLastRecording() }
