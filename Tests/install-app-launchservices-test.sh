@@ -29,6 +29,18 @@ test -n "$restart_line" || fail
 test "$ditto_line" -lt "$register_line" || fail
 test "$register_line" -lt "$restart_line" || fail
 
+login_recipe=$(awk '
+  /^register-login-item: install-app$/ { in_recipe = 1; next }
+  in_recipe && /^[^[:space:]]/ { exit }
+  in_recipe { print }
+' Makefile)
+
+printf '%s\n' "$login_recipe" | grep -qF 'sfltool dumpbtm' || fail
+grep -qxF 'APP_BUNDLE_ID := io.github.bash0c7.notetake' Makefile || fail
+printf '%s\n' "$login_recipe" | grep -qF 'bundle="$(APP_BUNDLE_ID)"' || fail
+grep -qF 'make register-login-item' README.md || fail
+make -n register-login-item | bash -n || fail
+
 grep -qF 'DAEMON_IDENTITY ?= $(shell security find-identity -v -p codesigning' Makefile || fail
 grep -qF 'if [ -z "$$identity" ]; then identity=-; fi' Makefile || fail
 grep -qF -- '-allowProvisioningUpdates build' Makefile || fail

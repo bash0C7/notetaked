@@ -5,6 +5,7 @@ DERIVED := .build/DerivedData
 APP_BUNDLE := $(DERIVED)/Build/Products/Debug/Notetake.app
 INSTALL_APP ?= /Applications/Notetake.app
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+APP_BUNDLE_ID := io.github.bash0c7.notetake
 LOGS := .build/logs
 # compiler diagnostics with a file position; tool-level notices (e.g. AppIntents metadata) do not match
 DIAG := '\.swift:[0-9]+:[0-9]+: (warning|error):'
@@ -15,7 +16,7 @@ XCODEBUILD_ERROR := '^xcodebuild: error:'
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
 
-.PHONY: test daemon project app install-app verify clean
+.PHONY: test daemon project app install-app register-login-item verify clean
 
 test:
 	swift test
@@ -38,6 +39,13 @@ install-app: app
 	$(LSREGISTER) -f "$(INSTALL_APP)"
 	./.claude/skills/mac-app/scripts/launch.sh /tmp/notetake-app.log
 	@echo "installed: $(INSTALL_APP)"
+
+# SMAppService registers when the freshly installed app launches. Verify that
+# Background Task Management accepted it for login launch before returning.
+register-login-item: install-app
+	@entry="$$(sfltool dumpbtm | awk -v bundle="$(APP_BUNDLE_ID)" '/^ #/ { if (found) exit; entry = $$0 "\\n"; next } { entry = entry $$0 "\\n" } $$0 ~ "Bundle Identifier: " bundle "$$" { found = 1 } END { if (!found) exit 1; printf "%s", entry }')"; \
+	printf '%s\n' "$$entry" | grep -F 'Disposition: [enabled, allowed' >/dev/null; \
+	echo "login item: $(APP_BUNDLE_ID) enabled and allowed"
 
 # The single verification gate: every target compiles warning-free, all tests pass,
 # the mac app builds, and the iOS app (with the embedded watch app) compiles without signing.

@@ -27,11 +27,18 @@ Macのメニューバーappとdaemonで会議音声（マイク + システム�
 
 ```bash
 make verify   # 検証ゲート: swift build（警告ゼロ）→ swift test → make app → iOS + watchOSコンパイル。最終行 verify: OK
-make app      # .build/DerivedData/Build/Products/Debug/Notetake.app（daemon同梱、ad-hoc署名）
-make install-app  # make app後、/Applications/Notetake.appへ配置（ログイン時自動起動の対象）
-make daemon   # .build/release/notetaked
-make project  # Apps/Notetake.xcodeproj をxcodegenで生成
+make test     # Swiftの全テスト
+make daemon   # .build/release/notetakedをリリースビルドして署名
+make project  # Apps/Notetake.xcodeprojをxcodegenで生成
+make app      # daemon同梱のNotetake.appをビルドし、Personal Teamで自動署名
+make install-app  # /Applications/Notetake.appへ配置し、旧appを終了して新appを起動・正常性確認
+make register-login-item # install-app後、ログイン時起動がenabled, allowedで登録されたことを検証
+make clean    # .buildと生成済みXcodeプロジェクトを削除
 ```
+
+`make register-login-item`はログイン時起動を有効にしたい時の決定論的な入口である。配置済みappを再ビルドして置き換え、旧インスタンスを終了してから新しいappを起動する。app起動時の`SMAppService`登録後、`sfltool dumpbtm`で`io.github.bash0c7.notetake`が`enabled, allowed`であることまで確認する。失敗時は非0で終了する。`make install-app`も同じ再配置・再起動・起動正常性確認を行うが、ログイン時起動の登録状態まで必須にする時は前者を使う。
+
+初めて録音する時、または署名が変わった後はmacOSがマイク／システム音声へのアクセス許可を表示することがある。Notetake.appに許可する。
 
 実機: `xcodebuild -scheme NotetakeMobile|NotetakeWatch -destination 'id=<udid>' -allowProvisioningUpdates build` → `xcrun devicectl device install app --device <udid> <app>`（`.claude/skills/device`）。
 
