@@ -17,14 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch service.status {
         case .enabled, .requiresApproval:
             return
-        case .notRegistered:
+        case .notRegistered, .notFound:
             do {
                 try service.register()
             } catch {
                 appModel.lastError = "ログイン時自動起動の登録に失敗しました: \(error.localizedDescription)"
             }
-        case .notFound:
-            appModel.lastError = "ログイン時自動起動を登録できませんでした: Notetake.appが見つかりません"
         @unknown default:
             appModel.lastError = "ログイン時自動起動の状態を確認できませんでした"
         }

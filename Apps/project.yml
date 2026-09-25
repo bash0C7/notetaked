@@ -35,8 +35,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.bash0c7.notetake
         ENABLE_HARDENED_RUNTIME: false
         ENABLE_APP_SANDBOX: false
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
     postBuildScripts:
       - name: Embed notetaked
         script: |

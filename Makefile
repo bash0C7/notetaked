@@ -1,8 +1,10 @@
-# set DAEMON_IDENTITY=<SHA-1 of a valid "Apple Development" identity> once the certificate is renewed
-DAEMON_IDENTITY ?= -
+# Use a valid Apple Development identity once Xcode has created one for the Personal Team.
+# The fallback keeps the bootstrap build available before the first certificate exists.
+DAEMON_IDENTITY ?= $(shell security find-identity -v -p codesigning | awk '/"Apple Development/ && !/CSSMERR/ { print $$2; exit }')
 DERIVED := .build/DerivedData
 APP_BUNDLE := $(DERIVED)/Build/Products/Debug/Notetake.app
 INSTALL_APP ?= /Applications/Notetake.app
+LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 LOGS := .build/logs
 # compiler diagnostics with a file position; tool-level notices (e.g. AppIntents metadata) do not match
 DIAG := '\.swift:[0-9]+:[0-9]+: (warning|error):'
@@ -21,16 +23,20 @@ test:
 daemon:
 	swift build -c release --product notetaked \
 	  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Sources/notetaked/Info.plist
-	codesign --force --sign "$(DAEMON_IDENTITY)" --identifier io.github.bash0c7.notetaked .build/release/notetaked
+	@identity="$(DAEMON_IDENTITY)"; \
+	if [ -z "$$identity" ]; then identity=-; fi; \
+	codesign --force --sign "$$identity" --identifier io.github.bash0c7.notetaked .build/release/notetaked
 
 project:
 	cd Apps && xcodegen generate
 
 app: daemon project
-	xcodebuild -project Apps/Notetake.xcodeproj -scheme Notetake -configuration Debug -derivedDataPath $(DERIVED) build
+	xcodebuild -project Apps/Notetake.xcodeproj -scheme Notetake -configuration Debug -derivedDataPath $(DERIVED) -allowProvisioningUpdates build
 
 install-app: app
 	ditto --rsrc --extattr --acl "$(APP_BUNDLE)" "$(INSTALL_APP)"
+	$(LSREGISTER) -f "$(INSTALL_APP)"
+	./.claude/skills/mac-app/scripts/launch.sh /tmp/notetake-app.log
 	@echo "installed: $(INSTALL_APP)"
 
 # The single verification gate: every target compiles warning-free, all tests pass,

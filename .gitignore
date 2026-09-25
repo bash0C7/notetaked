@@ -8,5 +8,6 @@ xcuserdata/
 .DS_Store
 Apps/*/Info.plist
 .superpowers/
+.agents/
 .claude/skills/mac-app/scripts/.audioin
 .claude/settings.local.json
