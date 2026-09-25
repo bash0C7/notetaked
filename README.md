@@ -28,6 +28,7 @@ Macのメニューバーappとdaemonで会議音声（マイク + システム�
 ```bash
 make verify   # 検証ゲート: swift build（警告ゼロ）→ swift test → make app → iOS + watchOSコンパイル。最終行 verify: OK
 make app      # .build/DerivedData/Build/Products/Debug/Notetake.app（daemon同梱、ad-hoc署名）
+make install-app  # make app後、/Applications/Notetake.appへ配置（ログイン時自動起動の対象）
 make daemon   # .build/release/notetaked
 make project  # Apps/Notetake.xcodeproj をxcodegenで生成
 ```
@@ -36,7 +37,7 @@ make project  # Apps/Notetake.xcodeproj をxcodegenで生成
 
 ## 使い方
 
-1. `make app`でNotetake.appを起動（`open`で開く。binary直起動はUIが壊れる）。設定Windowで保存先・自分の名前・自動で区切る間隔（時間、0で区切らない）・ペアリングコード
+1. `make install-app`後に`open /Applications/Notetake.app`で起動（`open`で開く。binary直起動はUIが壊れる）。設定Windowで保存先・自分の名前・自動で区切る間隔（時間、0で区切らない）・ペアリングコード
 2. メニュー / ライブパネルの「収録開始」「収録停止」「区切る」（prefixを切り替える）「整形」（直前の収録を`polish`）。パネルの話者名クリックで命名（次回起動以降も同じ声に同じ名前が付く）
 3. iPhone: Notetakeにペアリングコードを入力→「接続: <Mac名>」→「開始」。segはMacの収録に時刻で割り当てられ、切断中の分は再接続後に送られて`final.md`が再生成される
 4. Watch: Notetakeで「開始」→iPhone経由でMacへ届く（`（Watch）`行）

@@ -1,6 +1,8 @@
 # set DAEMON_IDENTITY=<SHA-1 of a valid "Apple Development" identity> once the certificate is renewed
 DAEMON_IDENTITY ?= -
 DERIVED := .build/DerivedData
+APP_BUNDLE := $(DERIVED)/Build/Products/Debug/Notetake.app
+INSTALL_APP ?= /Applications/Notetake.app
 LOGS := .build/logs
 # compiler diagnostics with a file position; tool-level notices (e.g. AppIntents metadata) do not match
 DIAG := '\.swift:[0-9]+:[0-9]+: (warning|error):'
@@ -11,7 +13,7 @@ XCODEBUILD_ERROR := '^xcodebuild: error:'
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
 
-.PHONY: test daemon project app verify clean
+.PHONY: test daemon project app install-app verify clean
 
 test:
 	swift test
@@ -26,6 +28,10 @@ project:
 
 app: daemon project
 	xcodebuild -project Apps/Notetake.xcodeproj -scheme Notetake -configuration Debug -derivedDataPath $(DERIVED) build
+
+install-app: app
+	ditto --rsrc --extattr --acl "$(APP_BUNDLE)" "$(INSTALL_APP)"
+	@echo "installed: $(INSTALL_APP)"
 
 # The single verification gate: every target compiles warning-free, all tests pass,
 # the mac app builds, and the iOS app (with the embedded watch app) compiles without signing.

@@ -1,10 +1,13 @@
 #!/bin/bash
-# Notetake.app（make appの成果物）をstderr/stdoutを/tmp/notetake-app.logへ流して起動する。
+# Notetake.app（make install-appで/Applicationsへ配置した成果物）をstderr/stdoutを/tmp/notetake-app.logへ流して起動する。
 # 直接binaryを起動するとメニューバーUIが壊れるため必ず`open`を使う。既に動いていればメニューの「終了」で止めてから起動する。
 set -eo pipefail
-ROOT=$(cd "$(dirname "$0")/../../../.." && pwd)
-APP=$ROOT/.build/DerivedData/Build/Products/Debug/Notetake.app
+APP=${NOTETAKE_APP_PATH:-/Applications/Notetake.app}
 LOG=${1:-/tmp/notetake-app.log}
+if [ ! -d "$APP" ]; then
+  echo "missing $APP; run 'make install-app' first" >&2
+  exit 1
+fi
 if pgrep -x Notetake >/dev/null; then
   "$(dirname "$0")/ntmenu.sh" "終了" >/dev/null || true
   for _ in $(seq 1 20); do pgrep -x Notetake >/dev/null || break; sleep 0.5; done
