@@ -5,6 +5,6 @@ protocol AudioCapture: AnyObject, Sendable {
     /// capture側のnative format
     var format: AVAudioFormat { get }
 
-    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws
+    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async throws
     func stop()
 }

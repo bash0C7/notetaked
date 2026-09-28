@@ -46,7 +46,7 @@ final class MicCapture: AudioCapture, @unchecked Sendable {
         applyPinnedDeviceIfNeeded()
     }
 
-    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
+    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async throws {
         self.handler = handler
         if let pinned {
             try pinned.start(handler)

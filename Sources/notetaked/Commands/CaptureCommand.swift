@@ -30,7 +30,7 @@ struct Capture: AsyncParsableCommand {
         let counter = BufferCounter()
 
         let (dbfsStream, dbfsContinuation) = AsyncStream<Double>.makeStream()
-        try capture.start { buffer in
+        try await capture.start { buffer in
             dbfsContinuation.yield(AudioLevel.dbfs(buffer))
         }
 

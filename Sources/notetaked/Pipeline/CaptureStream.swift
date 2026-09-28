@@ -137,7 +137,7 @@ actor CaptureStream {
         let converter = self.converter
         let diarizerConverter = self.diarizerConverter
         do {
-            try capture.start { buffer in
+            try await capture.start { buffer in
                 guard let converted = try? converter.convert(buffer) else { return }
                 var mono16k: [Float]?
                 if let diarizerConverter,

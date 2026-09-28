@@ -64,7 +64,7 @@ final class RawAudioReaderCaptureTests: XCTestCase {
         XCTAssertEqual(capture.format.channelCount, 1)
 
         let collector = BufferCollector()
-        try capture.start { buffer in
+        try await capture.start { buffer in
             collector.append(buffer)
         }
 
@@ -114,7 +114,7 @@ final class RawAudioReaderCaptureTests: XCTestCase {
 
         let capture = try await RawAudioReaderCapture(fileURL: tempURL, startOffset: 0)
         let collector = BufferCollector()
-        try capture.start { buffer in
+        try await capture.start { buffer in
             collector.append(buffer)
         }
         await waitUntil { collector.count >= firstSegment.count }

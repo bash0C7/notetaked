@@ -1,145 +1,132 @@
 import AVFoundation
-import CoreAudio
+import CoreMedia
 import Foundation
+import ScreenCaptureKit
 
 enum SystemAudioCaptureError: Error {
-    case osStatus(String, OSStatus)
+    case noDisplayAvailable
+    case formatUnavailable
 }
 
-/// CoreAudio process tapで自process以外の全システム音声をcaptureする
+/// ScreenCaptureKitのaudio captureで、system全体の音声（自process以外）をcaptureする。
+///
+/// macOS 27でCoreAudio Process Tap（`AudioHardwareCreateProcessTap` +
+/// aggregate device）経由の収録が明確に劣化した音質（実機で「モゴモゴ・プチプチ」と確認）になる
+/// 一方、QuickTime Playerの「システム音声を収録」（内部的にScreenCaptureKitの
+/// audio captureを使う）は同じ機材・同時刻で問題なく収録できることが実機A/Bテストで確認された。
+/// そのため取得手段そのものをProcess TapからScreenCaptureKitへ乗り換えた
+/// （新規に画面収録権限＝Screen Recording TCC許可が必要）。
 final class SystemAudioCapture: AudioCapture, @unchecked Sendable {
-    // @unchecked Sendable: tapID/aggregateDeviceID/ioProcIDはCoreAudioが管理するopaque handleで、
-    // start/stopはMicCaptureのAVAudioEngineラップと同様にシリアルに呼ばれる想定
-    private var tapID: AudioObjectID
-    private var aggregateDeviceID: AudioObjectID
-    private var ioProcID: AudioDeviceIOProcID?
+    // @unchecked Sendable: `handler`はstart()（stream起動より前）でのみ書き込まれ、
+    // stream:didOutputSampleBuffer:ofType:はScreenCaptureKitが管理するsampleHandlerQueue上
+    // でしか呼ばれない
+    private static let sampleRate: Double = 48000
+    private static let channelCount: AVAudioChannelCount = 2
+
+    private let stream: SCStream
+    /// `SCStreamOutput`はNSObjectプロトコルを要求するため、`SystemAudioCapture`本体をNSObject化
+    /// せず専用のforwarderへ委譲する
+    private let output: StreamOutputForwarder
     private var stopped = false
 
     let format: AVAudioFormat
 
-    init() throws {
-        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-        tapDescription.muteBehavior = .unmuted
-
-        var tapID: AudioObjectID = 0
-        let tapStatus = AudioHardwareCreateProcessTap(tapDescription, &tapID)
-        guard tapStatus == noErr else {
-            throw SystemAudioCaptureError.osStatus("AudioHardwareCreateProcessTap", tapStatus)
-        }
-        self.tapID = tapID
-
-        let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "notetaked-system-tap",
-            kAudioAggregateDeviceUIDKey: UUID().uuidString,
-            kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceTapAutoStartKey: true,
-            kAudioAggregateDeviceTapListKey: [
-                [kAudioSubTapUIDKey: tapDescription.uuid.uuidString]
-            ],
-        ]
-
-        var aggregateDeviceID: AudioObjectID = 0
-        let aggregateStatus = AudioHardwareCreateAggregateDevice(
-            description as CFDictionary, &aggregateDeviceID)
-        guard aggregateStatus == noErr else {
-            AudioHardwareDestroyProcessTap(tapID)
-            throw SystemAudioCaptureError.osStatus(
-                "AudioHardwareCreateAggregateDevice", aggregateStatus)
-        }
-        self.aggregateDeviceID = aggregateDeviceID
-
-        var asbd = AudioStreamBasicDescription()
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var dataSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        let formatStatus = AudioObjectGetPropertyData(
-            tapID, &propertyAddress, 0, nil, &dataSize, &asbd)
-        guard formatStatus == noErr else {
-            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            AudioHardwareDestroyProcessTap(tapID)
-            throw SystemAudioCaptureError.osStatus(
-                "AudioObjectGetPropertyData(kAudioTapPropertyFormat)", formatStatus)
-        }
-        guard let format = AVAudioFormat(streamDescription: &asbd) else {
-            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            AudioHardwareDestroyProcessTap(tapID)
-            throw SystemAudioCaptureError.osStatus(
-                "AVAudioFormat(streamDescription:)", kAudio_ParamError)
+    init() async throws {
+        guard
+            let format = AVAudioFormat(
+                standardFormatWithSampleRate: Self.sampleRate, channels: Self.channelCount)
+        else {
+            throw SystemAudioCaptureError.formatUnavailable
         }
         self.format = format
+
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first else {
+            throw SystemAudioCaptureError.noDisplayAvailable
+        }
+
+        let filter = SCContentFilter(
+            display: display, excludingApplications: [], exceptingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.sampleRate = Int(Self.sampleRate)
+        configuration.channelCount = Int(Self.channelCount)
+        configuration.excludesCurrentProcessAudio = true
+        // 映像は使わないため最小構成にしてCPU/メモリ負荷を抑える
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        configuration.showsCursor = false
+
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        self.stream = stream
+        self.output = StreamOutputForwarder(format: format)
+
+        try stream.addStreamOutput(
+            output, type: .audio,
+            sampleHandlerQueue: DispatchQueue(label: "io.github.bash0c7.notetaked.system-audio"))
     }
 
-    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
-        let format = self.format
-        var newIOProcID: AudioDeviceIOProcID?
-        let createStatus = AudioDeviceCreateIOProcIDWithBlock(
-            &newIOProcID, aggregateDeviceID, nil
-        ) { _, inInputData, _, _, _ in
-            guard let buffer = Self.makeBuffer(from: inInputData, format: format) else { return }
-            handler(buffer)
-        }
-        guard createStatus == noErr, let newIOProcID else {
-            throw SystemAudioCaptureError.osStatus(
-                "AudioDeviceCreateIOProcIDWithBlock", createStatus)
-        }
-        ioProcID = newIOProcID
-
-        let startStatus = AudioDeviceStart(aggregateDeviceID, newIOProcID)
-        guard startStatus == noErr else {
-            // ioProcIDはまだ破棄していないのでstop()の通常teardown経路
-            // (IOProc破棄 → aggregate device破棄 → tap破棄)にそのまま乗せる
-            stop()
-            throw SystemAudioCaptureError.osStatus("AudioDeviceStart", startStatus)
-        }
+    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async throws {
+        output.handler = handler
+        try await stream.startCapture()
     }
 
     func stop() {
         guard !stopped else { return }
         stopped = true
-        if let ioProcID {
-            AudioDeviceStop(aggregateDeviceID, ioProcID)
-            AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-            self.ioProcID = nil
-        }
-        AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-        AudioHardwareDestroyProcessTap(tapID)
+        let stream = self.stream
+        Task { try? await stream.stopCapture() }
+    }
+}
+
+/// `SCStreamOutput`はNSObjectプロトコルへの準拠を要求するが、`AVAudioEngine`ラップ等
+/// 既存の`AudioCapture`実装と揃えて`SystemAudioCapture`自体は素のfinal classに保ちたいため、
+/// callback受け口だけをこのNSObjectサブクラスへ分離する
+private final class StreamOutputForwarder: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let format: AVAudioFormat
+    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    init(format: AVAudioFormat) {
+        self.format = format
     }
 
-    deinit {
-        stop()
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio, let handler else { return }
+        guard let buffer = Self.makeBuffer(from: sampleBuffer, format: format) else { return }
+        handler(buffer)
     }
 
-    /// IOProcのinInputDataをAVAudioPCMBufferへコピーする。real-timeスレッドで呼ばれるためallocationはbuffer確保のみ
-    private static func makeBuffer(
-        from inputData: UnsafePointer<AudioBufferList>, format: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        let inputList = UnsafeMutableAudioBufferListPointer(
-            UnsafeMutablePointer(mutating: inputData))
-        guard let firstBuffer = inputList.first, firstBuffer.mDataByteSize > 0 else { return nil }
+    /// audioのCMSampleBufferをAVAudioPCMBufferへ変換する。sample dataはCMBlockBufferが
+    /// 実体を持つためcopyせず、その保持をAVAudioPCMBufferのdeallocatorへ引き渡すことで
+    /// buffer破棄まで生かし続ける
+    private static func makeBuffer(from sampleBuffer: CMSampleBuffer, format: AVAudioFormat)
+        -> AVAudioPCMBuffer?
+    {
+        var blockBuffer: CMBlockBuffer?
+        var bufferListSizeNeeded = 0
+        var status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: &bufferListSizeNeeded, bufferListOut: nil,
+            bufferListSize: 0, blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
+            flags: 0, blockBufferOut: &blockBuffer)
+        guard status == noErr, bufferListSizeNeeded > 0 else { return nil }
 
-        let bytesPerFrame = format.streamDescription.pointee.mBytesPerFrame
-        guard bytesPerFrame > 0 else { return nil }
-        let frameCount = firstBuffer.mDataByteSize / bytesPerFrame
-        guard frameCount > 0,
-            let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
-        else { return nil }
-        pcmBuffer.frameLength = frameCount
+        let rawListPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferListSizeNeeded, alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { rawListPointer.deallocate() }
+        let audioBufferListPointer = rawListPointer.assumingMemoryBound(to: AudioBufferList.self)
 
-        let outputList = UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList)
-        for i in 0..<min(inputList.count, outputList.count) {
-            let source = inputList[i]
-            var destination = outputList[i]
-            guard let sourceData = source.mData, let destinationData = destination.mData else {
-                continue
-            }
-            let byteCount = min(source.mDataByteSize, destination.mDataByteSize)
-            memcpy(destinationData, sourceData, Int(byteCount))
-            destination.mDataByteSize = byteCount
-            outputList[i] = destination
-        }
-        return pcmBuffer
+        blockBuffer = nil
+        status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: audioBufferListPointer,
+            bufferListSize: bufferListSizeNeeded, blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &blockBuffer)
+        guard status == noErr, let retainedBlockBuffer = blockBuffer else { return nil }
+
+        return AVAudioPCMBuffer(
+            pcmFormat: format, bufferListNoCopy: audioBufferListPointer,
+            deallocator: { _ in _ = retainedBlockBuffer })
     }
 }

@@ -85,7 +85,7 @@ final class RawAudioReaderCapture: AudioCapture, @unchecked Sendable {
         currentFormat = resolvedFormat!
     }
 
-    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
+    func start(_ handler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async throws {
         pollTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 self.pollOnce(handler: handler)

@@ -10,14 +10,14 @@ actor CaptureSessionRunner {
     private var systemWriter: RawAudioWriter?
     private(set) var currentDirectory: URL?
 
-    func start(directory: URL, sources: [String], inputDeviceUID: String?, onFallback: @escaping @Sendable () -> Void) throws {
+    func start(directory: URL, sources: [String], inputDeviceUID: String?, onFallback: @escaping @Sendable () -> Void) async throws {
         if currentDirectory == directory { return }
         stop()
         currentDirectory = directory
         if sources.contains("mic") {
             let writer = try RawAudioWriter(fileURL: CaptureSessionPaths.rawFileURL(sessionDirectory: directory, source: "mic"))
             let capture = MicCapture(pinnedUID: inputDeviceUID, onFallback: onFallback)
-            try capture.start { [weak writer] buffer in
+            try await capture.start { [weak writer] buffer in
                 Self.append(buffer: buffer, to: writer)
             }
             micWriter = writer
@@ -25,8 +25,8 @@ actor CaptureSessionRunner {
         }
         if sources.contains("system") {
             let writer = try RawAudioWriter(fileURL: CaptureSessionPaths.rawFileURL(sessionDirectory: directory, source: "system"))
-            let capture = try SystemAudioCapture()
-            try capture.start { [weak writer] buffer in
+            let capture = try await SystemAudioCapture()
+            try await capture.start { [weak writer] buffer in
                 Self.append(buffer: buffer, to: writer)
             }
             systemWriter = writer
