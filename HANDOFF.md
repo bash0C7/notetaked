@@ -4,7 +4,7 @@
 
 - **system audio captureをCoreAudio Process TapからScreenCaptureKitへ置き換え済み・実機で音質改善を確認**。macOS 27で`AudioHardwareCreateProcessTap`+aggregate device経由の収録が明確に劣化した音質（モゴモゴ・プチプチ）になっていたが、QuickTime Player「システム音声を収録」（内部的にScreenCaptureKit）は同じ機材・同時刻で問題なく収録できることをA/Bテストで確認し、`SystemAudioCapture`（`Sources/notetaked/Audio/SystemAudioCapture.swift`）を`SCStream`+`SCStreamConfiguration.capturesAudio`ベースの実装へ全面書き換えた。新たにScreen Recording TCC許可が必要（初回起動時にシステムのプロンプトが出る）。`AudioCapture`protocolの`start`を`async throws`化（呼び出し元は`MicCapture`/`RawAudioReaderCapture`/`CaptureSessionRunner`/`CaptureStream`/`CaptureCommand`）。`make verify`通過後、実機で許可→収録→`system.raw`をafplayで再生してuserが「ばっちりクリアー」と確認済み
   - **未検証・次にやること**: 長時間収録での安定性（メモリ・CPU、映像を使わない最小構成`width/height=2`のScreenCaptureKitストリームが数時間持つか）、ディスプレイスリープ/ロック中の挙動、複数ディスプレイ環境での`SCShareableContent.current.displays.first`の妥当性
-  - **既知の設計判断**: systemソースはリアルタイム話者分離を無効化したまま（`ServeSession.swift`、macOS 27のバックグラウンドNeural Engineアクセス制限が理由、別件）。収録した生system audioを使った後追い（idle時）の話者分離再処理はuserから要望済みだが未設計・未実装
+  - **systemソースのリアルタイム話者分離は再度有効化済み（同日、実機確認済み）**。ScreenCaptureKit移行前は「macOS 27のバックグラウンドNeural Engineアクセス制限で無音の少ない連続音声だとfinalが実質出なくなる」ためsystemソースのみdiarizerを無効化していたが、ScreenCaptureKit移行後の実機収録（約6分、話者3人分の会話）でfinalが途切れずseq 1〜20台まで継続し、g1/g2/g3の話者切り替えも自然に検出されることを確認したため、`ServeSession.swift`の無効化コードをrevertして戻した。真因はNeural Engine制限ではなく、Process Tap由来の劣化音声（無音の少ない連続音声＋ノイズ）だった可能性が高い。後追い（idle時）の話者分離再処理の要望は、リアルタイム分離が復活したため現時点では不要と判断（再度問題が出れば要検討）
 
 ## 状態（2026-09-25）
 

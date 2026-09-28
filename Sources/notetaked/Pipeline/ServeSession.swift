@@ -282,12 +282,9 @@ actor ServeSession {
                 case .watch:
                     throw CaptureStreamError.sourceNotImplemented(source)
                 }
-                // systemソースはリアルタイム話者分離を行わない（macOS 27でバックグラウンドの
-                // Neural Engineアクセスが絞られ、無音の少ない連続音声だとfinalが実質出なくなる
-                // ため、推論負荷を認識だけに絞る。話者付けは別途、後追いのオフライン処理で行う）
                 let captureStream = try await CaptureStream(
                     source: source, capture: capture, locale: locale,
-                    diarizerModels: source == .system ? nil : diarizerModels)
+                    diarizerModels: diarizerModels)
                 let events = try await captureStream.start()
                 let streamOwner = ownerFor(owner)
                 let inputAt: @Sendable () -> InputDevice
