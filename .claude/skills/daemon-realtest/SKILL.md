@@ -35,13 +35,13 @@ swift build -c release
 
 1. capture-daemonを起動（バックグラウンド）: `.build/release/notetaked capture-daemon &`
 2. heartbeatが更新され始めることを確認（`cat`→数秒待って再`cat`→タイムスタンプが進むこと）
-3. serveを起動: `.build/release/notetaked serve --output <test-dir> --owner testuser --source mic --no-diarize --start --control stdio`（stdin/stdoutは名前付きpipeかbackgroundサブシェルで扱う。既存の`.claude/skills/verify`やHANDOFF.mdの「Mac側で行う検証 1.」節にある `( sleep N; echo '{"cmd":...}' ) | ... | tee events.log` パターンを流用できる）
+3. serveを起動: `.build/release/notetaked serve --output <test-dir> --owner testuser --source mic --no-diarize --start --control stdio`（stdin/stdoutは名前付きpipeかbackgroundサブシェルで扱う。HANDOFF.mdの「Mac側で行う検証 1.」節にある `( sleep N; echo '{"cmd":...}' ) | ... | tee events.log` パターンを流用できる）
 4. `say -v Kyoko "…"`で発話を入れ、finalなutteranceが出るまで待つ（`--no-diarize`ならほぼ即時）
 5. serveのPIDを`kill -9`
 6. capture-daemonのheartbeatが引き続き更新されていることを確認（＝crashの影響を受けていない証拠）
 7. serveを同じ`--output`で再起動（`--start`無しでよい。`resumeIfNeeded()`が`current-session.json`を見て自動再開する）
 8. 追加の発話を入れ、`stop`コマンドを送って終了
-9. `<test-dir>/<prefix>.final.md`にcrash前後**両方**のutteranceが入っていることを確認（無ければC4のresume-fold不具合の再発）
+9. `<test-dir>/<prefix>.final.md`にcrash前後**両方**のutteranceが入っていることを確認（無ければresume時に既存`timed.jsonl`が畳み込まれていない）
 10. `<prefix>.timed.jsonl`のseg数・時間軸を見て、crash直前〜resume直後の区間で大きな無音の欠落が無いことを確認（数秒〜十数秒程度の重複は既知の残存課題として許容、無音の巨大な欠落は不可）
 
 ## 検証2: capture-daemonのcrash → serveの耐性
@@ -61,4 +61,4 @@ heartbeat staleness検知→SIGTERM→SIGKILL昇格→自動再起動（`Apps/No
 
 ## 物理操作が必要な範囲（1回で判定できるよう準備してから頼む）
 
-pinデバイス（AirPods等）切断時のformat変化 → `RawAudioReaderCapture`が新formatのframeを黙って捨て続ける不具合（既知のC5、未修正）の実機再現・確認は、実際にAirPodsの抜き差しが要る。手順を全部スクリプト化し、抜き差しのタイミングだけuserに頼む（`.claude/skills/mac-app/scripts/audioin.sh`参照）。
+pinデバイス（AirPods等）切断時のformat変化（issue #18。`RawAudioReaderCapture`がformatを再構築して処理を続ける）の実機確認は、AirPodsケースを開けて接続可能にする1回だけuserに頼む。切断・再接続は`blueutil --disconnect` / `--connect`で行う（`.claude/skills/mac-app/scripts/audioin.sh`参照）。

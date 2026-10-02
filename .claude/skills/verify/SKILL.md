@@ -6,11 +6,11 @@ description: 検証ゲート`make verify`（swift build警告ゼロ / swift test
 # verify — 検証ゲート
 
 ```bash
-cd /Users/bash/dev/src/github.com/bash0C7/notetaked && make verify > .build/logs/verify-run.log 2>&1; echo "exit=$?"
+cd "$(git rev-parse --show-toplevel)" && make verify > .build/logs/verify-run.log 2>&1; echo "exit=$?"
 ```
 数分かかる。Bashのtimeoutは10分。sandbox内でxcodebuildのpackage解決が止まる時はsandboxを外す。
 
-報告する事実（これ以外は書かない、20行以内）:
+報告する事実（これ以外は書かない）:
 - exit code
 - `tail -n 3 .build/logs/verify-run.log`（成功なら最終行`verify: OK`）
 - `grep -E 'Test run with|passed|failed' .build/logs/verify-test.log | tail -n 3`
