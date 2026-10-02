@@ -6,7 +6,7 @@ description: 検証ゲート`make verify`（swift build警告ゼロ / swift test
 # verify — 検証ゲート
 
 ```bash
-cd "$(git rev-parse --show-toplevel)" && make verify > .build/logs/verify-run.log 2>&1; echo "exit=$?"
+cd "$(git rev-parse --show-toplevel)" && mkdir -p .build/logs && make verify > .build/logs/verify-run.log 2>&1; echo "exit=$?"
 ```
 数分かかる。Bashのtimeoutは10分。sandbox内でxcodebuildのpackage解決が止まる時はsandboxを外す。
 
