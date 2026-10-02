@@ -1,5 +1,15 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-10-03）
+
+- **話者分離を収録単位の確定処理へ移す設計を書いた。userのspec確認待ち**: `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`。収録中は文字起こしだけを行い、区切り・停止の後に生音声全体を一括文字起こしとオフライン話者分離で処理して`final.md`を確定する。実装計画はspecの承認後に段階ごとに作る。issue #8はこの設計で扱う（直前の話者の継承と停止時の二次解決は取り除く）
+- **mainに残る不具合（specの段階1・2で直す）**:
+  - micの音声が途切れると、その後の発話時刻が実際より早く記録される（2026-10-01 20:02の収録で最大138分）
+  - ディスプレイの消灯でScreenCaptureKitがstreamを止め、system音声の取り込みが再開しない
+  - `SpeakerRegistry`の割り当て表が`serve`の寿命で残るため、区切りの後に最初に話した人が前の収録の`1`と同じ大域idになる
+  - tmpの生音声が削除されない。状態ディレクトリにheartbeatの一時ファイルが残る
+- **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う
+
 ## 状態（2026-09-28）
 
 - **system audio captureをCoreAudio Process TapからScreenCaptureKitへ置き換え済み・実機で音質改善を確認**。macOS 27で`AudioHardwareCreateProcessTap`+aggregate device経由の収録が明確に劣化した音質（モゴモゴ・プチプチ）になっていたが、QuickTime Player「システム音声を収録」（内部的にScreenCaptureKit）は同じ機材・同時刻で問題なく収録できることをA/Bテストで確認し、`SystemAudioCapture`（`Sources/notetaked/Audio/SystemAudioCapture.swift`）を`SCStream`+`SCStreamConfiguration.capturesAudio`ベースの実装へ全面書き換えた。新たにScreen Recording TCC許可が必要（初回起動時にシステムのプロンプトが出る）。`AudioCapture`protocolの`start`を`async throws`化（呼び出し元は`MicCapture`/`RawAudioReaderCapture`/`CaptureSessionRunner`/`CaptureStream`/`CaptureCommand`）。`make verify`通過後、実機で許可→収録→`system.raw`をafplayで再生してuserが「ばっちりクリアー」と確認済み
