@@ -2,13 +2,26 @@
 
 ## 状態（2026-10-03）
 
-- **話者分離を収録単位の確定処理へ移す設計はuser承認済み。次は段階1の実装計画**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、branch `batch-finalize-redesign`。収録中は文字起こしだけを行い、区切り・停止の後に生音声全体を一括文字起こしとオフライン話者分離で処理して`final.md`を確定する。生音声はOSの一時ディレクトリに置き、削除はOSの掃除に任せる。実装計画は段階ごとに`docs/superpowers/plans/`へ書き、userの承認後に実装する。issue #8はこの設計で扱う（直前の話者の継承と停止時の二次解決は取り除く）
+- **話者分離を収録単位の確定処理へ移す。設計はuser承認済み、段階1の実装計画はuserの確認待ち**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、段階1のplan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`（15 task）、branch `batch-finalize-redesign`。収録中は文字起こしだけを行い、区切り・停止の後に生音声全体を一括文字起こしとオフライン話者分離で処理して`final.md`を確定する。生音声はOSの一時ディレクトリに置き、削除はOSの掃除に任せる。issue #8はこの設計で扱う（直前の話者の継承と停止時の二次解決は取り除く）
+- **次の手順**: userが段階1のplanを承認したら、`superpowers:subagent-driven-development`でTask 1から実装する（ledgerは`.superpowers/sdd/2026-10-03-capture-and-raw-audio/progress.md`）。段階1の実機確認を終えたら、段階2（確定処理）のplanを書き、userの承認を得る
+- **段階1のplanの承認の時に、userへ確かめる点**（specに書いていない判断。planの各taskの説明にも書いてある）:
+  1. specで段階3に置いた3つ（`Reconciler`の直前の話者の継承と停止時の二次解決、`capture`subcommand、serveの`--diarize`）を段階1で消す。段階1で使い道が無くなるか、段階1の変更で壊れるため
+  2. appがエラー表示を消すのを、新しい収録が始まった時だけにする。serveが取り込みの状態が変わるたびに`status`を送るようになり、今のままだとエラーがすぐ消えるため
+  3. 実状態のファイルで、再開待ちの理由（`reason`）と書き込みの失敗（`last_error`）を分ける。消灯のたびにエラー表示を出さないため
+  4. 実状態が5秒更新されなければ、メニューに「capture-daemonが応答していません」を出す
+  5. 固定したマイクが開始時に無ければ、今と同じく既定の入力を黙って使う。既定へ戻ったと知らせるのは、収録中に外れた時だけ
+  6. 確認用のscript（消灯の確認、CLIでの一巡と判定、生音声の量を見るもの）を`.claude/skills/`に置き、段階2でも使う
+- **段階1を実装する時の注意**:
+  - Task 6（消灯中にsystem音声を取り込めるか）の判定で、Task 7（system音声が鳴っている間だけ消灯を防ぐ）を行うかを決める。CLIで確かめる時に端末のappに画面収録の許可が無ければ、Task 13の後にNotetake.appで確かめる
+  - Task 5からTask 11の間は、capture-daemonとserveの生音声の形式が食い違うため、branchのappでは収録できない
+  - 実機確認の前にuserへ一声かける。Task 6はディスプレイを90秒消灯する。Task 6、11、14はsystem音声で`say`を2〜3分流す
+  - planに載せたコードは、全taskを当てた状態で警告ゼロのbuildと全テストの通過を確かめてある
 - **mainに残る不具合（specの段階1・2で直す）**:
   - micの音声が途切れると、その後の発話時刻が実際より早く記録される（2026-10-01 20:02の収録で最大138分）
   - ディスプレイの消灯でScreenCaptureKitがstreamを止め、system音声の取り込みが再開しない
   - `SpeakerRegistry`の割り当て表が`serve`の寿命で残るため、区切りの後に最初に話した人が前の収録の`1`と同じ大域idになる
   - tmpの生音声が削除されない。状態ディレクトリにheartbeatの一時ファイルが残る
-- **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う
+- **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む実機確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
 
 ## 状態（2026-09-28）
 
