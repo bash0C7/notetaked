@@ -2,7 +2,7 @@
 
 ## 状態（2026-10-03）
 
-- **話者分離を収録単位の確定処理へ移す設計を書いた。userのspec確認待ち**: `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`。収録中は文字起こしだけを行い、区切り・停止の後に生音声全体を一括文字起こしとオフライン話者分離で処理して`final.md`を確定する。実装計画はspecの承認後に段階ごとに作る。issue #8はこの設計で扱う（直前の話者の継承と停止時の二次解決は取り除く）
+- **話者分離を収録単位の確定処理へ移す設計はuser承認済み。次は段階1の実装計画**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、branch `batch-finalize-redesign`。収録中は文字起こしだけを行い、区切り・停止の後に生音声全体を一括文字起こしとオフライン話者分離で処理して`final.md`を確定する。生音声はOSの一時ディレクトリに置き、削除はOSの掃除に任せる。実装計画は段階ごとに`docs/superpowers/plans/`へ書き、userの承認後に実装する。issue #8はこの設計で扱う（直前の話者の継承と停止時の二次解決は取り除く）
 - **mainに残る不具合（specの段階1・2で直す）**:
   - micの音声が途切れると、その後の発話時刻が実際より早く記録される（2026-10-01 20:02の収録で最大138分）
   - ディスプレイの消灯でScreenCaptureKitがstreamを止め、system音声の取り込みが再開しない
