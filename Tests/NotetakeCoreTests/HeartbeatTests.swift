@@ -40,6 +40,8 @@ import Testing
         CaptureStatePaths.captureCommandURL,
         CaptureStatePaths.captureEventURL,
         CaptureStatePaths.currentSessionMarkerURL,
+        CaptureStatePaths.captureDesiredURL,
+        CaptureStatePaths.captureActualURL,
     ]
     #expect(Set(paths.map(\.lastPathComponent)).count == paths.count)
     #expect(CaptureStatePaths.processHeartbeatURL.path.contains("Notetake/state"))

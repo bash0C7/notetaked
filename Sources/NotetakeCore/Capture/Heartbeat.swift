@@ -8,12 +8,7 @@ public enum HeartbeatStatus: Equatable, Sendable {
 
 public enum Heartbeat {
     public static func write(to url: URL, now: Date = Date()) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let payload = ISO8601DateFormatter().string(from: now).data(using: .utf8) ?? Data()
-        let tempURL = url.appendingPathExtension("tmp-\(UUID().uuidString)")
-        try payload.write(to: tempURL, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+        try AtomicFile.write(Data(ISO8601DateFormatter().string(from: now).utf8), to: url)
     }
 
     public static func status(lastBeat: Date?, now: Date, threshold: TimeInterval) -> HeartbeatStatus {
