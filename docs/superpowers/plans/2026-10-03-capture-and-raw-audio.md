@@ -24,7 +24,7 @@
 - 発話や音声を失う失敗は、`error` event、`log` event、実状態の`last_error`のどれかに出す。`try?`は失敗してよい処理（一時ファイルの削除、ファイルを閉じる処理、止まっているstreamの停止、待機の取り消し）に限る
 - test fixtureに実在の人名を書かない。山田太郎、私、`external`のような架空の値を使う
 - 日本語と英数字の間に空白を入れない（comment、doc、commit本文）
-- 進め方: TDDの赤と緑は`swift test --filter '<テスト名の正規表現>'`で確かめる。taskの終わりに`make verify`を通す（Haiku subagent）。subagentはcommitしない。controllerが`git add`と`git commit`を行い、commit messageの末尾に`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`を付ける
+- 進め方: TDDの赤と緑は`swift test --filter '<テスト名の正規表現>'`で確かめる。taskの終わりに`make verify`を通す（Haiku subagent）。subagentはgitを変更しない（commit、`git rm`、`git add`をしない）。ファイルの削除は`rm`で行い、controllerが`git add`（削除は`git add -A <path>`）と`git commit`で反映する。`make verify`の結果は`.claude/skills/verify`の手順で読む（実行前に前回のlogを消すため、古い成功を読み違えない）。commit messageの末尾に`Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`を付ける
 - `make daemon`の署名が終わる前にbinaryを起動しない（Gatekeeperがbinaryをゴミ箱へ移す）。実機の確認はビルドの完了後に行う
 - 前面の`sleep`はClaude Codeで使えない。待ちを含む実機の確認は、scriptを`run_in_background`で走らせて終了の知らせを待つ
 
@@ -233,7 +233,7 @@ Expected: PASS
 
 - [ ] **Step 5: 検証ゲート**
 
-Run: `make verify`（Haiku subagent、`.claude/skills/verify`）
+Run: `make verify`（Haiku subagent、`.claude/skills/verify`）。skillは実行前に前回のlogを消す。`verify-run.log`が無い、または`exit=`が出ていなければ失敗として扱う
 Expected: 最終行`verify: OK`
 
 - [ ] **Step 6: commit（controller）**
@@ -249,7 +249,7 @@ AtomicFile writes a temporary file in the same directory and renames it
 over the target, removing it on failure. JSONFile reads and writes the
 state files that serve and capture-daemon will exchange.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -705,7 +705,7 @@ capture state changes. CaptureTimeline turns sample numbers back into
 wall-clock time and devices, and AnchorClock tells the writer when a new
 anchor is needed (more than 250 ms of drift or a gap).
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -724,7 +724,7 @@ serveとcapture-daemonの受け渡しを、命令とeventのファイルから�
 - Produces:
   - `struct CaptureDesiredState { struct Recording { var prefix: String; var directory: String }; var recording: Recording?; var sources: [Source]; var pinnedInputUID: String?; static let stopped }`。JSONのkeyは`recording`、`sources`、`pinned_input_uid`
   - `struct CaptureActualState { struct SourceStatus { var source: Source; var state: CaptureSourceState; var reason: String?; var input: InputDevice?; var fellBackFromPinned: Bool; var lastError: String? }; var pid: Int32; var prefix: String?; var sources: [SourceStatus]; var updated: Int64 }`。JSONのkeyは`fell_back_from_pinned`、`last_error`ほか
-  - `struct DesiredStateWatcher(url:)`、`mutating poll() -> Change?`（`.changed(CaptureDesiredState)`か`.unreadable(String)`。更新時刻が変わらなければnil。ファイルが無ければ`.changed(.stopped)`）
+  - `struct DesiredStateWatcher(url:)`、`mutating poll() -> Change?`（`.changed(CaptureDesiredState)`か`.unreadable(String)`。更新時刻が変わらなければnil。ファイルが無い時だけ`.changed(.stopped)`。ほかのstat失敗は`.unreadable`で、同じ失敗は1度だけ返す）
   - `CaptureStatePaths.captureDesiredURL`（`capture-desired.json`）、`CaptureStatePaths.captureActualURL`（`capture-actual.json`）
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -790,6 +790,25 @@ private func temporaryDirectory(_ name: String) -> URL {
 
     try FileManager.default.removeItem(at: url)
     #expect(watcher.poll() == .changed(.stopped))
+}
+
+@Test func desiredStateWatcherReportsAnUnreadableFileOnceInsteadOfStopping() throws {
+    let directory = temporaryDirectory("desired")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        try? FileManager.default.removeItem(at: directory)
+    }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("capture-desired.json")
+    var watcher = DesiredStateWatcher(url: url)
+    #expect(watcher.poll() == .changed(.stopped))
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
+    guard case .unreadable = watcher.poll() else {
+        Issue.record("a stat failure other than a missing file must not be read as stopped")
+        return
+    }
+    #expect(watcher.poll() == nil)
 }
 ```
 
@@ -917,14 +936,29 @@ public struct DesiredStateWatcher: Sendable {
     private let url: URL
     private var checked = false
     private var lastModified: Date?
+    private var lastStatFailure: String?
 
     public init(url: URL) {
         self.url = url
     }
 
-    /// 最初の呼び出しと、前回から更新時刻が変わった時だけ値を返す。ファイルが無いのは停止中として扱う
+    /// 最初の呼び出しと、前回から更新時刻が変わった時だけ値を返す。ファイルが無いのは停止中として扱う。
+    /// 更新時刻を取れない他の失敗は停止とせず、`unreadable`として同じ失敗を1度だけ返す
     public mutating func poll() -> Change? {
-        let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        let modified: Date?
+        do {
+            modified = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+            lastStatFailure = nil
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            modified = nil
+            lastStatFailure = nil
+        } catch {
+            // 説明文には毎回変わる値が入るため、同じ失敗かどうかはdomainとcodeで見分ける
+            let kind = "\((error as NSError).domain) \((error as NSError).code)"
+            guard kind != lastStatFailure else { return nil }
+            lastStatFailure = kind
+            return .unreadable("\(error)")
+        }
         if checked, modified == lastModified {
             return nil
         }
@@ -972,7 +1006,7 @@ second, its modification time doubling as the heartbeat. A missing
 desired file means stopped; an unreadable one is reported so the daemon
 keeps its current capture instead of stopping a recording.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -985,6 +1019,16 @@ anchorの位置に注意する。変換器（AVAudioConverter）は、先のsamp
 
 同じ収録を開き直した時（capture-daemonの再起動）は末尾へ追記する。前のprocessが書きかけで落ちた端数byteを切り詰め、改行の無い最後の行を閉じてから書く。
 
+書き込みの失敗は実状態の`lastError`に入れる。`lastError`は開いている収録の失敗だけを表すよう、収録を開く時に空に戻す。serveは収録ごとに実状態の見張りを作り直すため、空に戻さないと、前の収録で起きて直った失敗を、区切るたびに新しい失敗として送り直す。
+
+書き込み先を開けなかった時（容量不足や一時的に書けない場合）は、次に届いたbufferで、1秒に1回まで開き直す。開き直せたら、開けなかったことを表す`lastError`は空に戻す。
+
+取り込みの側が音声を捨てた時は、`CaptureSink.noteError`で`lastError`へ残す。長さ0のbufferは書く音声が無いだけなので、黙って捨てる。同じ状態（状態と理由が同じ）は`.meta.jsonl`へ続けて書かない。接続の失敗が5秒ごとに続いても、行が増え続けないようにするため。
+
+sampleを`.pcm`へ書いてから、そのanchorとdeviceの行を`.meta.jsonl`へ書く。間で落ちても、書いていないsampleを指すanchorが残って、再起動後の時刻を誤らせることが無い。`.pcm`への書き込みが失敗したら、書いた分まで切り詰める。端数が残ると、以後のsample番号がファイルの位置とずれるため。
+
+テストは、`.pcm`のsample数をファイルの大きさから数える（`PCMTailReader`はTask 8で作る）。
+
 **Files:**
 - Create: `Sources/notetaked/Capture/MonoResampler.swift`、`Sources/notetaked/Capture/SourceRecorder.swift`
 - Test: `Tests/notetakedTests/SourceRecorderTests.swift`
@@ -992,8 +1036,8 @@ anchorの位置に注意する。変換器（AVAudioConverter）は、先のsamp
 **Interfaces:**
 - Consumes: `CapturePCM`、`CaptureMetaLine`、`CaptureAnchor`、`AnchorClock`、`CaptureSessionPaths.pcmURL/metaURL`（Task 2）、`CaptureActualState.SourceStatus`、`CaptureSourceState`（Task 3）
 - Produces:
-  - `protocol CaptureSink: AnyObject, Sendable { func ingest(_ buffer: AVAudioPCMBuffer); func noteState(_ state: CaptureSourceState, reason: String?); func noteInput(_ device: InputDevice, fellBackFromPinned: Bool) }`
-  - `final class SourceRecorder: CaptureSink`: `init(source: Source, now: @escaping @Sendable () -> Date = { Date() })`、`open(directory: URL)`（書き込み先を切り替える。これより前に受け取ったbufferは前の収録へ書く）、`close()`（変換器の残りを書いて閉じ、状態を`off`にする）、`snapshot() -> CaptureActualState.SourceStatus`
+  - `protocol CaptureSink: AnyObject, Sendable { func ingest(_ buffer: AVAudioPCMBuffer); func noteState(_ state: CaptureSourceState, reason: String?); func noteInput(_ device: InputDevice, fellBackFromPinned: Bool); func noteError(_ message: String) }`
+  - `final class SourceRecorder: CaptureSink`: `init(source: Source, now: @escaping @Sendable () -> Date = { Date() })`、`open(directory: URL)`（書き込み先を切り替える。これより前に受け取ったbufferは前の収録へ書く。`lastError`を空に戻す。開けなければ、以後のbufferで1秒ごとに開き直す）、`close()`（変換器の残りを書いて閉じ、状態を`off`にする）、`snapshot() -> CaptureActualState.SourceStatus`
   - `struct CapturedChunk`（`init?(buffer:receivedAt:)`、`init(sampleRate:channelCount:interleaved:samples:receivedAt:)`）、`final class MonoResampler`（`convert(_:) throws -> [Float]`、`flush() throws -> [Float]`、`pendingSamples: Int`）
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -1042,7 +1086,9 @@ private func metaLines(_ directory: URL, _ source: Source) throws -> [CaptureMet
 }
 
 private func sampleCount(_ directory: URL, _ source: Source) -> Int64 {
-    PCMTailReader.sampleCount(of: CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source))
+    let url = CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source)
+    let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+    return (size?.int64Value ?? 0) / Int64(CapturePCM.bytesPerSample)
 }
 
 /// 100msのbufferを`count`個、実時間どおりの受け取り時刻で渡す
@@ -1225,6 +1271,95 @@ private func feed(
     try Data().write(to: blocked)
     recorder.open(directory: blocked)
     #expect(recorder.snapshot().lastError?.hasPrefix("書き込み先を開けません") == true)
+}
+
+@Test func recorderForgetsTheLastErrorWhenOpeningAnotherRecording() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let blocked = directory.appendingPathComponent("blocked")
+    try Data().write(to: blocked)
+    let recorder = SourceRecorder(source: .mic)
+
+    recorder.open(directory: blocked)
+    #expect(recorder.snapshot().lastError != nil)
+    recorder.open(directory: directory.appendingPathComponent("next"))
+    #expect(recorder.snapshot().lastError == nil)
+}
+
+@Test func recorderOpensAgainWhenTheDestinationBecomesWritable() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let blocked = directory.appendingPathComponent("blocked")
+    try Data().write(to: blocked)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(start)
+    let recorder = SourceRecorder(source: .mic, now: { clock.now })
+
+    recorder.open(directory: blocked)
+    #expect(recorder.snapshot().lastError?.hasPrefix("書き込み先を開けません") == true)
+    try FileManager.default.removeItem(at: blocked)
+
+    feed(recorder, clock: clock, from: start, count: 3)
+    #expect(sampleCount(blocked, .mic) == 0)
+    feed(recorder, clock: clock, from: start.addingTimeInterval(2), count: 10)
+    recorder.close()
+
+    #expect(abs(sampleCount(blocked, .mic) - 16_000) <= 2)
+    #expect(recorder.snapshot().lastError == nil)
+}
+
+@Test func recorderWritesEachStateOnlyOnce() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let recorder = SourceRecorder(source: .system)
+
+    recorder.open(directory: directory)
+    for _ in 0..<5 {
+        recorder.noteState(.retrying, reason: "接続できません")
+    }
+    recorder.noteState(.recording, reason: nil)
+    recorder.noteState(.recording, reason: nil)
+    recorder.close()
+
+    let states = try metaLines(directory, .system).compactMap { line -> CaptureSourceState? in
+        if case .state(_, _, let state, _) = line { state } else { nil }
+    }
+    #expect(states == [.retrying, .recording])
+}
+
+@Test func recorderShowsAnErrorTheCaptureReportedAndIgnoresEmptyBuffers() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let recorder = SourceRecorder(source: .system)
+
+    recorder.open(directory: directory)
+    recorder.ingest(makeBuffer(sampleRate: 48_000, channels: 2, frames: 0))
+    #expect(recorder.snapshot().lastError == nil)
+
+    recorder.noteError("system音声のbufferを取り出せません")
+    #expect(recorder.snapshot().lastError == "system音声のbufferを取り出せません")
+}
+
+@Test func recorderWritesAnchorsOnlyForSamplesInTheFile() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(start)
+    let recorder = SourceRecorder(source: .mic, now: { clock.now })
+
+    recorder.open(directory: directory)
+    feed(recorder, clock: clock, from: start, count: 5)
+    feed(recorder, clock: clock, from: start.addingTimeInterval(30), count: 5)
+    recorder.close()
+
+    let samples = sampleCount(directory, .mic)
+    let anchors = try metaLines(directory, .mic).compactMap { line -> CaptureAnchor? in
+        if case .anchor(let anchor) = line { anchor } else { nil }
+    }
+    #expect(anchors.count == 2)
+    #expect(anchors.allSatisfy { $0.sample < samples })
 }
 ```
 
@@ -1444,6 +1579,8 @@ protocol CaptureSink: AnyObject, Sendable {
     func ingest(_ buffer: AVAudioPCMBuffer)
     func noteState(_ state: CaptureSourceState, reason: String?)
     func noteInput(_ device: InputDevice, fellBackFromPinned: Bool)
+    /// 取り込みの途中で音声を失った失敗を、実状態の`lastError`へ残す
+    func noteError(_ message: String)
 }
 
 /// 1つのsourceの生音声を書く。callbackから受け取ったbufferを直列のqueueへ渡し、
@@ -1455,12 +1592,24 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     private let now: @Sendable () -> Date
     private let resampler = MonoResampler()
     private var anchorClock = AnchorClock()
+    /// 書き込み先の収録。開けなかった時に開き直すため覚えておく
+    private var directory: URL?
+    private var lastOpenAttempt: Date?
     private var pcm: FileHandle?
     private var meta: FileHandle?
     private var writtenSamples: Int64 = 0
     private var input: InputDevice?
     private var deviceLinePending = false
+    /// いまの`.meta.jsonl`へ最後に書いた状態。再試行のたびに同じ行を足さないために使う
+    private var lastStateLine: StateLine?
     private var status: CaptureActualState.SourceStatus
+
+    private static let openFailurePrefix = "書き込み先を開けません"
+
+    private struct StateLine: Equatable {
+        let state: CaptureSourceState
+        let reason: String?
+    }
 
     init(source: Source, now: @escaping @Sendable () -> Date = { Date() }) {
         self.source = source
@@ -1472,6 +1621,7 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     // MARK: - CaptureSink
 
     func ingest(_ buffer: AVAudioPCMBuffer) {
+        guard buffer.frameLength > 0 else { return }
         let receivedAt = now()
         guard let chunk = CapturedChunk(buffer: buffer, receivedAt: receivedAt) else {
             let description = "\(buffer.format)"
@@ -1486,6 +1636,9 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         queue.async {
             self.status.state = state
             self.status.reason = state == .retrying ? reason : nil
+            let line = StateLine(state: state, reason: reason)
+            guard line != self.lastStateLine else { return }
+            self.lastStateLine = line
             self.appendMeta(.state(sample: self.writtenSamples, ms: Self.ms(at), state: state, reason: reason))
         }
     }
@@ -1499,33 +1652,21 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         }
     }
 
+    func noteError(_ message: String) {
+        queue.async { self.recordError(message) }
+    }
+
     // MARK: - control
 
     /// 書き込み先を`directory`の収録へ切り替える。これより前に受け取ったbufferは前の収録へ、
-    /// 後に受け取ったbufferは新しい収録へ書く。同じ収録を開き直した時は末尾へ追記する
+    /// 後に受け取ったbufferは新しい収録へ書く。同じ収録を開き直した時は末尾へ追記する。
+    /// `lastError`は開いた収録の失敗だけを表すよう空に戻してから、前の収録を閉じる
     func open(directory: URL) {
         queue.sync {
+            status.lastError = nil
             closeFiles()
-            do {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let pcm = try Self.openForAppend(CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source))
-                let meta = try Self.openForAppend(
-                    CaptureSessionPaths.metaURL(sessionDirectory: directory, source: source))
-                // 前のprocessが書きかけで終わっていても、追記がsampleと行の境目から始まるようにする
-                let pcmEnd = try pcm.seekToEnd()
-                let alignedEnd = pcmEnd - pcmEnd % UInt64(CapturePCM.bytesPerSample)
-                if alignedEnd != pcmEnd {
-                    try pcm.truncate(atOffset: alignedEnd)
-                }
-                try Self.terminateLastLine(meta)
-                self.pcm = pcm
-                self.meta = meta
-                writtenSamples = Int64(alignedEnd) / Int64(CapturePCM.bytesPerSample)
-                anchorClock.reset()
-                deviceLinePending = input != nil
-            } catch {
-                recordError("書き込み先を開けません: \(error)")
-            }
+            self.directory = directory
+            openFiles(at: now())
         }
     }
 
@@ -1533,6 +1674,7 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     func close() {
         queue.sync {
             closeFiles()
+            directory = nil
             status.state = .off
             status.reason = nil
         }
@@ -1544,7 +1686,40 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
 
     // MARK: - queue
 
+    private func openFiles(at attemptTime: Date) {
+        guard let directory else { return }
+        lastOpenAttempt = attemptTime
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let pcm = try Self.openForAppend(CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source))
+            let meta = try Self.openForAppend(CaptureSessionPaths.metaURL(sessionDirectory: directory, source: source))
+            // 前のprocessが書きかけで終わっていても、追記がsampleと行の境目から始まるようにする
+            let pcmEnd = try pcm.seekToEnd()
+            let alignedEnd = pcmEnd - pcmEnd % UInt64(CapturePCM.bytesPerSample)
+            if alignedEnd != pcmEnd {
+                try pcm.truncate(atOffset: alignedEnd)
+            }
+            try Self.terminateLastLine(meta)
+            self.pcm = pcm
+            self.meta = meta
+            writtenSamples = Int64(alignedEnd) / Int64(CapturePCM.bytesPerSample)
+            anchorClock.reset()
+            deviceLinePending = input != nil
+            lastStateLine = nil
+            if status.lastError?.hasPrefix(Self.openFailurePrefix) == true {
+                status.lastError = nil
+            }
+        } catch {
+            recordError("\(Self.openFailurePrefix): \(error)")
+        }
+    }
+
     private func write(_ chunk: CapturedChunk) {
+        if pcm == nil || meta == nil {
+            // 開けなかった書き込み先は、空きができた時などに書けるよう、1秒ごとに開き直す
+            guard let lastOpenAttempt, chunk.receivedAt.timeIntervalSince(lastOpenAttempt) >= 1 else { return }
+            openFiles(at: chunk.receivedAt)
+        }
         guard let pcm, meta != nil else { return }
         let firstSample = writtenSamples + Int64(resampler.pendingSamples)
         let samples: [Float]
@@ -1557,18 +1732,30 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         guard !samples.isEmpty else { return }
         let durationMS = Int64((Double(chunk.frameCount) / chunk.sampleRate * 1000).rounded())
         let startMS = Self.ms(chunk.receivedAt) - durationMS
-        if let anchor = anchorClock.anchor(forBufferStartingAt: firstSample, wallClockMS: startMS) {
+        let anchor = anchorClock.anchor(forBufferStartingAt: firstSample, wallClockMS: startMS)
+        do {
+            try pcm.write(contentsOf: CapturePCM.encode(samples))
+        } catch {
+            recordError("生音声を書けません: \(error)")
+            // 書きかけの端数を残すと、以後のsample番号がファイルの位置とずれる
+            do {
+                try pcm.truncate(atOffset: UInt64(writtenSamples) * UInt64(CapturePCM.bytesPerSample))
+            } catch {
+                recordError("書きかけの生音声を切り詰められません: \(error)")
+            }
+            // 書けなかった区間の後は、次に書けたbufferにanchorを付ける
+            anchorClock.reset()
+            return
+        }
+        writtenSamples += Int64(samples.count)
+        // sampleを書いてから、そのanchorとdeviceの行を書く。間で落ちても、書いていないsampleを指すanchorが残って
+        // 再起動後の時刻を誤らせることが無い
+        if let anchor {
             appendMeta(.anchor(anchor))
         }
         if deviceLinePending, let input {
             appendMeta(.device(sample: firstSample, device: input))
             deviceLinePending = false
-        }
-        do {
-            try pcm.write(contentsOf: CapturePCM.encode(samples))
-            writtenSamples += Int64(samples.count)
-        } catch {
-            recordError("生音声を書けません: \(error)")
         }
     }
 
@@ -1604,7 +1791,7 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         }
     }
 
-    /// 失敗を実状態の`lastError`に残す。同じ失敗が続く間は`.meta.jsonl`へ1度だけ書く
+    /// 失敗を実状態の`lastError`に残す。直前と同じ失敗は`.meta.jsonl`へ書き直さない
     private func recordError(_ message: String) {
         guard status.lastError != message else { return }
         status.lastError = message
@@ -1646,7 +1833,7 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
 - [ ] **Step 4: 通ることを確かめる**
 
 Run: `swift test --filter 'resampler|recorder'`
-Expected: PASS（9件）
+Expected: PASS（14件）
 
 - [ ] **Step 5: 検証ゲート**
 
@@ -1669,7 +1856,7 @@ holds back its output. Reopening a recording after a crash continues at
 sample and line boundaries, and switching directories at a buffer
 boundary loses no audio.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1680,18 +1867,22 @@ capture-daemonの本体を`CaptureController`にする。200msごとに望む状
 
 取り込みは新しいprotocol`SourceCapture`に合わせる。開始の失敗や途中の停止は投げずに`CaptureSink.noteState`で伝え、自分で再開を試みる。
 
-- **system**: ScreenCaptureKitはディスプレイの消灯などでstreamを自ら止める。停止を`SCStreamDelegate.stream(_:didStopWithError:)`で受け取り、`retrying`を伝え、5秒ごとに`SCShareableContent`の取得からstreamを作り直す。`start`はすぐ返し、接続はTaskで行う（`SCShareableContent`の取得を待つ間も、capture-daemonが実状態を書き続けられるようにするため）。止めた後に遅れて届く停止の知らせは、streamを作るたびに進める番号（`generation`）で無視する。映像の出力も登録して捨てる（登録しないとScreenCaptureKitが毎秒error logを出す）。音声のformatはsample bufferのformat descriptionから作る
-- **mic**: AVAudioEngineは既定の入力が変わると自ら止まるため、構成変更の通知でtapを張り直す。`engine.start()`の失敗を捨てず、1・2・4・8・16秒、以後30秒の間隔で再試行する。固定した機器が外れたら既定の入力へ戻し、`noteInput(_, fellBackFromPinned: true)`で伝える。固定した機器はAUHAL（Technical Note TN2091の手順）で取り込む。AVAudioEngineの入力に機器を直接設定すると、formatが追従せずcrashや無音になるため
+- **system**: ScreenCaptureKitはディスプレイの消灯などでstreamを自ら止める。停止を`SCStreamDelegate.stream(_:didStopWithError:)`で受け取り、`retrying`を伝え、5秒ごとに`SCShareableContent`の取得からstreamを作り直す。`start`はすぐ`retrying`（接続しています）を伝えて返し、接続はTaskで行う（`SCShareableContent`の取得を待つ間も、capture-daemonが実状態を書き続けられるようにするため）。停止の知らせが無いまま音声のbufferが届かなくなる場合に備え、10秒届かなければstreamを作り直す（ScreenCaptureKitは無音の間もbufferを届けるため、届かないことは異常を表す）。最後に届いた時刻は`OSAllocatedUnfairLock`で持ち、5秒ごとに確かめる。sample bufferを包めなかった時は`noteError`で伝える（長さ0のbufferは除く）。作ったばかりで不要になったstreamを止められなかった時は、stderrへ残す。止めた後に遅れて届く停止の知らせは、streamを作るたびに進める番号（`generation`）で無視する。映像の出力も登録して捨てる（登録しないとScreenCaptureKitが毎秒error logを出す）。音声のformatはsample bufferのformat descriptionから作る
+- **mic**: AVAudioEngineは既定の入力が変わると自ら止まるため、構成変更の通知でtapを張り直す。`engine.start()`の失敗を捨てず、1・2・4・8・16秒、以後30秒の間隔で再試行する。固定した機器が外れたら既定の入力へ戻し、`noteInput(_, fellBackFromPinned: true)`で伝える。接続中なのに固定した機器を開けなかった時も、固定は残したまま既定の入力で取り込み、`noteError`で「固定した入力機器を開けないため、既定の入力で取り込みます」と伝える。AUHALのrender callbackがbufferを確保できない、または`AudioUnitRender`が失敗した時も、失敗が変わるたびに`noteError`で伝える。固定した機器はAUHAL（Technical Note TN2091の手順）で取り込む。AVAudioEngineの入力に機器を直接設定すると、formatが追従せずcrashや無音になるため
 - `installTap`のclosureには必ず`@Sendable`を付ける。`AVAudioNodeTapBlock`は`@Sendable`ではないため、付けないとactorに隔離されたclosureと推論され、audioのthreadから呼ばれた時に実行時の隔離検査で止まる
+- capture-daemonは、状態ディレクトリの`capture-daemon.lock`に排他lock（`flock`）を取り、取れなければ終わる。2つのcapture-daemonが同じ生音声へ書かないようにするため。lockはprocessの終了で離れる
+- 実状態を書く1秒の間隔は、単調な時計（`ContinuousClock`）で測る。壁時計が巻き戻っても、書き込みが止まらないようにするため
+- `DesiredStateWatcher`は、望む状態のファイルが無い時だけ停止として扱う。更新時刻を取れない他の失敗（権限など）は`unreadable`として、いまの取り込みを続ける
+- capture-daemonは、起動したprocess（appかscript）が終わったら、取り込みを止めて終える。繰り返しのたびに`getppid()`を起動時の値と比べる。appがcrashや強制終了で消えた後も動き続けると、起動し直したappが2つ目のcapture-daemonを起動し、2つが同じ`.pcm`と`.meta.jsonl`へ追記して生音声が壊れるため。SIGTERMの時と同じ`shutdown`で止める
 
 serve側の古い読み手（`RawAudioReaderCapture`）は`AudioCapture`protocolのまま、Task 12で消す。`capture`subcommandは、取り込みを古いprotocolで使っていたため、ここで消す（specの「使われていないもの」にも入っている）。capture-daemonは`capture.heartbeat`を書かなくなるため、appの`CaptureDaemonSupervisor`は実状態のファイルの更新時刻で生存を判断する。
 
 **Files:**
-- Create: `Sources/NotetakeCore/Capture/RetryBackoff.swift`、`Sources/notetaked/Capture/CaptureController.swift`
+- Create: `Sources/NotetakeCore/Capture/RetryBackoff.swift`、`Sources/NotetakeCore/Capture/InstanceLock.swift`、`Sources/notetaked/Capture/CaptureController.swift`
 - Replace: `Sources/notetaked/Audio/SystemAudioCapture.swift`、`Sources/notetaked/Audio/MicCapture.swift`、`Sources/notetaked/Commands/CaptureDaemonCommand.swift`
 - Modify: `Sources/notetaked/Notetaked.swift`、`Sources/NotetakeCore/Capture/CaptureStatePaths.swift`、`Apps/Notetake/CaptureDaemonSupervisor.swift`、`Tests/NotetakeCoreTests/HeartbeatTests.swift`
 - Delete: `Sources/notetaked/Capture/CaptureSessionRunner.swift`、`Sources/notetaked/Commands/CaptureCommand.swift`
-- Test: `Tests/NotetakeCoreTests/RetryBackoffTests.swift`、`Tests/notetakedTests/CaptureControllerTests.swift`
+- Test: `Tests/NotetakeCoreTests/RetryBackoffTests.swift`、`Tests/NotetakeCoreTests/InstanceLockTests.swift`、`Tests/notetakedTests/CaptureControllerTests.swift`
 
 **Interfaces:**
 - Consumes: `SourceRecorder`、`CaptureSink`（Task 4）、`CaptureDesiredState`、`CaptureActualState`、`DesiredStateWatcher`、`CaptureStatePaths.captureDesiredURL/captureActualURL`（Task 3）、`JSONFile`（Task 1）
@@ -1700,6 +1891,7 @@ serve側の古い読み手（`RawAudioReaderCapture`）は`AudioCapture`protocol
   - `actor CaptureController`: `init(makeCapture: @escaping CaptureFactory)`（`CaptureFactory = @Sendable (Source, String?) -> any SourceCapture`）、`apply(_ desired: CaptureDesiredState) async`、`stopAll() async`、`actualState(pid: Int32, now: Date) -> CaptureActualState`
   - `actor SystemAudioCapture: SourceCapture`（`init()`）、`actor MicCapture: SourceCapture`（`init(pinnedUID: String?)`）
   - `RetryBackoff.seconds(afterFailures: Int) -> Int`
+  - `InstanceLock.acquire(at: URL) throws -> InstanceLock?`（別に持つものがあればnil。解放で離れる）
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1715,7 +1907,30 @@ import Testing
 }
 ```
 
-`Tests/notetakedTests/CaptureControllerTests.swift`:
+`Tests/NotetakeCoreTests/InstanceLockTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import NotetakeCore
+
+private func temporaryDirectory(_ name: String) -> URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString)")
+}
+
+@Test func instanceLockIsExclusiveUntilReleased() throws {
+    let url = temporaryDirectory("lock").appendingPathComponent("capture-daemon.lock")
+    defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+    var first = try InstanceLock.acquire(at: url)
+    #expect(first != nil)
+    #expect(try InstanceLock.acquire(at: url) == nil)
+    first = nil
+    #expect(try InstanceLock.acquire(at: url) != nil)
+}
+```
+
+`Tests/notetakedTests/CaptureControllerTests.swift`（`.pcm`のsample数はファイルの大きさから数える）:
 
 ```swift
 import AVFoundation
@@ -1736,7 +1951,9 @@ private func monoBuffer(frames: Int) -> AVAudioPCMBuffer {
 }
 
 private func sampleCount(_ directory: URL, _ source: Source) -> Int64 {
-    PCMTailReader.sampleCount(of: CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source))
+    let url = CaptureSessionPaths.pcmURL(sessionDirectory: directory, source: source)
+    let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+    return (size?.int64Value ?? 0) / Int64(CapturePCM.bytesPerSample)
 }
 
 /// 呼ばれた開始と停止を数えるだけの取り込み
@@ -1836,8 +2053,8 @@ private func desired(_ prefix: String?, root: URL, sources: [Source] = [.mic, .s
 
 - [ ] **Step 2: 失敗を確かめる**
 
-Run: `swift test --filter 'retryBackoff|controller'`
-Expected: buildが`cannot find 'RetryBackoff' in scope`、`cannot find type 'SourceCapture' in scope`などで失敗する
+Run: `swift test --filter 'retryBackoff|instanceLock|controller'`
+Expected: buildが`cannot find 'RetryBackoff' in scope`、`cannot find 'InstanceLock' in scope`、`cannot find type 'SourceCapture' in scope`などで失敗する
 
 - [ ] **Step 3: 再試行の間隔と制御を実装する**
 
@@ -1851,6 +2068,46 @@ public enum RetryBackoff {
     public static func seconds(afterFailures failures: Int) -> Int {
         guard failures < 5 else { return maxSeconds }
         return min(1 << failures, maxSeconds)
+    }
+}
+```
+
+`Sources/NotetakeCore/Capture/InstanceLock.swift`:
+
+```swift
+import Foundation
+
+/// processに1つだけ持てる排他lock。capture-daemonが2つ同時に同じ生音声へ書かないために使う。
+/// lockはprocessの終了（crashやSIGKILLを含む）で自動的に離れる
+public final class InstanceLock: @unchecked Sendable {
+    // @unchecked Sendable: 開いたfile descriptorだけを持ち、lockの確認は初期化の中で終わる
+    private let descriptor: Int32
+
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        close(descriptor)
+    }
+
+    /// `url`のfileに排他lockを取る。別のprocessか別のInstanceLockが持っていればnilを返す
+    public static func acquire(at url: URL) throws -> InstanceLock? {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let descriptor = open(url.path, O_CREAT | O_RDWR, 0o600)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let reason = errno
+            close(descriptor)
+            if reason == EWOULDBLOCK {
+                return nil
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: reason) ?? .EIO)
+        }
+        return InstanceLock(descriptor: descriptor)
     }
 }
 ```
@@ -1948,6 +2205,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import NotetakeCore
+import os
 import ScreenCaptureKit
 
 enum SystemAudioCaptureError: LocalizedError {
@@ -1962,19 +2220,25 @@ enum SystemAudioCaptureError: LocalizedError {
 
 /// ScreenCaptureKitでsystem全体の音声（自process以外）を取り込む。
 /// ScreenCaptureKitはディスプレイの消灯などでstreamを自ら止めるため、停止をdelegateで受け取り、
-/// 5秒ごとにディスプレイの取得からstreamを作り直す
+/// 5秒ごとにディスプレイの取得からstreamを作り直す。
+/// 停止の知らせが無いまま音声のbufferが届かなくなった時のために、10秒届かなければstreamを作り直す
+/// （ScreenCaptureKitは無音の間もbufferを届ける）
 actor SystemAudioCapture: SourceCapture {
     private static let retryInterval: Duration = .seconds(5)
+    private static let watchInterval: Duration = .seconds(5)
+    private static let silenceLimit: Duration = .seconds(10)
 
     private var sink: (any CaptureSink)?
     private var stream: SCStream?
     private var output: SystemAudioOutput?
     private var retryTask: Task<Void, Never>?
+    private var watchTask: Task<Void, Never>?
     /// streamを作るたびと止めるたびに進める。古いstreamから遅れて届いた停止の知らせを無視するために使う
     private var generation = 0
 
     func start(into sink: any CaptureSink) async {
         self.sink = sink
+        sink.noteState(.retrying, reason: "ScreenCaptureKitへ接続しています")
         scheduleConnect(after: nil)
     }
 
@@ -1983,6 +2247,8 @@ actor SystemAudioCapture: SourceCapture {
         generation += 1
         retryTask?.cancel()
         retryTask = nil
+        watchTask?.cancel()
+        watchTask = nil
         output = nil
         guard let stream else { return }
         self.stream = nil
@@ -2021,12 +2287,13 @@ actor SystemAudioCapture: SourceCapture {
             try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: output.queue)
             try await stream.startCapture()
             guard attempt == generation else {
-                try? await stream.stopCapture()
+                await stopAbandoned(stream)
                 return
             }
             self.stream = stream
             self.output = output
             sink.noteState(.recording, reason: nil)
+            watchForSilence(of: output, generation: attempt)
         } catch {
             guard attempt == generation else { return }
             sink.noteState(.retrying, reason: error.localizedDescription)
@@ -2034,8 +2301,44 @@ actor SystemAudioCapture: SourceCapture {
         }
     }
 
+    /// 開始を待つ間に不要になったstreamを止める。止められないとcapture indicatorが残るため、失敗を残す
+    private func stopAbandoned(_ stream: SCStream) async {
+        do {
+            try await stream.stopCapture()
+        } catch {
+            FileHandle.standardError.write(
+                Data("capture-daemon: 不要になったsystem音声のstreamを止められません: \(error)\n".utf8))
+        }
+    }
+
+    private func watchForSilence(of output: SystemAudioOutput, generation watched: Int) {
+        watchTask?.cancel()
+        watchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.watchInterval)
+                guard !Task.isCancelled else { return }
+                if output.timeSinceLastAudio() >= Self.silenceLimit {
+                    await self?.rebuildSilentStream(generation: watched)
+                    return
+                }
+            }
+        }
+    }
+
+    private func rebuildSilentStream(generation watched: Int) async {
+        guard watched == generation, let sink, let stream else { return }
+        generation += 1
+        self.stream = nil
+        output = nil
+        sink.noteState(.retrying, reason: "音声が届かないため、ScreenCaptureKitへ接続し直します")
+        await stopAbandoned(stream)
+        scheduleConnect(after: nil)
+    }
+
     private func streamStopped(_ error: any Error, generation stopped: Int) {
         guard stopped == generation, let sink else { return }
+        watchTask?.cancel()
+        watchTask = nil
         stream = nil
         output = nil
         sink.noteState(.retrying, reason: error.localizedDescription)
@@ -2064,14 +2367,28 @@ private final class SystemAudioOutput: NSObject, SCStreamOutput, SCStreamDelegat
     let queue = DispatchQueue(label: "io.github.bash0c7.notetaked.system-audio")
     private let sink: any CaptureSink
     private let onStop: @Sendable (any Error) -> Void
+    private let lastAudio: OSAllocatedUnfairLock<ContinuousClock.Instant>
 
     init(sink: any CaptureSink, onStop: @escaping @Sendable (any Error) -> Void) {
         self.sink = sink
         self.onStop = onStop
+        lastAudio = OSAllocatedUnfairLock(initialState: ContinuousClock.now)
+    }
+
+    /// 最後に音声のbufferが届いてからの時間。届く前は、streamを作ってからの時間
+    func timeSinceLastAudio() -> Duration {
+        ContinuousClock.now - lastAudio.withLock { $0 }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, let buffer = Self.makeBuffer(from: sampleBuffer) else { return }
+        guard type == .audio else { return }
+        lastAudio.withLock { $0 = ContinuousClock.now }
+        // 長さ0のbufferは書く音声が無いだけで、失敗ではない
+        guard CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return }
+        guard let buffer = Self.makeBuffer(from: sampleBuffer) else {
+            sink.noteError("system音声のbufferを取り出せません")
+            return
+        }
         sink.ingest(buffer)
     }
 
@@ -2162,25 +2479,34 @@ actor MicCapture: SourceCapture {
     }
 
     /// 固定した機器が接続中ならAUHALで取り込む。AVAudioEngineの入力に機器を直接設定すると、
-    /// formatが追従せずcrashや無音になるため、固定時はAVAudioEngineを使わない
+    /// formatが追従せずcrashや無音になるため、固定時はAVAudioEngineを使わない。
+    /// 接続中なのに開けなかった時は、固定を残したまま既定の入力で取り込み、そのことを伝える
     private func startPinnedIfAvailable(_ sink: any CaptureSink) -> Bool {
         guard
             let pinnedUID,
             let device = InputDeviceProbe.all().first(where: { $0.uid == pinnedUID }),
-            let deviceID = InputDeviceProbe.audioDeviceID(forUID: pinnedUID),
-            let capture = AUHALPinnedCapture(deviceID: deviceID)
+            let deviceID = InputDeviceProbe.audioDeviceID(forUID: pinnedUID)
         else { return false }
+        guard let capture = AUHALPinnedCapture(deviceID: deviceID) else {
+            fallBackToDefaultInput(sink, detail: "設定できません")
+            return false
+        }
         do {
             try capture.start(into: sink)
         } catch {
             capture.stop()
-            sink.noteState(.retrying, reason: "固定した入力機器を開けません: \(error)")
+            fallBackToDefaultInput(sink, detail: "\(error)")
             return false
         }
         pinned = capture
         sink.noteInput(device, fellBackFromPinned: false)
         sink.noteState(.recording, reason: nil)
         return true
+    }
+
+    private func fallBackToDefaultInput(_ sink: any CaptureSink, detail: String) {
+        fellBack = true
+        sink.noteError("固定した入力機器を開けないため、既定の入力で取り込みます: \(detail)")
     }
 
     private func startEngine() {
@@ -2267,6 +2593,8 @@ final class AUHALPinnedCapture: @unchecked Sendable {
     private var audioUnit: AudioUnit?
     let format: AVAudioFormat
     private var sink: (any CaptureSink)?
+    /// 直前のrender callbackの結果。audioのthreadだけが読み書きし、失敗が変わった時だけ伝える
+    private var lastRenderFailure: OSStatus = noErr
 
     init?(deviceID: AudioDeviceID) {
         var descriptor = AudioComponentDescription(
@@ -2351,16 +2679,28 @@ final class AUHALPinnedCapture: @unchecked Sendable {
         inNumberFrames: UInt32
     ) -> OSStatus {
         guard let audioUnit, let sink else { return noErr }
+        guard inNumberFrames > 0 else { return noErr }
         guard let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: inNumberFrames) else {
+            noteRenderFailure(kAudio_MemFullError, to: sink, what: "bufferを確保できません")
             return noErr
         }
         pcmBuffer.frameLength = inNumberFrames
         let status = AudioUnitRender(
             audioUnit, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames,
             pcmBuffer.mutableAudioBufferList)
-        guard status == noErr else { return status }
+        guard status == noErr else {
+            noteRenderFailure(status, to: sink, what: "AudioUnitRenderが失敗しました")
+            return status
+        }
+        lastRenderFailure = noErr
         sink.ingest(pcmBuffer)
         return noErr
+    }
+
+    private func noteRenderFailure(_ status: OSStatus, to sink: any CaptureSink, what: String) {
+        guard status != lastRenderFailure else { return }
+        lastRenderFailure = status
+        sink.noteError("固定した入力機器の音声を取り込めません（\(what): \(status)）")
     }
 }
 
@@ -2395,6 +2735,13 @@ struct CaptureDaemon: AsyncParsableCommand {
         abstract: "Capture mic and system audio into the raw audio directory named by the desired state")
 
     func run() async throws {
+        // 2つのcapture-daemonが同じ生音声へ書かないよう、状態ディレクトリのlockを取れなければ終わる
+        let lockURL = CaptureStatePaths.stateDirectory().appendingPathComponent("capture-daemon.lock")
+        guard let instanceLock = try InstanceLock.acquire(at: lockURL) else {
+            Self.log("別のcapture-daemonが動いているため終了します")
+            throw ExitCode.failure
+        }
+        defer { withExtendedLifetime(instanceLock) {} }
         let controller = CaptureController { source, pinnedInputUID -> any SourceCapture in
             if source == .system {
                 return SystemAudioCapture()
@@ -2402,37 +2749,47 @@ struct CaptureDaemon: AsyncParsableCommand {
             return MicCapture(pinnedUID: pinnedInputUID)
         }
         let pid = getpid()
+        let parent = getppid()
 
         signal(SIGTERM, SIG_IGN)
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         sigtermSource.setEventHandler {
-            Task {
-                await controller.stopAll()
-                Self.writeActual(await controller.actualState(pid: pid, now: Date()))
-                Foundation.exit(0)
-            }
+            Task { await Self.shutdown(controller, pid: pid) }
         }
         sigtermSource.resume()
 
         var watcher = DesiredStateWatcher(url: CaptureStatePaths.captureDesiredURL)
-        var lastActualWrite = Date.distantPast
+        // 実状態の書き込みの間隔は、時計の巻き戻りに左右されない単調な時計で測る
+        let clock = ContinuousClock()
+        var lastActualWrite: ContinuousClock.Instant?
         while true {
+            // 起動したprocess（appかscript）が終わったら止める。動き続けると、次に起動したcapture-daemonと同じ生音声へ書くため
+            if getppid() != parent {
+                await Self.shutdown(controller, pid: pid)
+            }
             switch watcher.poll() {
             case .changed(let desired):
                 await controller.apply(desired)
-                lastActualWrite = .distantPast
+                lastActualWrite = nil
             case .unreadable(let message):
                 Self.log("望む状態を読めないため、いまの取り込みを続けます: \(message)")
             case nil:
                 break
             }
             let now = Date()
-            if now.timeIntervalSince(lastActualWrite) >= 1 {
+            if lastActualWrite.map({ clock.now - $0 >= .seconds(1) }) ?? true {
                 Self.writeActual(await controller.actualState(pid: pid, now: now))
-                lastActualWrite = now
+                lastActualWrite = clock.now
             }
             try await Task.sleep(for: .milliseconds(200))
         }
+    }
+
+    /// 取り込みを止め、止まった実状態を書いて終える
+    private static func shutdown(_ controller: CaptureController, pid: Int32) async -> Never {
+        await controller.stopAll()
+        writeActual(await controller.actualState(pid: pid, now: Date()))
+        Foundation.exit(0)
     }
 
     private static func writeActual(_ state: CaptureActualState) {
@@ -2452,7 +2809,7 @@ struct CaptureDaemon: AsyncParsableCommand {
 古い経路を消す:
 
 ```bash
-git rm Sources/notetaked/Capture/CaptureSessionRunner.swift Sources/notetaked/Commands/CaptureCommand.swift
+rm Sources/notetaked/Capture/CaptureSessionRunner.swift Sources/notetaked/Commands/CaptureCommand.swift
 ```
 
 `Sources/notetaked/Notetaked.swift`のsubcommandから`Capture.self`を除く:
@@ -2480,13 +2837,13 @@ git rm Sources/notetaked/Capture/CaptureSessionRunner.swift Sources/notetaked/Co
 
 - [ ] **Step 6: 通ることを確かめる**
 
-Run: `swift test --filter 'retryBackoff|controller|recorder|statePaths'`
+Run: `swift test --filter 'retryBackoff|instanceLock|controller|recorder|statePaths'`
 Expected: PASS
 
 - [ ] **Step 7: 古い型への参照が残っていないことを確かめる**
 
 Run: `grep -rn "CaptureSessionRunner\|captureHeartbeatURL\|struct Capture: AsyncParsableCommand" Sources Tests Apps`
-Expected: 出力なし
+Expected: `Sources/NotetakeCore/Capture/RawAudioWriter.swift:3:`のcomment（`CaptureSessionRunner`への言及）が1行だけ出る。このファイルはTask 12で消える
 
 - [ ] **Step 8: 検証ゲート**
 
@@ -2496,7 +2853,7 @@ Expected: 最終行`verify: OK`
 - [ ] **Step 9: commit（controller）**
 
 ```bash
-git add -A Sources/notetaked Sources/NotetakeCore/Capture Apps/Notetake/CaptureDaemonSupervisor.swift Tests/NotetakeCoreTests/RetryBackoffTests.swift Tests/NotetakeCoreTests/HeartbeatTests.swift Tests/notetakedTests/CaptureControllerTests.swift
+git add -A Sources/notetaked Sources/NotetakeCore/Capture Apps/Notetake/CaptureDaemonSupervisor.swift Tests/NotetakeCoreTests/RetryBackoffTests.swift Tests/NotetakeCoreTests/InstanceLockTests.swift Tests/NotetakeCoreTests/HeartbeatTests.swift Tests/notetakedTests/CaptureControllerTests.swift
 git commit -m "$(cat <<'MSG'
 feat(capture): drive capture-daemon from the desired state
 
@@ -2509,7 +2866,7 @@ engine start on the mic is retried with backoff up to 30 seconds. The
 capture subcommand and CaptureSessionRunner are gone, and the app judges
 capture-daemon liveness by the actual state file.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -2577,23 +2934,27 @@ def main():
     if not anchors:
         sys.exit("anchorがありません")
     starts = [sample for sample, _ in anchors]
-    with open(f"{directory}/{source}.pcm", "rb") as pcm:
-        data = pcm.read()
-    samples = array.array("f")
-    samples.frombytes(data[: len(data) // 4 * 4])
 
+    # 長い収録でもメモリに載せきらないよう、100msずつ読む
     buckets = {}
-    for offset in range(0, len(samples), BLOCK):
-        block = samples[offset : offset + BLOCK]
-        rms = math.sqrt(sum(value * value for value in block) / len(block))
-        dbfs = 20 * math.log10(rms) if rms > 0 else -120.0
-        key = int(wall_ms(anchors, starts, offset) // (bucket_seconds * 1000))
-        count, loudest = buckets.get(key, (0, -120.0))
-        buckets[key] = (count + len(block), max(loudest, dbfs))
+    offset = 0
+    with open(f"{directory}/{source}.pcm", "rb") as pcm:
+        while True:
+            data = pcm.read(BLOCK * 4)
+            if len(data) < 4:
+                break
+            block = array.array("f")
+            block.frombytes(data[: len(data) // 4 * 4])
+            rms = math.sqrt(sum(value * value for value in block) / len(block))
+            dbfs = 20 * math.log10(rms) if rms > 0 else -120.0
+            key = int(wall_ms(anchors, starts, offset) // (bucket_seconds * 1000))
+            count, loudest = buckets.get(key, (0, -120.0))
+            buckets[key] = (count + len(block), max(loudest, dbfs))
+            offset += len(block)
 
-    print(f"samples={len(samples)} ({len(samples) / SAMPLE_RATE:.1f}s) anchors={len(anchors)}")
+    print(f"samples={offset} ({offset / SAMPLE_RATE:.1f}s) anchors={len(anchors)}")
     for record in states:
-        print(f"state {clock(record['ms'])} sample={record['sample']} {record['state']} {record.get('reason', '')}")
+        print(f"state {clock(record['ms'])} sample={record['sample']} {record['state']} {record.get('reason') or ''}")
     for key in sorted(buckets):
         count, loudest = buckets[key]
         print(f"{clock(key * bucket_seconds * 1000)}  {count / SAMPLE_RATE:5.1f}s  max {loudest:7.1f} dBFS")
@@ -2614,7 +2975,14 @@ set -uo pipefail
 D="$1"
 BIN=.build/release/notetaked
 STATE="$HOME/Library/Application Support/Notetake/state"
-RAW="${TMPDIR%/}/notetake-capture/display-check-$(date +%Y%m%d%H%M%S)"
+RAW="${TMPDIR:-/tmp}"
+RAW="${RAW%/}/notetake-capture/display-check-$(date +%Y%m%d%H%M%S)"
+# appと同じ状態ファイルを使うため、appやほかのnotetakedが動いている時は始めない
+if pgrep -x Notetake > /dev/null || pgrep -f 'notetaked (serve|capture-daemon)' > /dev/null; then
+  echo "Notetake.appかnotetakedが動いています。止めてから実行してください" >&2
+  exit 1
+fi
+[ -x "$BIN" ] || { echo "$BINがありません。make daemonの後に実行してください" >&2; exit 1; }
 mkdir -p "$D" "$STATE"
 
 write_desired() {
@@ -2646,7 +3014,11 @@ write_desired '{"sources":[]}'
 sleep 2
 kill "$SPEAKER" 2>/dev/null
 kill -TERM "$DAEMON"
-wait "$DAEMON"
+for _ in $(seq 1 10); do
+  kill -0 "$DAEMON" 2>/dev/null || break
+  sleep 1
+done
+kill -9 "$DAEMON" 2>/dev/null
 echo "$RAW" > "$D/raw-dir"
 python3 .claude/skills/recordings/scripts/pcm-coverage.py "$RAW" system 10 > "$D/coverage.txt"
 echo "done" > "$D/finished"
@@ -2662,7 +3034,7 @@ Expected: どちらもerrorを出さない
 
 - [ ] **Step 2: 前提を揃える**
 
-- `pgrep -x Notetake`が何も返さない。動いていれば`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める（appのcapture-daemonと状態ファイルを取り合うため）
+- `pgrep -x Notetake`が何も返さない。動いていれば、止める前にuserへ「Notetake.appを止めます。収録中なら途中で終わります。よいですか?」と尋ね、了承を得てから`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める（appのcapture-daemonと状態ファイルを取り合うため）。動いていたことをledgerに残し、この確認が終わったらapp（`open /Applications/Notetake.app`）を起動し直す
 - `make daemon`が終わっている。署名が終わる前に起動しない
 
 - [ ] **Step 3: userに一声かける**
@@ -2705,7 +3077,7 @@ is. display-sleep-check.sh runs capture-daemon alone, plays speech as
 system audio and puts the display to sleep for 90 seconds, so the
 coverage shows whether system audio survives the display going off.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -2714,7 +3086,7 @@ MSG
 
 Task 6が判定Aなら、このtaskは行わない。ledgerに「Task 7は不要（消灯中も取り込める）」と書いて、Task 8へ進む。
 
-判定Bの時は、system音声に無音でない音（-70dBFSより大きい）が直近5分以内にあった間だけ、`PreventUserIdleDisplaySleep`のassertionを持つ。音が5分途切れたら、または収録が止まったら離し、OSの消灯とロックに戻す。常駐で長時間収録するため、収録中ずっと消灯を防ぐことはしない。assertionの種類はCの定数（`kIOPMAssertPreventUserIdleDisplaySleep`はCFSTRのmacroでSwiftから見えない）ではなく文字列`"PreventUserIdleDisplaySleep"`で渡す。
+判定Bの時は、system音声に無音でない音（-70dBFSより大きい）が直近5分以内にあった間だけ、`PreventUserIdleDisplaySleep`のassertionを持つ。音が5分途切れた時、収録が止まった時、または望む状態のsourcesからsystemが外れた時に離し、OSの消灯とロックに戻す。常駐で長時間収録するため、収録中ずっと消灯を防ぐことはしない。assertionを作れなかった時は、音のbufferのたびに作り直さず、10秒に1回までにする（失敗の記録も同じ頻度になる）。assertionの種類はCの定数（`kIOPMAssertPreventUserIdleDisplaySleep`はCFSTRのmacroでSwiftから見えない）ではなく文字列`"PreventUserIdleDisplaySleep"`で渡す。
 
 **Files:**
 - Create: `Sources/NotetakeCore/Capture/DisplaySleepPolicy.swift`、`Sources/notetaked/Capture/DisplaySleepGuard.swift`
@@ -2783,19 +3155,22 @@ import IOKit.pwr_mgt
 import NotetakeCore
 
 /// system音声に無音でない音が直近5分以内にあった間だけ、ディスプレイの消灯を防ぐ。
-/// 消灯中はScreenCaptureKitがsystem音声を取り込めないため。音が途切れて5分たつと離し、OSの消灯とロックへ戻す
+/// 消灯中はScreenCaptureKitがsystem音声を取り込めないため。音が5分途切れるか、system音声を使わなくなると離し、
+/// OSの消灯とロックへ戻す。assertionを作れなかった時は、10秒に1回までしか作り直さない
 final class DisplaySleepGuard: @unchecked Sendable {
     // @unchecked Sendable: 可変の状態はlockの内側でだけ読み書きする
     private let lock = NSLock()
     private var lastSoundAt: Date?
     private var assertionID: IOPMAssertionID?
+    private var lastFailedAttempt: ContinuousClock.Instant?
+    private let clock = ContinuousClock()
 
     func noteLevel(_ dbfs: Double, at time: Date) {
         guard DisplaySleepPolicy.isSound(dbfs) else { return }
         lock.withLock {
             lastSoundAt = time
-            if assertionID == nil {
-                assertionID = Self.createAssertion()
+            if assertionID == nil, canRetryCreation() {
+                assertionID = createAssertion()
             }
         }
     }
@@ -2821,15 +3196,22 @@ final class DisplaySleepGuard: @unchecked Sendable {
         self.assertionID = nil
     }
 
-    private static func createAssertion() -> IOPMAssertionID? {
+    private func canRetryCreation() -> Bool {
+        guard let lastFailedAttempt else { return true }
+        return clock.now - lastFailedAttempt >= .seconds(10)
+    }
+
+    private func createAssertion() -> IOPMAssertionID? {
         var id: IOPMAssertionID = 0
         let result = IOPMAssertionCreateWithName(
             "PreventUserIdleDisplaySleep" as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn),
             "Notetake: system音声を取り込んでいます" as CFString, &id)
         guard result == kIOReturnSuccess else {
+            lastFailedAttempt = clock.now
             FileHandle.standardError.write(Data("capture-daemon: 消灯を防げません: \(result)\n".utf8))
             return nil
         }
+        lastFailedAttempt = nil
         return id
     }
 }
@@ -2858,7 +3240,7 @@ final class DisplaySleepGuard: @unchecked Sendable {
     }
 ```
 
-`write(_:)`の最後（`pcm.write`の`do`/`catch`の後）に足す:
+`write(_:)`の`guard !samples.isEmpty else { return }`の次に足す:
 
 ```swift
         onLevel?(AudioLevel.dbfs(samples), chunk.receivedAt)
@@ -2902,6 +3284,13 @@ struct CaptureDaemon: AsyncParsableCommand {
         abstract: "Capture mic and system audio into the raw audio directory named by the desired state")
 
     func run() async throws {
+        // 2つのcapture-daemonが同じ生音声へ書かないよう、状態ディレクトリのlockを取れなければ終わる
+        let lockURL = CaptureStatePaths.stateDirectory().appendingPathComponent("capture-daemon.lock")
+        guard let instanceLock = try InstanceLock.acquire(at: lockURL) else {
+            Self.log("別のcapture-daemonが動いているため終了します")
+            throw ExitCode.failure
+        }
+        defer { withExtendedLifetime(instanceLock) {} }
         let displayGuard = DisplaySleepGuard()
         let controller = CaptureController(
             makeCapture: { source, pinnedInputUID -> any SourceCapture in
@@ -2916,42 +3305,54 @@ struct CaptureDaemon: AsyncParsableCommand {
                 }
             })
         let pid = getpid()
+        let parent = getppid()
 
         signal(SIGTERM, SIG_IGN)
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
         sigtermSource.setEventHandler {
-            Task {
-                await controller.stopAll()
-                displayGuard.release()
-                Self.writeActual(await controller.actualState(pid: pid, now: Date()))
-                Foundation.exit(0)
-            }
+            Task { await Self.shutdown(controller, displayGuard, pid: pid) }
         }
         sigtermSource.resume()
 
         var watcher = DesiredStateWatcher(url: CaptureStatePaths.captureDesiredURL)
-        var lastActualWrite = Date.distantPast
+        // 実状態の書き込みの間隔は、時計の巻き戻りに左右されない単調な時計で測る
+        let clock = ContinuousClock()
+        var lastActualWrite: ContinuousClock.Instant?
         while true {
+            // 起動したprocess（appかscript）が終わったら止める。動き続けると、次に起動したcapture-daemonと同じ生音声へ書くため
+            if getppid() != parent {
+                await Self.shutdown(controller, displayGuard, pid: pid)
+            }
             switch watcher.poll() {
             case .changed(let desired):
                 await controller.apply(desired)
-                if desired.recording == nil {
+                if desired.recording == nil || !desired.sources.contains(.system) {
                     displayGuard.release()
                 }
-                lastActualWrite = .distantPast
+                lastActualWrite = nil
             case .unreadable(let message):
                 Self.log("望む状態を読めないため、いまの取り込みを続けます: \(message)")
             case nil:
                 break
             }
             let now = Date()
-            if now.timeIntervalSince(lastActualWrite) >= 1 {
+            if lastActualWrite.map({ clock.now - $0 >= .seconds(1) }) ?? true {
                 displayGuard.refresh(now: now)
                 Self.writeActual(await controller.actualState(pid: pid, now: now))
-                lastActualWrite = now
+                lastActualWrite = clock.now
             }
             try await Task.sleep(for: .milliseconds(200))
         }
+    }
+
+    /// 取り込みを止め、消灯を防ぐassertionを離し、止まった実状態を書いて終える
+    private static func shutdown(
+        _ controller: CaptureController, _ displayGuard: DisplaySleepGuard, pid: Int32
+    ) async -> Never {
+        await controller.stopAll()
+        displayGuard.release()
+        writeActual(await controller.actualState(pid: pid, now: Date()))
+        Foundation.exit(0)
     }
 
     private static func writeActual(_ state: CaptureActualState) {
@@ -3027,7 +3428,7 @@ capture-daemon now holds a PreventUserIdleDisplaySleep assertion only
 while non-silent system audio arrived within the last five minutes, and
 releases it once the audio has been quiet that long or recording stops.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3042,7 +3443,7 @@ serveがライブの文字起こしで使う部品を作る。`.pcm`と`.meta.js
 
 **Files:**
 - Create: `Sources/NotetakeCore/Capture/RawAudioTail.swift`
-- Modify: `Sources/NotetakeCore/Transcribe/Transcriber.swift`（`cancel()`を足す）、`Sources/NotetakeCore/Reconcile/Reconciler.swift`（`restore`を足す）
+- Modify: `Sources/NotetakeCore/Transcribe/Transcriber.swift`（`cancel()`と`resultsError()`を足す）、`Sources/NotetakeCore/Reconcile/Reconciler.swift`（`restore`を足す）
 - Test: `Tests/NotetakeCoreTests/RawAudioTailTests.swift`、`Tests/NotetakeCoreTests/ReconcilerTests.swift`（1件足す）
 
 **Interfaces:**
@@ -3051,7 +3452,7 @@ serveがライブの文字起こしで使う部品を作る。`.pcm`と`.meta.js
   - `final class PCMTailReader`: `init(url:startSample:)`、`nextSample`、`readNew(maxSamples: Int = 160_000) throws -> [Float]`、`static sampleCount(of:) -> Int64`、`static samples(in: Range<Int64>, of: URL) throws -> [Float]`
   - `final class MetaTailReader`: `init(url:)`、`readNew() throws -> [CaptureMetaLine]`
   - `struct LivePieceLocator`: `init(firstSample:)`、`var timeline: CaptureTimeline`、`locate(startMS:endMS:) -> Location?`（`Location`は`samples: Range<Int64>`、`startMS`、`endMS`、`input: InputDevice?`）
-  - `Transcriber.cancel() async`
+  - `Transcriber.cancel() async`、`Transcriber.resultsError() -> Error?`（結果のsequenceが失敗で終わっていればその失敗）
   - `Reconciler.restore(from records: [Record], device: String) -> (reconciler: Reconciler, lastSeq: Int)`
 
 - [ ] **Step 1: 失敗するテストを書く**
@@ -3288,6 +3689,11 @@ public struct LivePieceLocator: Sendable {
 `Sources/NotetakeCore/Transcribe/Transcriber.swift`の`private static func makePiece(from result:`の前に足す:
 
 ```swift
+    /// 結果のsequenceが失敗で終わっていれば、その失敗
+    public func resultsError() -> Error? {
+        resultsLoopError
+    }
+
     /// 入力を閉じ、確定していない発話を待たずに終える。収録の停止と区切りで使う
     public func cancel() async {
         inputContinuation?.finish()
@@ -3340,18 +3746,20 @@ PCMTailReader and MetaTailReader follow the files capture-daemon keeps
 appending, leaving partial samples and lines for the next read.
 LivePieceLocator turns transcriber times, measured from the first fed
 sample, into sample ranges and wall-clock times through the anchors.
-Transcriber gains cancel() for stopping without waiting to finalize,
-and Reconciler.restore folds an existing timed.jsonl when serve resumes
+Transcriber gains cancel() for stopping without waiting to finalize
+and resultsError() for reporting a results sequence that failed, and Reconciler.restore folds an existing timed.jsonl when serve resumes
 a recording.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
 
 ### Task 9: ライブの文字起こし（LiveTranscription）
 
-sourceごとに1つ持ち、`<source>.pcm`の末尾を100msごとに読み、文字起こしの入力形式（この機械では16kHz monoのInt16）へ`AudioConverter`で変換して渡す。sample rateは同じなのでresampleは起きない。発話の時刻はanchorから、入力機器はdevice行から、音量は発話の範囲のsampleから求める。systemの入力機器は`InputDevice.system`、micでdevice行がまだ無い時は`InputDeviceProbe.current()`にする。
+sourceごとに1つ持ち、`<source>.pcm`の末尾を100msごとに読み、文字起こしの入力形式（この機械では16kHz monoのInt16）へ`AudioConverter`で変換して渡す。sample rateは同じなのでresampleは起きない。発話の時刻はanchorから、入力機器はdevice行から、音量は発話の範囲のsampleから求める。systemの入力機器は`InputDevice.system`、micでdevice行がまだ無い時は`InputDeviceProbe.current()`にする。文字起こしの入力のsample rateが16kHzでなければ、発話の時刻とsampleの対応が崩れるため`init`で投げる。
+
+失敗は握りつぶさない。生音声を読めない、時刻の記録（meta）を読めない、変換できない、はそれぞれ`log`で1度だけ伝える。metaを読めなくても読んだsampleは文字起こしへ渡し、変換できなくても渡せなかった分のframe数を進めて、以後の発話の時刻とsampleの対応を保つ。文字起こしの結果のsequenceが、`stop()`でないのに失敗で終わったら、以後の発話が出ないため`error`で伝える。
 
 文字起こしは、発話の後に音声が続かないと発話を確定させない。収録中はmicの無音が流れ続けるため確定するが、テストでは無音を書き足し続けて確定させる。テストは`say -v Kyoko`で音声を作り、ja-JPの音声資産を使う（開発機には入っている）。1件に10秒ほどかかる。
 
@@ -3360,8 +3768,8 @@ sourceごとに1つ持ち、`<source>.pcm`の末尾を100msごとに読み、文
 - Test: `Tests/notetakedTests/LiveTranscriptionTests.swift`
 
 **Interfaces:**
-- Consumes: `PCMTailReader`、`MetaTailReader`、`LivePieceLocator`、`Transcriber.cancel()`（Task 8）、`CaptureSessionPaths.pcmURL/metaURL`（Task 2）、`AudioConverter`、`AudioLevel`、`InputDeviceProbe`（既存）、`MonoResampler`・`CapturedChunk`（Task 4、テストだけ）
-- Produces: `actor LiveTranscription`: `init(source: Source, sessionDirectory: URL, locale: Locale, startAtEnd: Bool) async throws`、`start() async throws -> AsyncStream<Output>`、`stop() async`。`enum Output { case volatile(String); case final(Piece); case log(String) }`、`struct Piece { text, startMS, endMS, confidence: Double?, levelDBFS: Double, input: InputDevice }`
+- Consumes: `PCMTailReader`、`MetaTailReader`、`LivePieceLocator`、`Transcriber.cancel()`・`Transcriber.resultsError()`（Task 8）、`CaptureSessionPaths.pcmURL/metaURL`（Task 2）、`AudioConverter`、`AudioLevel`、`InputDeviceProbe`（既存）、`MonoResampler`・`CapturedChunk`（Task 4、テストだけ）
+- Produces: `actor LiveTranscription`: `init(source: Source, sessionDirectory: URL, locale: Locale, startAtEnd: Bool) async throws`、`start() async throws -> AsyncStream<Output>`、`stop() async`。`enum Output { case volatile(String); case final(Piece); case log(String); case error(String) }`、`static func validateInputSampleRate(_:) throws`（16kHzでなければ`SetupError.unsupportedSampleRate`）、`struct Piece { text, startMS, endMS, confidence: Double?, levelDBFS: Double, input: InputDevice }`
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -3381,6 +3789,10 @@ private final class OutputCollector: @unchecked Sendable {
 
     func append(_ output: LiveTranscription.Output) {
         lock.withLock { outputs.append(output) }
+    }
+
+    var errors: [String] {
+        lock.withLock { outputs.compactMap { if case .error(let message) = $0 { message } else { nil } } }
     }
 
     var finals: [LiveTranscription.Piece] {
@@ -3454,12 +3866,24 @@ private func appendSilence(to url: URL, samples: Int) throws {
     let live = try await LiveTranscription(
         source: .mic, sessionDirectory: directory, locale: Locale(identifier: "ja-JP"), startAtEnd: false)
     let outputs = try await live.start()
+    let collector = OutputCollector()
     let consumer = Task {
-        for await _ in outputs {}
+        for await output in outputs {
+            collector.append(output)
+        }
     }
     try await Task.sleep(for: .milliseconds(300))
     await live.stop()
     await consumer.value
+    // 自分で止めた時は、文字起こしが止まった失敗として伝えない
+    #expect(collector.errors.isEmpty)
+}
+
+@Test func liveTranscriptionRejectsAnInputThatIsNotSixteenKilohertz() throws {
+    try LiveTranscription.validateInputSampleRate(16_000)
+    #expect(throws: LiveTranscription.SetupError.unsupportedSampleRate(48_000)) {
+        try LiveTranscription.validateInputSampleRate(48_000)
+    }
 }
 ```
 
@@ -3493,6 +3917,18 @@ actor LiveTranscription {
         case volatile(String)
         case final(Piece)
         case log(String)
+        /// 文字起こしが途中で止まるなど、以後の発話が出なくなる失敗
+        case error(String)
+    }
+
+    enum SetupError: Error, Equatable {
+        /// 生音声は16kHzで、文字起こしの入力とsample数が一致する前提で時刻を求めている
+        case unsupportedSampleRate(Double)
+    }
+
+    /// 文字起こしの入力が生音声と同じsample rateか確かめる。違えば時刻の対応が崩れる
+    static func validateInputSampleRate(_ rate: Double) throws {
+        guard rate == Double(CapturePCM.sampleRate) else { throw SetupError.unsupportedSampleRate(rate) }
     }
 
     private static let pollInterval: Duration = .milliseconds(100)
@@ -3510,6 +3946,7 @@ actor LiveTranscription {
     private var forwardTask: Task<Void, Never>?
     private var continuation: AsyncStream<Output>.Continuation?
     private var lastReportedError: String?
+    private var stopping = false
 
     /// `startAtEnd`がtrueなら、生音声の現在の末尾から読む（serveが収録を途中から引き継ぐ時）
     init(source: Source, sessionDirectory: URL, locale: Locale, startAtEnd: Bool) async throws {
@@ -3521,6 +3958,7 @@ actor LiveTranscription {
         locator = LivePieceLocator(firstSample: firstSample)
         // 時刻の原点を1970年にすると、発話の時刻は文字起こしへ渡した最初のsampleからのmsになる
         transcriber = try await Transcriber(locale: locale, origin: Date(timeIntervalSince1970: 0))
+        try Self.validateInputSampleRate(transcriber.inputFormat.sampleRate)
         guard
             let sourceFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: Double(CapturePCM.sampleRate), channels: 1,
@@ -3540,6 +3978,7 @@ actor LiveTranscription {
             for await piece in pieces {
                 self.accept(piece)
             }
+            await self.reportResultsEnd()
         }
         pollTask = Task {
             while !Task.isCancelled {
@@ -3552,6 +3991,7 @@ actor LiveTranscription {
 
     /// 文字起こしを打ち切る。最後の数秒の発話は出ないことがある
     func stop() async {
+        stopping = true
         pollTask?.cancel()
         await pollTask?.value
         await transcriber.cancel()
@@ -3560,20 +4000,40 @@ actor LiveTranscription {
     }
 
     private func pollOnce() async {
+        let samples: [Float]
         do {
-            // 書き手はsampleより先にそのanchorを書くため、sampleを読んだ後にmetaを読めば時刻が揃う
-            let samples = try pcm.readNew()
+            samples = try pcm.readNew()
+        } catch {
+            report("ライブの文字起こしで生音声を読めません: \(error)")
+            return
+        }
+        // 書き手はsampleより先にそのanchorを書くため、sampleを読んだ後にmetaを読めば時刻が揃う。
+        // metaを読めなくても、読んだsampleは文字起こしへ渡す
+        do {
             for line in try meta.readNew() {
                 locator.timeline.apply(line)
             }
-            guard !samples.isEmpty else { return }
+        } catch {
+            report("ライブの文字起こしで時刻の記録を読めません: \(error)")
+        }
+        guard !samples.isEmpty else { return }
+        do {
             let converted = try converter.convert(try makeBuffer(samples))
             let frames = AVAudioFramePosition(converted.frameLength)
             await transcriber.feed(converted, at: fedFrames)
             fedFrames += frames
         } catch {
-            report("ライブの文字起こしで生音声を読めません: \(error)")
+            // 渡せなかった分も数え、以後の発話の時刻とsampleの対応を保つ（入力は生音声と同じsample rate）
+            fedFrames += AVAudioFramePosition(samples.count)
+            report("ライブの文字起こしへ生音声を渡せません: \(error)")
         }
+    }
+
+    /// 結果が打ち切りでなく終わったら、以後の発話が出ないため失敗として伝える
+    private func reportResultsEnd() async {
+        guard !stopping else { return }
+        let reason = await transcriber.resultsError().map { "\($0)" } ?? "結果が途中で終わりました"
+        continuation?.yield(.error("\(source.rawValue)のライブの文字起こしが止まりました: \(reason)"))
     }
 
     private func accept(_ piece: TranscriptPiece) {
@@ -3628,7 +4088,7 @@ actor LiveTranscription {
 - [ ] **Step 4: 通ることを確かめる**
 
 Run: `swift test --filter liveTranscription`
-Expected: PASS（2件）。`liveTranscriptionGivesWallClockTimesToPieces`の発話の開始は、anchorから約1秒（先頭の無音の長さ）の位置になる
+Expected: PASS（3件）。`liveTranscriptionGivesWallClockTimesToPieces`の発話の開始は、anchorから約1秒（先頭の無音の長さ）の位置になる
 
 - [ ] **Step 5: 検証ゲート**
 
@@ -3649,14 +4109,14 @@ from the piece's own samples. Stopping cancels the analyzer instead of
 waiting to finalize, since the batch pass will write the finished
 transcript.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
 
 ### Task 10: 取り込みの状態の変化をappへ伝える部品
 
-serveは実状態のファイルを1秒ごとに読み、前回から変わった時だけappへ伝える。sourceの状態（取り込み中、再開待ちと理由、停止）が変わったら`status` event、固定した機器から既定の入力へ戻ったら`input_reset` eventを1回、新しい書き込みの失敗は`error` eventを1回ずつ送る。実状態が5秒更新されなければ、capture-daemonが動いていないとみなし、各sourceを「再開待ち（capture-daemonが応答していません）」にする。区切りの直後は、capture-daemonがまだ前の収録を書いているため、別のprefixの実状態は無視する。
+serveは実状態のファイルを1秒ごとに読み、前回から変わった時だけappへ伝える。sourceの状態（取り込み中、再開待ちと理由、停止）が変わったら`status` event、固定した機器から既定の入力へ戻ったら`input_reset` eventを1回、新しい書き込みの失敗は`error` eventを1回ずつ送る。実状態が5秒更新されなければ、capture-daemonが動いていないとみなし、各sourceを「再開待ち（capture-daemonが応答していません）」にする。区切りの直後は、capture-daemonがまだ前の収録を書いているため、別のprefixの実状態は、5秒までは無視する。5秒たっても切り替わらなければ、各sourceを「再開待ち（capture-daemonが新しい収録へ切り替えていません）」にする。見張りはserveの寿命で1つ持ち、新しい収録を始めるたびに`beginRecording(keepingSnapshot:)`で失敗の記憶と食い違いの計時を消す（入力機器の固定が外れたかは収録をまたいで残るため、`input_reset`は区切りのたびには送り直さない。区切りでは前のsnapshotも残す）。
 
 **Files:**
 - Create: `Sources/NotetakeCore/Control/CaptureStatus.swift`
@@ -3668,7 +4128,7 @@ serveは実状態のファイルを1秒ごとに読み、前回から変わっ�
 - Produces:
   - `struct CaptureStatus: Codable { var source: Source; var state: CaptureSourceState; var reason: String? }`
   - `StatusEvent.capture: [CaptureStatus]?`（JSONのkey`capture`。nilなら出さない）と、`init`の最後の引数`capture: [CaptureStatus]? = nil`
-  - `struct CaptureActualWatcher`: `mutating observe(_ actual: CaptureActualState?, prefix: String, sources: [Source], nowMS: Int64) -> Changes`。`Changes`は`snapshot: Snapshot?`（`statuses: [CaptureStatus]`、`micInput: InputDevice?`）、`inputReset: Bool`、`errors: [String]`。`static unresponsiveReason`
+  - `struct CaptureActualWatcher`: `mutating beginRecording(keepingSnapshot: Bool)`、`mutating observe(_ actual: CaptureActualState?, prefix: String, sources: [Source], nowMS: Int64) -> Changes`。`Changes`は`snapshot: Snapshot?`（`statuses: [CaptureStatus]`、`micInput: InputDevice?`）、`inputReset: Bool`、`errors: [String]`。`static unresponsiveReason`、`static notSwitchedReason`、`static switchTimeoutMS`
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -3734,6 +4194,74 @@ private func actual(
     let other = actual(prefix: "old", mic: .init(source: .mic, state: .recording))
     #expect(watcher.observe(other, prefix: "new", sources: [.mic], nowMS: 10_000) == CaptureActualWatcher.Changes())
 }
+
+@Test func beginRecordingKeepsTheFallbackSoItIsNotSentAgain() {
+    var watcher = CaptureActualWatcher()
+    let fellBack = actual(mic: .init(source: .mic, state: .recording, fellBackFromPinned: true))
+    #expect(watcher.observe(fellBack, prefix: "p", sources: [.mic], nowMS: 10_000).inputReset)
+
+    watcher.beginRecording(keepingSnapshot: true)
+
+    let next = actual(prefix: "q", mic: .init(source: .mic, state: .recording, fellBackFromPinned: true))
+    #expect(watcher.observe(next, prefix: "q", sources: [.mic], nowMS: 10_500).inputReset == false)
+}
+
+@Test func beginRecordingForgetsReportedErrors() {
+    var watcher = CaptureActualWatcher()
+    let failing = actual(mic: .init(source: .mic, state: .recording, lastError: "生音声を書けません"))
+    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_000).errors == ["mic: 生音声を書けません"])
+
+    watcher.beginRecording(keepingSnapshot: true)
+
+    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_500).errors == ["mic: 生音声を書けません"])
+}
+
+@Test func beginRecordingDecidesWhetherTheFirstSnapshotIsSentAgain() {
+    var watcher = CaptureActualWatcher()
+    let recording = actual(mic: .init(source: .mic, state: .recording))
+    _ = watcher.observe(recording, prefix: "p", sources: [.mic], nowMS: 10_000)
+
+    watcher.beginRecording(keepingSnapshot: true)
+    #expect(watcher.observe(recording, prefix: "p", sources: [.mic], nowMS: 10_500).snapshot == nil)
+
+    watcher.beginRecording(keepingSnapshot: false)
+    #expect(watcher.observe(recording, prefix: "p", sources: [.mic], nowMS: 11_000).snapshot != nil)
+}
+
+@Test func actualWatcherReportsADaemonThatDoesNotSwitchToTheNewRecording() {
+    var watcher = CaptureActualWatcher()
+    let old = actual(prefix: "old", updated: 10_000, mic: .init(source: .mic, state: .recording))
+    let fresh = { (updated: Int64) in
+        actual(prefix: "old", updated: updated, mic: .init(source: .mic, state: .recording))
+    }
+    #expect(watcher.observe(old, prefix: "new", sources: [.mic], nowMS: 10_000).snapshot == nil)
+    #expect(watcher.observe(fresh(13_000), prefix: "new", sources: [.mic], nowMS: 13_000).snapshot == nil)
+
+    let stuck = watcher.observe(fresh(15_000), prefix: "new", sources: [.mic], nowMS: 15_000)
+    #expect(stuck.snapshot?.statuses == [
+        CaptureStatus(source: .mic, state: .retrying, reason: CaptureActualWatcher.notSwitchedReason)
+    ])
+    #expect(watcher.observe(fresh(16_000), prefix: "new", sources: [.mic], nowMS: 16_000).snapshot == nil)
+
+    let switched = actual(prefix: "new", updated: 17_000, mic: .init(source: .mic, state: .recording))
+    #expect(watcher.observe(switched, prefix: "new", sources: [.mic], nowMS: 17_000).snapshot?.statuses == [
+        CaptureStatus(source: .mic, state: .recording)
+    ])
+}
+
+@Test func actualWatcherRestartsTheSwitchTimerForEachRecording() {
+    var watcher = CaptureActualWatcher()
+    let old = { (updated: Int64) in
+        actual(prefix: "old", updated: updated, mic: .init(source: .mic, state: .recording))
+    }
+    _ = watcher.observe(old(10_000), prefix: "new", sources: [.mic], nowMS: 10_000)
+
+    watcher.beginRecording(keepingSnapshot: true)
+
+    #expect(watcher.observe(old(14_000), prefix: "newer", sources: [.mic], nowMS: 14_000).snapshot == nil)
+    #expect(watcher.observe(old(18_000), prefix: "newer", sources: [.mic], nowMS: 18_000).snapshot == nil)
+    #expect(watcher.observe(old(19_000), prefix: "newer", sources: [.mic], nowMS: 19_000).snapshot != nil)
+}
 ```
 
 `Tests/NotetakeCoreTests/MessagesTests.swift`の末尾に足す:
@@ -3786,6 +4314,9 @@ public struct CaptureActualWatcher: Sendable {
     /// capture-daemonは1秒ごとに書くため、これより古い実状態はcapture-daemonが動いていないと見なす
     public static let staleAfterMS: Int64 = 5_000
     public static let unresponsiveReason = "capture-daemonが応答していません"
+    /// 実状態のprefixが収録中の収録に切り替わらないまま、この時間が過ぎたら切り替わっていないと見なす
+    public static let switchTimeoutMS: Int64 = 5_000
+    public static let notSwitchedReason = "capture-daemonが新しい収録へ切り替えていません"
 
     public struct Snapshot: Equatable, Sendable {
         public var statuses: [CaptureStatus]
@@ -3804,17 +4335,43 @@ public struct CaptureActualWatcher: Sendable {
     private var last: Snapshot?
     private var fellBack = false
     private var reportedErrors: [Source: String] = [:]
+    /// 実状態のprefixが収録中の収録と食い違い始めた時刻
+    private var mismatchSince: Int64?
 
     public init() {}
 
-    /// `prefix`は収録中の収録。別の収録を書いている実状態は、切り替えの途中なので無視する
+    /// 新しい収録を始める。失敗の記憶と食い違いの計時は消す。入力機器の固定が外れたかは収録をまたいで続くため残す。
+    /// `keepingSnapshot`がtrueなら（区切り）前回のsnapshotを残し、同じ表示を重ねて伝えない。
+    /// falseなら（開始と引き継ぎ）最初の実状態を必ず伝える
+    public mutating func beginRecording(keepingSnapshot: Bool) {
+        reportedErrors = [:]
+        mismatchSince = nil
+        if !keepingSnapshot {
+            last = nil
+        }
+    }
+
+    /// `prefix`は収録中の収録。別の収録を書いている実状態は、切り替えの途中なので`switchTimeoutMS`の間は無視する。
+    /// それを過ぎても切り替わらなければ、各sourceを「再開待ち」にする
     public mutating func observe(
         _ actual: CaptureActualState?, prefix: String, sources: [Source], nowMS: Int64
     ) -> Changes {
         var changes = Changes()
         let snapshot: Snapshot
         if let actual, nowMS - actual.updated <= Self.staleAfterMS {
-            guard actual.prefix == prefix else { return changes }
+            if actual.prefix != prefix {
+                // 区切りの直後は、capture-daemonが書き込み先を切り替えるまでの間だけ食い違う
+                let since = mismatchSince ?? nowMS
+                mismatchSince = since
+                guard nowMS - since >= Self.switchTimeoutMS else { return changes }
+                return onlyChanges(
+                    replacing: Snapshot(
+                        statuses: sources.map {
+                            CaptureStatus(source: $0, state: .retrying, reason: Self.notSwitchedReason)
+                        },
+                        micInput: last?.micInput))
+            }
+            mismatchSince = nil
             let mic = actual.sources.first { $0.source == .mic }
             snapshot = Snapshot(
                 statuses: sources.map { source in
@@ -3831,12 +4388,22 @@ public struct CaptureActualWatcher: Sendable {
                 changes.errors.append("\(status.source.rawValue): \(error)")
             }
         } else {
+            mismatchSince = nil
             snapshot = Snapshot(
                 statuses: sources.map {
                     CaptureStatus(source: $0, state: .retrying, reason: Self.unresponsiveReason)
                 },
                 micInput: last?.micInput)
         }
+        if snapshot != last {
+            changes.snapshot = snapshot
+            last = snapshot
+        }
+        return changes
+    }
+
+    private mutating func onlyChanges(replacing snapshot: Snapshot) -> Changes {
+        var changes = Changes()
         if snapshot != last {
             changes.snapshot = snapshot
             last = snapshot
@@ -3904,7 +4471,7 @@ changed states, a single input_reset when the pinned mic falls back, new
 write errors once each, and an unresponsive capture-daemon when the file
 stops updating for five seconds.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3913,11 +4480,11 @@ MSG
 
 `ServeSession`の収録の部分を置き換える。peerの部分（`// MARK: - peer: pairing / listener lifecycle`以降）は、過去の収録へ追記した時の`final.md`の作り方の2行だけを変える。
 
-- **開始**: 出力ファイルへ収録とMacの記録を書き、生音声ディレクトリへ`session.json`を書き、望む状態を書いてから、sourceごとに`LiveTranscription`を始める。どこかで失敗したら、望む状態を停止へ戻す
+- **開始**: 出力ファイルへ収録とMacの記録を書き、生音声ディレクトリへ`session.json`を書き、望む状態を書いてから、sourceごとに`LiveTranscription`を始める。全sourceの文字起こしを始め、状態（保存先、Reconciler、seq）を整えた後で、結果の受け取りを始める（先に受け取ると、確定した発話を保存先が無いまま落とす）。どこかで失敗したら、望む状態を停止へ戻す。停止へ戻す書き込みに失敗したら、書けるまで実状態を読む1秒ごとの繰り返しで書き直す
 - **停止**: ライブの文字起こしを打ち切り、ここまでの発話で`final.md`を書いて閉じ、望む状態を停止にする
-- **区切り**: 停止と同じく前の収録を閉じ、新しい収録を始める。望む状態のprefixだけが変わるため、capture-daemonは取り込みを止めずに書き込み先を切り替える
-- **引き継ぎ**: 起動時に望む状態のファイルが収録中を示していれば、その収録の`timed.jsonl`を`Reconciler.restore`で畳み込み、`.pcm`の現在の末尾から文字起こしを始める。`log` eventで`resumed <prefix>`を出す。`timed.jsonl`が読めなければ、望む状態を停止にする。再開マーカー（`current-session.json`）は使わない
-- **実状態**: 最初の収録で、実状態を1秒ごとに読む繰り返しを始め、`CaptureActualWatcher`の結果を`status`・`input_reset`・`error` eventで送る。`status`の`input_name`と`input_spatial`は、実状態が伝えるmicの入力機器にする
+- **区切り**: 停止と同じく前の収録を閉じ、新しい収録を始める。望む状態のprefixだけが変わるため、capture-daemonは取り込みを止めずに書き込み先を切り替える。取り込みの状態と入力機器は引き継ぎ、停止と開始の時だけ消す
+- **引き継ぎ**: 起動時に望む状態のファイルが収録中を示していれば、その収録の`timed.jsonl`を`Reconciler.restore`で畳み込み、`.pcm`の現在の末尾から文字起こしを始める。`log` eventで`resumed <prefix>`を出す。`timed.jsonl`は壊れたbyteがあっても読める行で引き継ぎ、読めなければ望む状態を停止にする。生音声のディレクトリに`session.json`が無ければ書き直す。再開マーカー（`current-session.json`）は使わない
+- **実状態**: 最初の収録で、実状態を1秒ごとに読む繰り返しを始め、`CaptureActualWatcher`の結果を`status`・`input_reset`・`error` eventで送る。`status`の`input_name`と`input_spatial`は、実状態が伝えるmicの入力機器にする。実状態を解釈できない時は、capture-daemonが応答していない時と同じに扱い、原因を`log` eventで1度だけ出す。文字起こしが途中で止まったら`error` eventで伝える
 - 収録中の話者分離（`Diarizer`、`SpeakerRegistry`、`ProfileNameAnnouncer`、大域の話者profile）と、checkpoint、命令とeventのファイルを使わなくなる。`rename_speaker`は記録を足して表示を変えるだけにする（段階2で収録ごとの命名に作り直す）
 - `ServeCommand`から`--diarize`と話者分離のmodelの準備を外す（appはこの引数を渡していない）。起動の終わりに`log` eventで`serve ready`を出す。appの起動確認（`launch.sh`）がこれを待つ
 
@@ -3927,11 +4494,11 @@ MSG
 - Modify: `Sources/notetaked/Pipeline/ServeSession.swift`、`Sources/NotetakeCore/Session/SessionStore.swift`
 - Replace: `Sources/notetaked/Commands/ServeCommand.swift`
 - Create: `.claude/skills/daemon-realtest/scripts/cli-cycle.sh`、`.claude/skills/daemon-realtest/scripts/cli-cycle-report.py`
-- Test: `Tests/NotetakeCoreTests/SessionStoreTests.swift`（1件足す）
+- Test: `Tests/NotetakeCoreTests/SessionStoreTests.swift`（3件足す）
 
 **Interfaces:**
 - Consumes: `LiveTranscription`（Task 9）、`CaptureActualWatcher`・`CaptureStatus`・`StatusEvent.capture`（Task 10）、`Reconciler.restore`（Task 8）、`CaptureDesiredState`・`CaptureActualState`（Task 3）、`CaptureSessionInfo`・`CaptureSessionPaths.sessionInfoURL`（Task 2）、`JSONFile`（Task 1）
-- Produces: `SessionStore.init(directory: URL, prefix: String)`。`ServeSession.init(outputDirectory:owner:sourceOption:locale:control:device:inputDeviceUID:)`、`ServeSession.resumeIfRecording() async`
+- Produces: `SessionStore.init(directory: URL, prefix: String)`（追記の前に、改行で終わっていない最後の行を改行で閉じる）。`ServeSession.init(outputDirectory:owner:sourceOption:locale:control:device:inputDeviceUID:)`、`ServeSession.resumeIfRecording() async`
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -3946,6 +4513,36 @@ MSG
 
     #expect(store.prefix == "2026-10-03_100000")
     #expect(store.timedURL.lastPathComponent == "2026-10-03_100000.timed.jsonl")
+}
+
+@Test func appendClosesALastLineThatDoesNotEndWithNewline() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SessionStore(directory: dir, prefix: "2026-10-03_100000")
+    try Data(#"{"type":"session","id":"s"#.utf8).write(to: store.timedURL)
+
+    try await store.append(.session(SessionRecord(id: "s1", started: 0, owner: "bash")))
+    await store.close()
+
+    let lines = try String(contentsOf: store.timedURL, encoding: .utf8)
+        .split(separator: "\n", omittingEmptySubsequences: true)
+    #expect(lines.count == 2)
+    #expect(NDJSON.decodeAll(try String(contentsOf: store.timedURL, encoding: .utf8)).count == 1)
+}
+
+@Test func appendKeepsALastLineThatEndsWithNewline() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SessionStore(directory: dir, prefix: "2026-10-03_100000")
+
+    try await store.append(.session(SessionRecord(id: "s1", started: 0, owner: "bash")))
+    await store.close()
+    try await store.append(.session(SessionRecord(id: "s2", started: 1, owner: "bash")))
+    await store.close()
+
+    let text = try String(contentsOf: store.timedURL, encoding: .utf8)
+    #expect(text.split(separator: "\n", omittingEmptySubsequences: false).count == 3)
+    #expect(NDJSON.decodeAll(text).count == 2)
 }
 ```
 
@@ -3969,6 +4566,32 @@ Expected: buildが`extra argument 'prefix' in call`などで失敗する
 
     public init(directory: URL, start: Date, timeZone: TimeZone = .current) {
         self.init(directory: directory, prefix: SessionStore.prefix(for: start, timeZone: timeZone))
+    }
+```
+
+同じファイルの`openHandle`で、開くハンドルを`FileHandle(forUpdating:)`にし、末尾へ移動する代わりに、改行で終わっていない最後の行を閉じる関数を呼ぶ。`seekToEnd()`の行を置き換える:
+
+```swift
+        let handle = try FileHandle(forUpdating: url)
+        try closeUnterminatedLastLine(of: handle)
+        cached = handle
+        return handle
+```
+
+`openHandle`の前に足す:
+
+```swift
+    /// 書き手が落ちて改行で終わっていない最後の行は、その行だけが壊れた行になるよう改行で閉じてから追記する。
+    /// 末尾へ移動して返す
+    private func closeUnterminatedLastLine(of handle: FileHandle) throws {
+        let end = try handle.seekToEnd()
+        guard end > 0 else { return }
+        try handle.seek(toOffset: end - 1)
+        let last = try handle.read(upToCount: 1)
+        try handle.seekToEnd()
+        if last != Data([0x0A]) {
+            try handle.write(contentsOf: Data([0x0A]))
+        }
     }
 ```
 
@@ -4006,6 +4629,14 @@ actor ServeSession {
         let consumer: Task<Void, Never>
     }
 
+    /// 状態を整える前の、始めたばかりのライブの文字起こし
+    private struct StartedTranscription {
+        let source: Source
+        let owner: String
+        let transcription: LiveTranscription
+        let outputs: AsyncStream<LiveTranscription.Output>
+    }
+
     /// peer接続1本ぶんの状態（hello情報・clock offset・ping往復管理）
     private struct PeerState {
         var hello: HelloMessage?
@@ -4032,7 +4663,12 @@ actor ServeSession {
     private var recording = false
     /// 直前に使ったprefix。同じ秒の中で開始と区切りが重なってもprefixが衝突しないよう、開始時刻をずらすのに使う
     private var lastPrefix: String?
+    /// serveの寿命で1つ。収録ごとの記憶は`beginRecording`で消す
     private var captureWatcher = CaptureActualWatcher()
+    /// 望む状態を停止へ書けなかった。書けるまで1秒ごとに書き直す
+    private var desiredStopPending = false
+    /// 直前に読めなかった実状態の失敗。同じ失敗はlogへ1度だけ出す
+    private var lastActualReadError: String?
     private var captureStatuses: [CaptureStatus] = []
     /// capture-daemonが実状態で伝えるmicの入力機器
     private var micInput: InputDevice?
@@ -4080,7 +4716,9 @@ actor ServeSession {
         let store = SessionStore(directory: outputDirectory, prefix: recording.prefix)
         let text: String
         do {
-            text = try String(contentsOf: store.timedURL, encoding: .utf8)
+            // 電源断などで壊れたbyteがあっても、読める行で引き継ぐ
+            text = String(decoding: try Data(contentsOf: store.timedURL), as: UTF8.self)
+            try restoreSessionInfoIfMissing(sessionDirectory: URL(fileURLWithPath: recording.directory))
         } catch {
             await control.send(.error("failed to resume \(recording.prefix): \(error)"))
             await writeDesiredStopped()
@@ -4090,13 +4728,24 @@ actor ServeSession {
         guard
             await beginLive(
                 store: store, sessionDirectory: URL(fileURLWithPath: recording.directory), startAtEnd: true,
-                reconciler: restored.reconciler, seq: restored.lastSeq)
+                keepingCapture: false, reconciler: restored.reconciler, seq: restored.lastSeq)
         else {
             await writeDesiredStopped()
             return
         }
         await control.send(.status(statusEvent()))
         await control.send(.log("resumed \(recording.prefix)"))
+    }
+
+    /// 再起動の前に生音声のディレクトリが消えていても、段階2が出力先を辿れるよう`session.json`を書き直す
+    private func restoreSessionInfoIfMissing(sessionDirectory: URL) throws {
+        let url = CaptureSessionPaths.sessionInfoURL(sessionDirectory: sessionDirectory)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        try JSONFile.write(
+            CaptureSessionInfo(
+                outputDirectory: outputDirectory.path, device: device.id, deviceName: device.name, owner: owner),
+            to: url)
     }
 
     func handle(_ command: Command) async {
@@ -4123,14 +4772,15 @@ actor ServeSession {
             await control.send(.error("already recording"))
             return
         }
-        if await startNewRecording() {
+        if await startNewRecording(keepingCapture: false) {
             await control.send(.status(statusEvent()))
         }
     }
 
     /// 新しい収録を始める。出力ファイルへ収録とMacの記録を書き、生音声ディレクトリへ`session.json`を書いてから、
     /// 望む状態でcapture-daemonへ書き込み先を伝え、ライブの文字起こしを始める
-    private func startNewRecording() async -> Bool {
+    /// `keepingCapture`は区切りの時だけtrue。取り込みの状態と入力機器を引き継ぎ、表示が途切れないようにする
+    private func startNewRecording(keepingCapture: Bool) async -> Bool {
         var date = Date()
         while SessionStore.prefix(for: date, timeZone: .current) == lastPrefix {
             date.addTimeInterval(1)
@@ -4149,6 +4799,8 @@ actor ServeSession {
                     outputDirectory: outputDirectory.path, device: device.id, deviceName: device.name,
                     owner: owner),
                 to: CaptureSessionPaths.sessionInfoURL(sessionDirectory: sessionDirectory))
+            // 停止の書き直しが、ここで書く収録中を上書きしないよう、書く直前に取り下げる
+            desiredStopPending = false
             try JSONFile.write(
                 desiredState(.init(prefix: store.prefix, directory: sessionDirectory.path)),
                 to: CaptureStatePaths.captureDesiredURL)
@@ -4160,8 +4812,8 @@ actor ServeSession {
         }
         guard
             await beginLive(
-                store: store, sessionDirectory: sessionDirectory, startAtEnd: false, reconciler: Reconciler(),
-                seq: 0)
+                store: store, sessionDirectory: sessionDirectory, startAtEnd: false, keepingCapture: keepingCapture,
+                reconciler: Reconciler(), seq: 0)
         else {
             await writeDesiredStopped()
             return false
@@ -4169,27 +4821,25 @@ actor ServeSession {
         return true
     }
 
-    /// sourceごとにライブの文字起こしを始め、収録中の状態へ移る。失敗したら始めた分を止めて`false`を返す
+    /// sourceごとにライブの文字起こしを始め、収録中の状態へ移る。失敗したら始めた分を止めて`false`を返す。
+    /// 先に全sourceの文字起こしを始め、状態を整えてから結果の受け取りを始める。
+    /// 受け取りが先に動くと、確定した発話を保存先が無いまま落とす
     private func beginLive(
-        store: SessionStore, sessionDirectory: URL, startAtEnd: Bool, reconciler: Reconciler, seq: Int
+        store: SessionStore, sessionDirectory: URL, startAtEnd: Bool, keepingCapture: Bool, reconciler: Reconciler,
+        seq: Int
     ) async -> Bool {
-        var started: [LiveStream] = []
+        var started: [StartedTranscription] = []
         for (source, ownerFor) in sourceOption.sources {
             do {
                 let transcription = try await LiveTranscription(
                     source: source, sessionDirectory: sessionDirectory, locale: locale, startAtEnd: startAtEnd)
                 let outputs = try await transcription.start()
-                let streamOwner = ownerFor(owner)
-                let consumer = Task { [weak self] in
-                    for await output in outputs {
-                        await self?.handle(output, source: source, owner: streamOwner)
-                    }
-                }
-                started.append(LiveStream(source: source, transcription: transcription, consumer: consumer))
+                started.append(
+                    StartedTranscription(
+                        source: source, owner: ownerFor(owner), transcription: transcription, outputs: outputs))
             } catch {
-                for stream in started {
-                    await stream.transcription.stop()
-                    await stream.consumer.value
+                for item in started {
+                    await item.transcription.stop()
                 }
                 await store.close()
                 await control.send(.error("failed to start live transcription: \(error)"))
@@ -4199,13 +4849,25 @@ actor ServeSession {
         self.store = store
         self.reconciler = reconciler
         self.seq = seq
-        live = started
         recording = true
         lastPrefix = store.prefix
         recordedPeerDevices = []
-        captureWatcher = CaptureActualWatcher()
-        captureStatuses = []
-        micInput = nil
+        if !keepingCapture {
+            captureStatuses = []
+            micInput = nil
+        }
+        captureWatcher.beginRecording(keepingSnapshot: keepingCapture)
+        live = started.map { item in
+            let source = item.source
+            let streamOwner = item.owner
+            let outputs = item.outputs
+            let consumer = Task { [weak self] in
+                for await output in outputs {
+                    await self?.handle(output, source: source, owner: streamOwner)
+                }
+            }
+            return LiveStream(source: source, transcription: item.transcription, consumer: consumer)
+        }
         refreshSessions()
         ensureCaptureWatch()
         return true
@@ -4221,11 +4883,17 @@ actor ServeSession {
             await handleFinal(piece, source: source, owner: owner)
         case .log(let message):
             await control.send(.log(message))
+        case .error(let message):
+            await control.send(.error(message))
         }
     }
 
     private func handleFinal(_ piece: LiveTranscription.Piece, source: Source, owner: String) async {
-        guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let store else { return }
+        guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let store else {
+            await control.send(.log("収録していないため発話を保存できません: \(piece.text)"))
+            return
+        }
         seq += 1
         let segment = Segment(
             id: UUID(),
@@ -4263,11 +4931,25 @@ actor ServeSession {
     }
 
     /// capture-daemonへ取り込みを止めるよう伝える
+    /// 書けなければ、書けるまで実状態を読む繰り返しで書き直す
     private func writeDesiredStopped() async {
         do {
             try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
+            desiredStopPending = false
         } catch {
+            desiredStopPending = true
+            ensureCaptureWatch()
             await control.send(.error("failed to write capture desired state: \(error)"))
+        }
+    }
+
+    private func retryDesiredStopped() async {
+        do {
+            try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
+            desiredStopPending = false
+            await control.send(.log("capture desired stateを停止へ書き直しました"))
+        } catch {
+            // 失敗は書いた時に伝えてある。書けるまで1秒ごとに続ける
         }
     }
 
@@ -4284,13 +4966,24 @@ actor ServeSession {
     }
 
     private func pollCaptureActual() async {
-        guard recording, let prefix = store?.prefix else { return }
+        guard recording, let prefix = store?.prefix else {
+            if desiredStopPending {
+                await retryDesiredStopped()
+            }
+            return
+        }
         let actual: CaptureActualState?
         do {
             actual = try JSONFile.read(CaptureActualState.self, from: CaptureStatePaths.captureActualURL)
+            lastActualReadError = nil
         } catch {
-            // 解釈できない実状態は、capture-daemonが応答していない時と同じに扱う
+            // 解釈できない実状態は、capture-daemonが応答していない時と同じに扱う。原因は1度だけlogへ出す
             actual = nil
+            let message = "実状態を読めません: \(error)"
+            if message != lastActualReadError {
+                lastActualReadError = message
+                await control.send(.log(message))
+            }
         }
         let changes = captureWatcher.observe(
             actual, prefix: prefix, sources: sourceOption.sources.map(\.source), nowMS: Self.ms(Date()))
@@ -4344,6 +5037,8 @@ actor ServeSession {
             return
         }
         await finishRecording()
+        captureStatuses = []
+        micInput = nil
         await writeDesiredStopped()
         await control.send(.status(statusEvent()))
     }
@@ -4365,8 +5060,6 @@ actor ServeSession {
         await store.close()
         self.store = nil
         recording = false
-        captureStatuses = []
-        micInput = nil
         refreshSessions()
     }
 
@@ -4380,10 +5073,12 @@ actor ServeSession {
             return
         }
         await finishRecording()
-        if await startNewRecording(), let store {
+        if await startNewRecording(keepingCapture: true), let store {
             await control.send(.status(statusEvent()))
             await control.send(.log("rotated \(oldPrefix) -> \(store.prefix)"))
         } else {
+            captureStatuses = []
+            micInput = nil
             await control.send(.status(statusEvent()))
         }
     }
@@ -4574,7 +5269,7 @@ struct Serve: AsyncParsableCommand {
 
 - [ ] **Step 6: 通ることを確かめる**
 
-Run: `swift test --filter 'storeOpenedByPrefix|urlsUsePrefix'`
+Run: `swift test --filter 'storeOpenedByPrefix|urlsUsePrefix|appendClosesALastLine|appendKeepsALastLine'`
 Expected: PASS
 
 - [ ] **Step 7: 検証ゲート**
@@ -4595,8 +5290,20 @@ set -uo pipefail
 D="$1"
 BIN=.build/release/notetaked
 STATE="$HOME/Library/Application Support/Notetake/state"
+# appと同じ状態ファイルを使うため、appやほかのnotetakedが動いている時は始めない
+if pgrep -x Notetake > /dev/null || pgrep -f 'notetaked (serve|capture-daemon)' > /dev/null; then
+  echo "Notetake.appかnotetakedが動いています。止めてから実行してください" >&2
+  exit 1
+fi
+[ -x "$BIN" ] || { echo "$BINがありません。make daemonの後に実行してください" >&2; exit 1; }
+# 前の結果が残っていると、待ちと判定が前の結果で通ってしまう
+if [ -n "$(ls -A "$D" 2>/dev/null)" ]; then
+  echo "出力先が空ではありません: $D" >&2
+  exit 1
+fi
 mkdir -p "$D/out" "$STATE"
 : > "$D/steps.log"
+trap 'kill $(cat "$D/serve.pid" "$D/capture.pid" 2>/dev/null) 2>/dev/null' EXIT
 
 step() { printf '%s %s\n' "$(python3 -c 'import time; print(int(time.time() * 1000))')" "$1" >> "$D/steps.log"; }
 desired_stopped() {
@@ -4684,6 +5391,16 @@ sleep 2
 kill -TERM "$(cat "$D/capture.pid")"
 sleep 2
 ls -a "$STATE" > "$D/state-dir.txt"
+
+# 起動したprocessが終わったcapture-daemonは、自分で取り込みを止めて終える
+bash -c '"$0" capture-daemon 2>> "$1" & echo $! > "$2"; sleep 2' "$BIN" "$D/capture.err" "$D/orphan.pid"
+sleep 3
+if kill -0 "$(cat "$D/orphan.pid")" 2>/dev/null; then
+  echo alive > "$D/orphan.txt"
+  kill -TERM "$(cat "$D/orphan.pid")"
+else
+  echo exited > "$D/orphan.txt"
+fi
 step done
 ```
 
@@ -4754,7 +5471,7 @@ def main():
             delay = seg["start"] - steps[key] if seg else None
             check(
                 f"{key}の発話が壁時計の時刻で記録された（話し始めから4秒以内）",
-                seg is not None and 0 <= delay <= 4000,
+                seg is not None and -500 <= delay <= 4000,
                 f"{delay}ms {seg['source']} {seg['text']}" if seg else "segが無い")
 
         check("収録中の発話に話者が付いていない", all("speaker" not in s for s in segs1 + segs2))
@@ -4770,12 +5487,15 @@ def main():
         new_directory = os.path.join(os.path.dirname(old_directory), prefix2)
         old_points = anchors(f"{old_directory}/mic.meta.jsonl")
         new_points = anchors(f"{new_directory}/mic.meta.jsonl")
-        old_end = wall_ms(old_points, os.path.getsize(f"{old_directory}/mic.pcm") // 4)
-        gap = new_points[0][1] - old_end
-        check("区切りの前後でmicの生音声の時刻が続いている（500ms以内）", abs(gap) <= 500, f"{gap:.0f}ms")
+        if old_points and new_points:
+            old_end = wall_ms(old_points, os.path.getsize(f"{old_directory}/mic.pcm") // 4)
+            gap = new_points[0][1] - old_end
+            check("区切りの前後でmicの生音声の時刻が続いている（500ms以内）", abs(gap) <= 500, f"{gap:.0f}ms")
+        else:
+            check("区切りの前後でmicの生音声の時刻が続いている（500ms以内）", False, "anchorが無い")
         check(
             "capture-daemonの再起動の後、同じ収録へanchorを足して書き続けた",
-            len(new_points) >= 2,
+            any(ms > steps["capture-killed"] for _, ms in new_points),
             f"anchor {len(new_points)}個")
 
     events = records(f"{directory}/events.log")
@@ -4796,6 +5516,8 @@ def main():
     with open(f"{directory}/state-dir.txt", encoding="utf-8") as listing:
         leftovers = [name for name in listing.read().split() if name.endswith(".tmp")]
     check("状態ディレクトリに一時ファイルが残っていない", not leftovers, " ".join(leftovers))
+    with open(f"{directory}/orphan.txt", encoding="utf-8") as orphan:
+        check("起動したprocessが終わったcapture-daemonは自分で終えた", orphan.read().strip() == "exited")
 
     for name, ok, detail in results:
         print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
@@ -4846,7 +5568,7 @@ the speaker registry, checkpoints and the resume marker no longer take
 part. cli-cycle.sh drives a full start, rotate, crash and stop cycle
 from the command line and cli-cycle-report.py checks the result.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4911,13 +5633,15 @@ Expected: PASS
 
 - [ ] **Step 5: ファイルを消す**
 
+実装者は`rm`で消す（gitを変更しない）。削除はStep 11のcontrollerの`git add -A`が反映する:
+
 ```bash
-git rm -r Sources/NotetakeDiarization
-git rm Sources/NotetakeCore/Speaker/Aligner.swift Sources/NotetakeCore/Speaker/ProfileNameAnnouncer.swift Sources/NotetakeCore/Speaker/SpeakerRegistry.swift Sources/NotetakeCore/Speaker/SpeakerTurn.swift
-git rm Sources/NotetakeCore/Capture/CaptureCheckpoint.swift Sources/NotetakeCore/Capture/CaptureControlChannel.swift Sources/NotetakeCore/Capture/RawAudioFrame.swift Sources/NotetakeCore/Capture/RawAudioReader.swift Sources/NotetakeCore/Capture/RawAudioWriter.swift Sources/NotetakeCore/Control/CaptureCommand.swift
-git rm Sources/notetaked/Audio/AudioCapture.swift Sources/notetaked/Audio/RawAudioReaderCapture.swift Sources/notetaked/Pipeline/CaptureStream.swift Sources/notetaked/SpeakerProfileStore.swift
-git rm Tests/NotetakeCoreTests/AlignerTests.swift Tests/NotetakeCoreTests/SpeakerRegistryTests.swift Tests/NotetakeCoreTests/ProfileNameAnnouncerTests.swift Tests/NotetakeCoreTests/CaptureCheckpointTests.swift Tests/NotetakeCoreTests/CaptureControlChannelTests.swift Tests/NotetakeCoreTests/CaptureCommandTests.swift Tests/NotetakeCoreTests/RawAudioFrameTests.swift Tests/NotetakeCoreTests/RawAudioWriterReaderTests.swift Tests/notetakedTests/RawAudioReaderCaptureTests.swift
-git rm .claude/skills/recordings/scripts/fallback-diff.sh
+rm -r Sources/NotetakeDiarization
+rm Sources/NotetakeCore/Speaker/Aligner.swift Sources/NotetakeCore/Speaker/ProfileNameAnnouncer.swift Sources/NotetakeCore/Speaker/SpeakerRegistry.swift Sources/NotetakeCore/Speaker/SpeakerTurn.swift
+rm Sources/NotetakeCore/Capture/CaptureCheckpoint.swift Sources/NotetakeCore/Capture/CaptureControlChannel.swift Sources/NotetakeCore/Capture/RawAudioFrame.swift Sources/NotetakeCore/Capture/RawAudioReader.swift Sources/NotetakeCore/Capture/RawAudioWriter.swift Sources/NotetakeCore/Control/CaptureCommand.swift
+rm Sources/notetaked/Audio/AudioCapture.swift Sources/notetaked/Audio/RawAudioReaderCapture.swift Sources/notetaked/Pipeline/CaptureStream.swift Sources/notetaked/SpeakerProfileStore.swift
+rm Tests/NotetakeCoreTests/AlignerTests.swift Tests/NotetakeCoreTests/SpeakerRegistryTests.swift Tests/NotetakeCoreTests/ProfileNameAnnouncerTests.swift Tests/NotetakeCoreTests/CaptureCheckpointTests.swift Tests/NotetakeCoreTests/CaptureControlChannelTests.swift Tests/NotetakeCoreTests/CaptureCommandTests.swift Tests/NotetakeCoreTests/RawAudioFrameTests.swift Tests/NotetakeCoreTests/RawAudioWriterReaderTests.swift Tests/notetakedTests/RawAudioReaderCaptureTests.swift
+rm .claude/skills/recordings/scripts/fallback-diff.sh
 ```
 
 - [ ] **Step 6: Package.swiftから話者分離のtargetを外す**
@@ -5021,7 +5745,21 @@ Run:
 grep -rn -E "SpeakerRegistry|SpeakerProfile|Aligner|AlignedPiece|SpeakerTurn|Diarizer|NotetakeDiarization|CaptureCheckpoint|RawAudio(Frame|Reader|Writer|ReaderCapture)|CaptureControlChannel|CaptureCommand|CaptureEvent|CaptureStream|\bAudioCapture\b|currentSessionMarker|captureCommandURL|captureEventURL|resolveFallbackSpeakers|inheritedSpeakerID|ProfileNameAnnouncer|writeSpeakers|speakersURL|rawFileURL|checkpointFileURL|fallback-diff" Sources Tests Apps/Notetake Apps/NotetakeMobile Apps/NotetakeWatch Package.swift .claude/skills/recordings
 ```
 
-Expected: 出力なし（`.claude/skills/daemon-realtest/SKILL.md`はTask 15で書き直す）
+Expected: 出力なし
+
+README、AGENTS.md、skillsにも消した型や話者の書き出しへの参照が無いかを見る（Task 13と15で直すものだけが残る）:
+
+```bash
+grep -rn -E "SpeakerRegistry|SpeakerProfile|Aligner|SpeakerTurn|Diarizer|NotetakeDiarization|CaptureCheckpoint|RawAudio(Frame|Reader|Writer|ReaderCapture)|CaptureControlChannel|CaptureCommand|CaptureEvent|CaptureStream|\bAudioCapture\b|currentSessionMarker|resolveFallbackSpeakers|inheritedSpeakerID|ProfileNameAnnouncer|fallback-diff|diarizer|--diarize|--no-diarize|speakers\.json|\.speakers" README.md AGENTS.md .claude/skills
+```
+
+Expected: 次の行だけが出る。どれもTask 13か15で直す。これ以外が出たら、そのファイルの直しを該当のtaskの手順に足す
+- `README.md`の12・13・18・52行目（Task 15 Step 1）
+- `.claude/skills/recordings/SKILL.md`の3行目のdescription（Task 15 Step 3）
+- `.claude/skills/mac-app/SKILL.md`の11行目と`.claude/skills/mac-app/scripts/launch.sh`の22・23・27行目（Task 13 Step 8）
+- `.claude/skills/daemon-realtest/SKILL.md`の38・39・64行目（Task 15 Step 2で書き直す）
+
+`HANDOFF.md`は過去の記録に消した型の名前が残るため、grepの対象にしない。現在の状態を書いた箇所の直しはTask 15 Step 4にある
 
 - [ ] **Step 10: 検証ゲート**
 
@@ -5042,23 +5780,27 @@ framed raw audio format, checkpoints, and the command and event files.
 FluidAudio stays as a dependency for the offline diarizer of the next
 stage.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
 
 ### Task 13: Notetake.appのメニューに取り込みの状態を出す
 
-収録中、メニューにsourceごとの取り込みの状態（取り込み中、再開待ちと理由、停止）を出す。serveは取り込みの状態が変わるたびに`status` eventを送るようになったため、appが`status`のたびに`lastError`を消すと、直前の`error`がすぐ消える。`lastError`を消すのは新しい収録が始まった時だけにする。serveは話者分離のmodelを準備しなくなったため、起動の確認（`launch.sh`）は`diarizer ready`ではなく`serve ready`を待つ。
+収録中、メニューにsourceごとの取り込みの状態（取り込み中、再開待ちと理由、停止）を出す。serveは取り込みの状態が変わるたびに`status` eventを送るようになったため、appが`status`のたびに`lastError`を消すと、直前の`error`がすぐ消える。`lastError`を消すのは新しい収録が始まった時だけにし、serveの`error`には受け取った時刻を付ける（エラーが次の収録まで残るため、いつのものか分かるようにする）。
+
+ハングと判定したserveは、quitを送らずにSIGKILLで止める。quitを受けたserveは収録を止めて望む状態を空にするため、遅れていただけのserveを止めると収録が終わってしまう。SIGKILLなら望む状態が残り、起動し直したserveが同じ収録を引き継ぐ。Macのスリープから戻った直後は、serveとcapture-daemonが心拍を書き直す前で古く見えるため、30秒はハングの判定をしない。
+
+serveは話者分離のmodelを準備しなくなったため、起動の確認（`launch.sh`）は`diarizer ready`ではなく`serve ready`を待つ。
 
 **Files:**
 - Create: `Sources/NotetakeCore/Render/CaptureStatusLabel.swift`
-- Modify: `Apps/Notetake/AppModel.swift`、`Apps/Notetake/MenuContent.swift`、`.claude/skills/mac-app/scripts/launch.sh`、`.claude/skills/mac-app/SKILL.md`
+- Modify: `Apps/Notetake/AppModel.swift`、`Apps/Notetake/DaemonClient.swift`、`Apps/Notetake/MenuContent.swift`、`.claude/skills/mac-app/scripts/launch.sh`、`.claude/skills/mac-app/SKILL.md`
 - Test: `Tests/NotetakeCoreTests/CaptureStatusLabelTests.swift`
 
 **Interfaces:**
 - Consumes: `CaptureStatus`、`StatusEvent.capture`（Task 10）
-- Produces: `CaptureStatusLabel.text(for: CaptureStatus) -> String`。`AppModel.captureStatuses: [CaptureStatus]`
+- Produces: `CaptureStatusLabel.text(for: CaptureStatus) -> String`。`AppModel.captureStatuses: [CaptureStatus]`。`DaemonClient.forceKill() async`
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -5158,7 +5900,98 @@ Expected: PASS
         captureStatuses = []
 ```
 
-- [ ] **Step 6: メニューに出す**
+`handle(_:)`の`.error`で、受け取った時刻を付ける。前:
+
+```swift
+        case .error(let message):
+            lastError = message
+```
+
+後:
+
+```swift
+        case .error(let message):
+            lastError = "\(Date().formatted(date: .omitted, time: .shortened)) \(message)"
+```
+
+- [ ] **Step 6: ハングの時はquitを送らずに止め、スリープ復帰の直後は判定しない**
+
+`Apps/Notetake/DaemonClient.swift`の`func terminate(wasRecording: Bool = false) async {`の前に足す:
+
+```swift
+    /// 応答しないserveをSIGKILLで止める。quitを送ると、serveは収録を止めて望む状態を空にするため送らない。
+    /// 望む状態が残るので、起動し直したserveが同じ収録を引き継ぐ
+    func forceKill() async {
+        guard process.isRunning else { return }
+        kill(process.processIdentifier, SIGKILL)
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+```
+
+`Apps/Notetake/AppModel.swift`の`private static let restartDelay: TimeInterval = 1`の次に足す:
+
+```swift
+    private static let wakeGrace: TimeInterval = 30
+```
+
+`private var heartbeatMonitorTask: Task<Void, Never>?`の次に足す:
+
+```swift
+    /// Macがスリープから戻った時刻。戻った直後は、serveとcapture-daemonが心拍を書き直す前で古く見えるため、
+    /// `wakeGrace`の間はハングの判定をしない
+    private var lastWakeAt: Date?
+    private var wakeObserver: (any NSObjectProtocol)?
+```
+
+`init()`の心拍の見張り。前:
+
+```swift
+        heartbeatMonitorTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !self.isShuttingDown else { continue }
+```
+
+後:
+
+```swift
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.lastWakeAt = Date()
+            }
+        }
+        heartbeatMonitorTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !self.isShuttingDown else { continue }
+                if let lastWakeAt = self.lastWakeAt, Date().timeIntervalSince(lastWakeAt) < Self.wakeGrace {
+                    continue
+                }
+```
+
+同じ見張りの、serveのハングを見つけた時の処理。前:
+
+```swift
+                    self.lastError = "processがハングしたため再起動します"
+                    await self.client?.terminate(wasRecording: self.isRecording)
+                    // terminate()が実際に殺せたとしても、handleExit()のprocess.terminationHandler経由の
+```
+
+後:
+
+```swift
+                    self.lastError = "serveが応答しないため、止めて起動し直します"
+                    await self.client?.forceKill()
+                    // forceKill()で止めた後も、handleExit()のprocess.terminationHandler経由の
+```
+
+- [ ] **Step 7: メニューに出す**
 
 `Apps/Notetake/MenuContent.swift`の`import SwiftUI`の前に`import NotetakeCore`を足し、`Text(statusText)`の次に足す:
 
@@ -5171,7 +6004,7 @@ Expected: PASS
         }
 ```
 
-- [ ] **Step 7: 起動の確認が`serve ready`を待つようにする**
+- [ ] **Step 8: 起動の確認が`serve ready`を待つようにする**
 
 ```bash
 sed -i '' 's/diarizer ready/serve ready/g' .claude/skills/mac-app/scripts/launch.sh
@@ -5180,7 +6013,33 @@ grep -n "ready" .claude/skills/mac-app/scripts/launch.sh
 
 Expected: `serve ready`が3箇所あり、`diarizer`が無い
 
-`.claude/skills/mac-app/SKILL.md`を4箇所直す。
+`.claude/skills/mac-app/SKILL.md`を6箇所直す。
+
+frontmatterの`description`。前:
+
+```markdown
+description: Notetake.app（メニューバーapp + daemon）を起動し、メニュー項目・設定Window・話者命名をSystem Eventsで自動操作し、画面を撮って確認する。実機 / UI検証で人の代わりに操作する時に使う
+```
+
+後:
+
+```markdown
+description: Notetake.app（メニューバーapp + daemon）を起動し、メニュー項目・設定WindowをSystem Eventsで自動操作し、画面を撮って確認する。実機 / UI検証で人の代わりに操作する時に使う
+```
+
+`## 音声を入れる`の段落。前:
+
+```markdown
+`say -v Kyoko "…"`（system音声として取り込まれる。マイク経由の認識は不安定）。Otoyaで2話者目
+```
+
+後:
+
+```markdown
+`say -v Kyoko "…"`（system音声として取り込まれる。マイク経由の認識は不安定）。声を変えるなら`-v Otoya`。収録中の発話に話者は付かない
+```
+
+残りの4箇所:
 
 `## 起動 / 停止`の1行目。前:
 
@@ -5214,25 +6073,28 @@ Expected: `serve ready`が3箇所あり、`diarizer`が無い
 `scripts/audioin.sh`（一覧、*が既定）/ `scripts/audioin.sh AirPods`（部分一致で既定入力を切替）。AirPodsを外すとmacOSが内蔵マイクへ戻す。入力機器が変わると、capture-daemonが`mic.meta.jsonl`へdevice行を足し、以後の発話の`input`がその機器になる（区切らなくてよい）
 ```
 
-- [ ] **Step 8: 検証ゲート**
+- [ ] **Step 9: 検証ゲート**
 
 Run: `make verify`（`make app`でappもbuildする）
 Expected: 最終行`verify: OK`
 
-- [ ] **Step 9: commit（controller）**
+- [ ] **Step 10: commit（controller）**
 
 ```bash
-git add Sources/NotetakeCore/Render/CaptureStatusLabel.swift Tests/NotetakeCoreTests/CaptureStatusLabelTests.swift Apps/Notetake/AppModel.swift Apps/Notetake/MenuContent.swift .claude/skills/mac-app/scripts/launch.sh .claude/skills/mac-app/SKILL.md
+git add Sources/NotetakeCore/Render/CaptureStatusLabel.swift Tests/NotetakeCoreTests/CaptureStatusLabelTests.swift Apps/Notetake/AppModel.swift Apps/Notetake/DaemonClient.swift Apps/Notetake/MenuContent.swift .claude/skills/mac-app/scripts/launch.sh .claude/skills/mac-app/SKILL.md
 git commit -m "$(cat <<'MSG'
 feat(app): show capture state per source in the menu
 
 The menu lists each source's capture state while recording, with the
 reason while it waits to resume. Errors now clear only when a new
 recording starts, since status events arrive whenever capture state
-changes. launch.sh waits for "serve ready" now that serve no longer
-prepares diarizer models.
+changes, and carry the time they arrived. A hung serve is killed with
+SIGKILL instead of being sent quit, so the desired state survives and
+the restarted serve resumes the recording; hang checks pause for 30
+seconds after the Mac wakes. launch.sh waits for "serve ready" now that
+serve no longer prepares diarizer models.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -5246,7 +6108,7 @@ MSG
 - [ ] **Step 1: 前提を揃える**
 
 - `make verify`が通っている（`make daemon`も済む）
-- Notetake.appを止める（`pgrep -x Notetake`、動いていれば`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`）
+- Notetake.appが動いているかを`pgrep -x Notetake`で確かめ、動いていたかをledgerに書く（Step 6で起動し直すかを決める）。動いていたら、収録中かを確かめる（`~/Library/Application Support/Notetake/state/current-session.json`がある、または`.claude/skills/mac-app/scripts/ntmenu.sh --list`の状態行が収録中）。収録中なら、userに「収録を止めてよいか」を尋ね、了承を得るまで止めない。止めてよければ`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める
 
 - [ ] **Step 2: CLIで一巡する**
 
@@ -5266,24 +6128,35 @@ Expected: すべて`PASS`
 
 - [ ] **Step 3: appで確かめる**
 
+`make install-app`は`/Applications/Notetake.app`を段階1の版に置き換える。段階2を入れるまで、この版の収録には話者が付かない（Step 6でuserに伝える）。
+
 ```bash
 make install-app
 ```
 
 Expected: `launch.sh`が`serve ready`を見つけて`launched; log=/tmp/notetake-app.log`を出す
 
-次のscriptを`<scratchpad>/app-check/check.sh`に置き、`run_in_background`で走らせる（userに「appで収録を始め、`say`が流れます」と伝えてから）:
+次のscriptを`<scratchpad>/app-check/check.sh`に置き、`run_in_background`で走らせる（userに「appで約1分半収録し、`say`が流れます。途中でserveを止め、appが起動し直すのを確かめます」と伝えてから）。serveを`kill -STOP`で止めたままにし、appがハングと見なしてSIGKILLで止め、起動し直したserveが同じ収録を引き継ぐことも確かめる:
 
 ```bash
 #!/bin/bash
 set -uo pipefail
 D="$1"
 M=.claude/skills/mac-app/scripts
+STATE="$HOME/Library/Application Support/Notetake/state"
 mkdir -p "$D"
 "$M/ntmenu.sh" "収録開始"
 sleep 5
 "$M/ntmenu.sh" --list > "$D/menu-recording.txt"
+cp "$STATE/capture-desired.json" "$D/desired-start.json"
 say -v Kyoko "アプリからの確認です。メニューに取り込みの状態が出ています。"
+sleep 8
+pgrep -f 'notetaked serve' > "$D/serve-before.pid"
+kill -STOP "$(head -n 1 "$D/serve-before.pid")"
+sleep 40
+pgrep -f 'notetaked serve' > "$D/serve-after.pid"
+cp "$STATE/capture-desired.json" "$D/desired-after-hang.json"
+say -v Kyoko "引き継いだ後の確認です。"
 sleep 8
 "$M/ntmenu.sh" "収録停止"
 sleep 3
@@ -5297,11 +6170,17 @@ Run（`run_in_background`）: `bash <scratchpad>/app-check/check.sh <scratchpad>
 
 ```bash
 cat <scratchpad>/app-check/menu-recording.txt
+cat <scratchpad>/app-check/serve-before.pid <scratchpad>/app-check/serve-after.pid
+cat <scratchpad>/app-check/desired-start.json <scratchpad>/app-check/desired-after-hang.json
 .claude/skills/recordings/scripts/inspect.sh latest "$(defaults read io.github.bash0c7.notetake outputDirectory)"
 grep -E 'notetaked (error|log)' /tmp/notetake-app.log | tail -n 20
 ```
 
-Expected: `menu-recording.txt`に`マイク: 取り込み中`と`system音声: 取り込み中`がある。最新の`final.md`に`（system）`の行があり、話者は`リモート`。appのlogに`notetaked error`が無い
+Expected:
+- `menu-recording.txt`に`マイク: 取り込み中`と`system音声: 取り込み中`がある
+- `serve-after.pid`のpidが`serve-before.pid`と違う。2つの望む状態の`recording.prefix`が同じ。appのlogに`notetaked log: resumed <prefix>`がある
+- その収録の`final.md`に`（system）`の行があり、話者は`リモート`。止める前と引き継いだ後の両方の発話がある
+- appのlogに`notetaked error`が無い
 
 - [ ] **Step 4: Task 6を後へ回した時だけ、appで消灯の確認をする**
 
@@ -5309,17 +6188,53 @@ Task 6で端末のappの許可が得られず確認を後へ回した場合だ�
 
 - [ ] **Step 5: 固定した入力機器が外れた時を確かめる（AirPodsがある時だけ）**
 
-userにAirPodsを接続してもらえる時だけ行う。`.claude/skills/mac-app/scripts/audioin.sh`でAirPodsのUIDを調べ、ライブパネルの「入力デバイス」でAirPodsを選んでappで収録を始め、`blueutil --disconnect <AirPodsのMAC>`で外す（`blueutil`が無ければuserに外してもらう）。Expected: `mic.meta.jsonl`に既定の入力の`device`行が足され、`capture-actual.json`のmicが`"fell_back_from_pinned":true`になり、appの入力デバイスの選択が「既定」に戻る。AirPodsが無ければ「未確認」とledgerに書く
+userにAirPodsを接続してもらえる時だけ行う。`.claude/skills/mac-app/scripts/audioin.sh`でAirPodsのUIDを調べ、ライブパネルの「入力デバイス」でAirPodsを選んでappで収録を始め、`blueutil --disconnect <AirPodsのMAC>`で外す（`blueutil`が無ければuserに外してもらう）。収録中に`capture-desired.json`の`recording.prefix`を控える（Step 6で消すため）。Expected: `mic.meta.jsonl`に既定の入力の`device`行が足され、`capture-actual.json`のmicが`"fell_back_from_pinned":true`になり、appの入力デバイスの選択が「既定」に戻る。AirPodsが無ければ「未確認」とledgerに書く
 
 - [ ] **Step 6: 後片付け**
 
-- appで収録が止まっていることを確かめ、`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める（作業の前は止まっていたため）
-- 確認で作った生音声（`$TMPDIR/notetake-capture/`の`display-check-*`、`display-guard-*`と、`cli-cycle`で作ったprefix）はOSの掃除に任せる
+- appで収録が止まっていることを確かめ、`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める。以下の掃除は、appとcapture-daemonとserveが止まってから行う
+- Step 3とStep 5でuserの保存先に作った収録を消す。prefixは、Step 3は`desired-start.json`の`recording.prefix`、Step 5は確かめた時に`capture-desired.json`から控えたもの。prefixを変数に入れ、空でないことと、そのprefixのファイルだけが対象であることを`ls`で確かめてから、ファイル名を指定して消す。`OUT`か`PREFIX`が空なら、消さずにここで止める:
+
+```bash
+OUT="$(defaults read io.github.bash0c7.notetake outputDirectory)"
+PREFIX="<prefix>"
+test -n "$OUT" && test -n "$PREFIX" || echo "OUTかPREFIXが空です。消さずに止めます"
+ls "$OUT" | grep -F "$PREFIX"
+ls -l "$OUT/$PREFIX.live.txt" "$OUT/$PREFIX.timed.jsonl" "$OUT/$PREFIX.final.md"
+```
+
+Expected: 1つ目の`ls`に`$PREFIX.live.txt`、`$PREFIX.timed.jsonl`、`$PREFIX.final.md`のほかが出ない。確かめたら消す。Step 5の収録があれば、`PREFIX`を入れ替えて繰り返す:
+
+```bash
+rm "$OUT/$PREFIX.live.txt" "$OUT/$PREFIX.timed.jsonl" "$OUT/$PREFIX.final.md"
+```
+
+- mainが状態ディレクトリに残した一時ファイル（`*.tmp-*`。`capture.heartbeat.tmp-*`と`process.heartbeat.tmp-*`で約600個）と、段階1で使わなくなったファイルを消す（段階1の版では作られない。mainの版へ戻すと、mainは要るものを作り直す）。先に`ls`で件数と名前を確かめてから消す:
+
+```bash
+STATE="$HOME/Library/Application Support/Notetake/state"
+find "$STATE" -maxdepth 1 -name '*.tmp-*' -print | wc -l
+find "$STATE" -maxdepth 1 -name '*.tmp-*' -print | head -n 3
+ls -l "$STATE/capture.heartbeat" "$STATE/capture-command.json" "$STATE/capture-event.json" "$STATE/current-session.json"
+```
+
+`*.tmp-*`が状態ディレクトリ直下の一時ファイルだけで、4つのファイル（`current-session.json`は収録中でなければ無い）が使わなくなったものであることを確かめたら消す:
+
+```bash
+find "$STATE" -maxdepth 1 -name '*.tmp-*' -delete
+rm -f "$STATE/capture.heartbeat" "$STATE/capture-command.json" "$STATE/capture-event.json" "$STATE/current-session.json"
+ls -A "$STATE"
+```
+
+Expected: `capture-desired.json`、`capture-actual.json`、`process.heartbeat`、`capture-daemon.lock`のほかに無い
+- 確認で作った生音声（`$TMPDIR/notetake-capture/`の`display-check-*`、`display-guard-*`と、`cli-cycle`とappの確認で作ったprefix）はOSの掃除に任せる
+- userへ、`/Applications/Notetake.app`が段階1の版（段階2まで話者が付かない）になったことを伝え、普段の収録のためにmainの版へ戻すかを尋ねる。戻す場合は、mainのworktreeで`make install-app`を行う
+- Step 1でNotetake.appが動いていた場合は、userが決めた版で起動し直す（段階1の版のままなら`open -a /Applications/Notetake.app`。mainの版へ戻すなら`make install-app`が起動する）。Step 1で止まっていた場合は、`make install-app`が起動したappを`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`で止める
 
 ### Task 15: README、HANDOFF、検証用skillを段階1に合わせる
 
 **Files:**
-- Modify: `README.md`、`HANDOFF.md`、`.claude/skills/recordings/SKILL.md`
+- Modify: `README.md`、`HANDOFF.md`、`AGENTS.md`、`.claude/skills/recordings/SKILL.md`
 - Replace: `.claude/skills/daemon-realtest/SKILL.md`
 
 - [ ] **Step 1: READMEを直す**
@@ -5401,6 +6316,30 @@ CLI単体: `.build/release/notetaked capture-daemon`を起動しておき、`.bu
 - `.claude/skills/`: `verify`（検証ゲート）/ `mac-app`（appの起動・メニュー・設定の自動操作）/ `device`（iPhone / Watchのインストール・起動・crash log）/ `recordings`（収録結果と生音声の確認）/ `daemon-realtest`（capture-daemonとserveのCLIでの実機検証）
 ```
 
+1行目の説明（`README.md`の5行目）の最後の括弧。段階1ではFluidAudioを使わない（段階2の確定処理で使う）。前:
+
+```markdown
+Macのメニューバーappとdaemonで会議音声（マイク + システム音声）をリアルタイムに文字起こしし、iPhone / Apple Watchで拾った音声も同じ収録に統合してMarkdownの議事録にする。全てローカルで動く（Speech / FluidAudio / Foundation Models）。
+```
+
+後:
+
+```markdown
+Macのメニューバーappとdaemonで会議音声（マイク + システム音声）をリアルタイムに文字起こしし、iPhone / Apple Watchで拾った音声も同じ収録に統合してMarkdownの議事録にする。全てローカルで動く（Speech / Foundation Models）。
+```
+
+`## ドキュメント`の2行目（`README.md`の61行目）。2026-09-12のspecは収録中の話者分離を前提にしており、現行の設計は2026-10-03のspecにある。前:
+
+```markdown
+- `docs/superpowers/specs/2026-09-12-notetake-design.md`: 全体設計（binding）。他のspec / planは`docs/superpowers/`
+```
+
+後:
+
+```markdown
+- `docs/superpowers/specs/2026-09-12-notetake-design.md`: 最初の全体設計（収録中の話者分離を前提にしている）。現行の設計は`docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`。他のspec / planは`docs/superpowers/`
+```
+
 - [ ] **Step 2: daemon-realtestのskillを書き直す**
 
 `.claude/skills/daemon-realtest/SKILL.md`を次の内容にする。「消灯中のsystem音声」の節の最後の文は、Task 6が判定Aなら1つ目、判定B（Task 7を行った）なら2つ目を使う:
@@ -5417,8 +6356,9 @@ description: capture-daemonとserveをCLIで起動し、生音声の書き込み
 
 ## 事前の確認（毎回）
 
-- Notetake.appを止める（`pgrep -x Notetake`、動いていれば`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`）。appのcapture-daemonとserveが同じ状態ファイルを使うため、並べて動かさない
+- Notetake.appを止める（`pgrep -x Notetake`、動いていれば`.claude/skills/mac-app/scripts/ntmenu.sh "終了"`）。appのcapture-daemonとserveが同じ状態ファイルを使うため、並べて動かさない。scriptは、Notetake.appかnotetakedが動いていれば何もせずに終わる
 - `make daemon`の完了を待ってから`.build/release/notetaked`を起動する。署名の途中で起動すると、Gatekeeperがbinaryをゴミ箱へ移す
+- scriptの出力先には、まだ無いか空のdirectoryを渡す。前の結果が残っていると待ちと判定が前の結果で通ってしまうため、scriptは空でない出力先では始めない
 - 前面の`sleep`は使えないため、scriptは`run_in_background`で走らせ、終了の知らせを待つ
 
 ## 置き場所
@@ -5436,6 +6376,7 @@ description: capture-daemonとserveをCLIで起動し、生音声の書き込み
 - serveを`kill -9`して起動し直すと、望む状態から同じ収録を引き継ぎ、`seq`を続けて書く
 - capture-daemonを`kill -9`すると、serveがstatusで「capture-daemonが応答していません」を伝え、起動し直すと同じ収録へanchorを足して書き続ける
 - 停止で望む状態から収録が消え、capture-daemonが書くのをやめ、`final.md`が書かれる。状態ディレクトリに一時ファイルが残らない
+- 起動したprocessが終わったcapture-daemonは、自分で取り込みを止めて終える（appが落ちた後に残り、次のcapture-daemonと同じ生音声へ書くことが無い）
 
 `FAIL`の時は、出力先の`events.log`（serveのevent）、`serve.err`、`capture.err`、`steps.log`（各段階の時刻）と、生音声の`.meta.jsonl`を読む。
 
@@ -5475,12 +6416,37 @@ description: capture-daemonとserveをCLIで起動し、生音声の書き込み
 - 生音声: `scripts/pcm-coverage.py <生音声ディレクトリ> <mic|system> [区間の秒数]`で、壁時計の区間ごとの音声の量と音量を見る。生音声ディレクトリは`$TMPDIR/notetake-capture/<prefix>/`
 ```
 
-- [ ] **Step 4: HANDOFFを直す**
-
-`HANDOFF.md`の「状態（2026-10-03）」の最初の項目（`- **話者分離を収録単位の確定処理へ移す設計はuser承認済み。次は段階1の実装計画**:`で始まる行）を、次の1行で置き換える。かっこの中には、Task 14の結果を「CLIの一巡は全項目合格」「appのメニューに取り込みの状態が出る」「消灯中のsystem音声は<取り込める／取り込めないため鳴っている間は消灯を防ぐ>」「固定機器の確認は<済み／未確認>」の形で書く:
+`.claude/skills/recordings/SKILL.md`の`description`。`.speakers.json`は書かれなくなり、収録中の発話に話者は付かない。前:
 
 ```markdown
-- **段階1（取り込みと生音声）実装済み・`make verify`通過・実機確認（Task 14の結果）。次は段階2（確定処理）の実装計画**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、plan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`、branch `batch-finalize-redesign`。段階2の計画は`docs/superpowers/plans/`へ書き、userの承認後に実装する。段階1と段階2の間は、収録中も停止後も`final.md`に話者が付かない
+description: 収録の成果物（<prefix>.final.md / .timed.jsonl / .speakers.json / orphans.jsonl）とdaemonログを読み、機器・source・話者・追記の有無を要約する。実機検証の合否判定に使う
+```
+
+後:
+
+```markdown
+description: 収録の成果物（<prefix>.final.md / .timed.jsonl / orphans.jsonl）と生音声、daemonログを読み、機器・source・追記の有無を要約する。実機検証の合否判定に使う
+```
+
+`AGENTS.md`の8行目。`mac-app`の話者命名の操作は無くなり、`daemon-realtest`の記載が無い。前:
+
+```markdown
+- 決定論的な作業はproject skillを使う: `verify` / `mac-app`（appの起動・メニュー・設定・話者命名の自動操作、画面撮影、既定入力の切替）/ `device`（iPhone / Watchのbuild・インストール・起動・crash log）/ `recordings`（収録結果の要約）
+```
+
+後:
+
+```markdown
+- 決定論的な作業はproject skillを使う: `verify` / `mac-app`（appの起動・メニュー・設定の自動操作、画面撮影、既定入力の切替）/ `device`（iPhone / Watchのbuild・インストール・起動・crash log）/ `recordings`（収録結果と生音声の要約）/ `daemon-realtest`（capture-daemonとserveのCLIでの実機検証）
+```
+
+- [ ] **Step 4: HANDOFFを直す**
+
+`HANDOFF.md`の「状態（2026-10-03）」の最初の3項目（`- **話者分離を収録単位の確定処理へ移す。段階1を実装中**:`、`- **次の手順**:`、`- **段階1を実装する時の注意**:`とその下の箇条）を、次の2行で置き換える。かっこの中には、Task 14の結果を「CLIの一巡は全項目合格」「appのメニューに取り込みの状態が出る」「appがハングと判定したserveを止め、起動し直したserveが同じ収録を引き継ぐ」「消灯中のsystem音声は<取り込める／取り込めないため鳴っている間は消灯を防ぐ>」「固定機器の確認は<済み／未確認>」の形で書く。`/Applications/Notetake.app`の版は、Task 14のStep 6でuserが決めたものを書く:
+
+```markdown
+- **段階1（取り込みと生音声）実装済み・`make verify`通過・実機確認（Task 14の結果）**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、plan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`、branch `batch-finalize-redesign`。段階1と段階2の間は、収録中も停止後も`final.md`に話者が付かない。`/Applications/Notetake.app`は<段階1の版／mainの版>
+- **次の手順**: 段階2（確定処理）の計画を`docs/superpowers/plans/`へ書き、userの承認を得てから実装する
 ```
 
 その次の行と、その下の4行のうち最後の1行。前:
@@ -5545,10 +6511,30 @@ python3 .claude/skills/daemon-realtest/scripts/cli-cycle-report.py <出力先>
 - 出力: `<prefix>.live.txt` / `.timed.jsonl` / `.final.md` / `.polished.md`、`orphans.jsonl`。生音声は`$TMPDIR/notetake-capture/<prefix>/`
 ```
 
-「環境の注意」の次の行を消す（ScreenCaptureKitの性質は「状態」の項目に書いた）:
+`### branchに入っているもの（段階順 = 検証順）`の表から、段階の列が`M3`で内容が話者分離の行（`NotetakeDiarization`、`Diarizer`、`Aligner`、`SpeakerRegistry`、`--diarize/--no-diarize`を挙げた行）を消す。
+
+`### 4. iPhone（M5）`の7番目。前:
+
+```markdown
+7. iPhone側の話者分離（埋め込み送信）は未実装（specのM5後半）。`NotetakeDiarization`はiOS 17+対応なので、Macと同じ`Diarizer`を`Recorder`に足す
+```
+
+後:
+
+```markdown
+7. iPhone側の話者分離（埋め込み送信）は未実装（specのM5後半）。収録中の話者分離は段階1で取り除いた。iPhoneの発話の話者の扱いは、段階2の計画で決める
+```
+
+「環境の注意」のsystem音声の行。ScreenCaptureKitはsystem音声の無音の間もbufferを届ける（main時代の生音声4収録で、音声の秒数が、開始から最後に書いた時刻までの時間と一致した）。前:
 
 ```markdown
 - system音声tapの特性: 音を出しているprocessが無い間はbufferが1つも来ない（無音のまま停止しても`Transcriber.finish()`は入力0の高速経路で戻る）
+```
+
+後:
+
+```markdown
+- system音声（ScreenCaptureKit）の特性: 音を出しているprocessが無い間も、無音のbufferが届き続ける。main時代にCoreAudio Process Tapで取っていた頃の「無い間はbufferが来ない」は当てはまらない
 ```
 
 「環境の注意」の`- **メモリ**:`の行の`収録（分離あり）中に`を`収録中に`にする。
@@ -5563,10 +6549,27 @@ perl -CSD -Mutf8 -ne 'print "$ARGV:$.: $_" if /[\p{Han}\p{Hiragana}\p{Katakana}]
 
 Expected: この作業で足した行が出ない（既存の行は直さない）
 
+HANDOFF.mdとAGENTS.mdも同じ確認をする（HANDOFF.mdはこの作業で最も多く文を足す）:
+
+```bash
+perl -CSD -Mutf8 -ne 'print "$ARGV:$.: $_" if /[\p{Han}\p{Hiragana}\p{Katakana}] [A-Za-z0-9`]|[A-Za-z0-9`] [\p{Han}\p{Hiragana}\p{Katakana}]/; close ARGV if eof' HANDOFF.md AGENTS.md
+```
+
+Expected: この作業で足した行が出ない
+
+README、AGENTS.md、skillsに、消した型と話者の書き出しへの参照が残っていないことを確かめる:
+
+```bash
+grep -rn -E "SpeakerRegistry|SpeakerProfile|Aligner|SpeakerTurn|Diarizer|NotetakeDiarization|CaptureCheckpoint|RawAudio(Frame|Reader|Writer|ReaderCapture)|CaptureControlChannel|CaptureCommand|CaptureEvent|CaptureStream|\bAudioCapture\b|currentSessionMarker|resolveFallbackSpeakers|inheritedSpeakerID|ProfileNameAnnouncer|fallback-diff|diarizer|--diarize|--no-diarize|speakers\.json|\.speakers" README.md AGENTS.md .claude/skills
+grep -n -E "NotetakeDiarization|--no-diarize|--diarize|Diarizer|SpeakerRegistry|Aligner" HANDOFF.md
+```
+
+Expected: 1つ目は出力なし。2つ目は、`mainに残る不具合`の`SpeakerRegistry`の行（mainの不具合の記述）と、`## 状態（2026-09-25）`の過去の記録（`不合格・クラッシュ`と、`修正済み`の項目）だけが出る。現在の手順や仕様を書いた箇所には出ない
+
 - [ ] **Step 6: commit（controller）**
 
 ```bash
-git add README.md HANDOFF.md .claude/skills/daemon-realtest/SKILL.md .claude/skills/recordings/SKILL.md
+git add README.md HANDOFF.md AGENTS.md .claude/skills/daemon-realtest/SKILL.md .claude/skills/recordings/SKILL.md
 git commit -m "$(cat <<'MSG'
 docs: describe stage 1 capture and live transcription
 
@@ -5575,7 +6578,7 @@ describe the raw audio directory, the desired and actual state files,
 capture state in the menu, the CLI cycle and display sleep checks, and
 the transcription-only live pipeline.
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 MSG
 )"
 ```
