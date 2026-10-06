@@ -124,6 +124,8 @@ public enum Event: Codable, Sendable, Equatable {
     case peer(device: String, deviceName: String, connected: Bool)
     /// pinした入力デバイスが切断され、OS既定入力へフォールバックした
     case inputReset
+    case finalizeState(FinalizeStateEvent)
+    case finalized(FinalizedEvent)
 
     enum CodingKeys: String, CodingKey {
         case ev
@@ -160,6 +162,10 @@ public enum Event: Codable, Sendable, Equatable {
             self = .peer(device: device, deviceName: deviceName, connected: connected)
         case "input_reset":
             self = .inputReset
+        case "finalize_state":
+            self = .finalizeState(try FinalizeStateEvent(from: decoder))
+        case "finalized":
+            self = .finalized(try FinalizedEvent(from: decoder))
         default:
             throw ControlError.unknownEvent(ev)
         }
@@ -191,6 +197,12 @@ public enum Event: Codable, Sendable, Equatable {
             try container.encode(connected, forKey: .connected)
         case .inputReset:
             try container.encode("input_reset", forKey: .ev)
+        case .finalizeState(let payload):
+            try container.encode("finalize_state", forKey: .ev)
+            try payload.encode(to: encoder)
+        case .finalized(let payload):
+            try container.encode("finalized", forKey: .ev)
+            try payload.encode(to: encoder)
         }
     }
 

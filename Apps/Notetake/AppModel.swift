@@ -66,6 +66,10 @@ final class AppModel {
     var nextRotationAt: Date?
     /// daemonから届いた直近の`.log`（話者分離モデルの取得進捗など）。表示用。
     var lastLog: String?
+    /// 収録ごとの確定の状態。serveが伝えた収録だけが入る
+    var finalizeStates: [String: FinalizeStateEvent] = [:]
+    /// 「収録の話者」windowが一覧を読み直す合図
+    var speakersRevision = 0
     /// 直前に完了した収録（停止、または区切りで置き換えられた収録）のprefix。「整形」の対象。
     var lastFinishedPrefix: String?
     /// `notetaked polish`の子processが実行中かどうか。多重起動防止。
@@ -309,6 +313,7 @@ final class AppModel {
         prefix = nil
         captureStatuses = []
         connectedPeers = [:]
+        finalizeStates = [:]
         clearRotation()
         if code != 0 {
             lastError = "daemonが予期せず終了しました (code \(code))"
@@ -532,6 +537,10 @@ final class AppModel {
             }
         case .inputReset:
             preferredInputDeviceUID = nil
+        case .finalizeState(let state):
+            finalizeStates[state.prefix] = state
+        case .finalized:
+            speakersRevision += 1
         }
     }
 }

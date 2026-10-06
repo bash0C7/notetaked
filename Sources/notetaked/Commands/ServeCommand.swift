@@ -70,11 +70,31 @@ struct Serve: AsyncParsableCommand {
         let selectedLocale = Locale(identifier: locale)
         try await Transcriber.ensureAssets(locale: selectedLocale)
 
+        guard let executable = Bundle.main.executableURL else {
+            throw ValidationError("cannot locate the notetaked executable to run finalize")
+        }
+        let localeIdentifier = selectedLocale.identifier
+        let device = DeviceIdentity.load()
+        let archive = SessionArchive()
         let stdioControl = StdioControl()
+        let finalizer = FinalizeQueue(
+            dependencies: FinalizeQueue.Dependencies(
+                archive: archive, deviceID: device.id, rawBase: URL(fileURLWithPath: NSTemporaryDirectory()),
+                runChild: { directory, run, speakers, onLine in
+                    var arguments = ["finalize", directory.path, "--run", "\(run)", "--locale", localeIdentifier]
+                    if let speakers {
+                        arguments += ["--speakers", "\(speakers)"]
+                    }
+                    try await FinalizeProcess.run(executable: executable, arguments: arguments, onLine: onLine)
+                },
+                readActual: { try? JSONFile.read(CaptureActualState.self, from: CaptureStatePaths.captureActualURL) },
+                now: Date.init,
+                sleep: { try await Task.sleep(for: .seconds($0)) },
+                emit: { await stdioControl.send($0) }))
         let session = ServeSession(
             outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
-            locale: selectedLocale, control: stdioControl, device: DeviceIdentity.load(),
-            archive: SessionArchive(), inputDeviceUID: inputDeviceUID)
+            locale: selectedLocale, control: stdioControl, device: device,
+            archive: archive, finalizer: finalizer, inputDeviceUID: inputDeviceUID)
 
         await stdioControl.send(
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))

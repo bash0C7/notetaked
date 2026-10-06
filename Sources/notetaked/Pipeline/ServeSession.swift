@@ -55,6 +55,7 @@ actor ServeSession {
     private let inputDeviceUID: String?
 
     private let archive: SessionArchive
+    private let finalizer: FinalizeQueue
     /// 収録中の収録のprefix。収録していなければnil
     private var currentPrefix: String?
     private var reconciler = Reconciler()
@@ -86,7 +87,8 @@ actor ServeSession {
 
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
-        control: StdioControl, device: DeviceIdentity, archive: SessionArchive, inputDeviceUID: String? = nil
+        control: StdioControl, device: DeviceIdentity, archive: SessionArchive, finalizer: FinalizeQueue,
+        inputDeviceUID: String? = nil
     ) {
         self.outputDirectory = outputDirectory
         self.owner = owner
@@ -95,6 +97,7 @@ actor ServeSession {
         self.control = control
         self.device = device
         self.archive = archive
+        self.finalizer = finalizer
         self.inputDeviceUID = inputDeviceUID
     }
 
@@ -432,11 +435,14 @@ actor ServeSession {
             await control.send(.error("not recording"))
             return
         }
-        await finishRecording()
+        let ended = await finishRecording()
         captureStatuses = []
         micInput = nil
         await writeDesiredStopped()
         await control.send(.status(statusEvent()))
+        if let ended {
+            await finalizer.enqueue(.init(prefix: ended, speakers: nil))
+        }
     }
 
     /// ライブの文字起こしを打ち切り、`session_end`を足して、ここまでの発話で`final.md`を書いて収録を閉じる。
@@ -477,6 +483,7 @@ actor ServeSession {
             micInput = nil
             await control.send(.status(statusEvent()))
         }
+        await finalizer.enqueue(.init(prefix: oldPrefix, speakers: nil))
     }
 
     // MARK: - quit
@@ -494,6 +501,7 @@ actor ServeSession {
             await peerListener.stop()
             self.peerListener = nil
         }
+        await finalizer.shutdown()
     }
 
     private static func ms(_ date: Date) -> Int64 {

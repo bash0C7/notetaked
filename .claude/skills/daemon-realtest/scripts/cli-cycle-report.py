@@ -53,8 +53,8 @@ def main():
     if len(timed) == 2:
         first, second = (records(p) for p in timed)
         prefix2 = os.path.basename(timed[1]).removesuffix(".timed.jsonl")
-        segs1 = [r for r in first if r.get("t") == "seg"]
-        segs2 = [r for r in second if r.get("t") == "seg"]
+        segs1 = [r for r in first if r.get("t") == "seg" and r.get("pass") != "final"]
+        segs2 = [r for r in second if r.get("t") == "seg" and r.get("pass") != "final"]
 
         for key, segs in (("say1", segs1), ("say2", segs2), ("say3", segs2), ("say4", segs2)):
             candidates = [s for s in segs if s["start"] >= steps[key] - 500]

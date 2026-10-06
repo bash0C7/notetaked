@@ -134,3 +134,19 @@ import Testing
     let stopped = try Event.status(StatusEvent(recording: false, sources: [], outputDirectory: "/tmp")).encodedLine()
     #expect(!stopped.contains("capture"))
 }
+
+@Test func finalizeEventsRoundTripWithDocumentedKeys() throws {
+    let state = Event.finalizeState(
+        FinalizeStateEvent(prefix: "p", phase: .failed, run: nil, detail: "進捗が途絶えました", retryAt: 1_791_000_000_000))
+    #expect(
+        try state.encodedLine()
+            == "{\"detail\":\"進捗が途絶えました\",\"ev\":\"finalize_state\",\"phase\":\"failed\",\"prefix\":\"p\",\"retry_at\":1791000000000}"
+    )
+    let finalized = Event.finalized(
+        FinalizedEvent(
+            prefix: "p", run: 2,
+            speakers: [SpeakerSummary(id: "s1", source: .mic, name: nil, speechSeconds: 12.5, excerpt: "最初の発話")]))
+    for event in [state, finalized] {
+        #expect(try Event.decode(line: try event.encodedLine()) == event)
+    }
+}
