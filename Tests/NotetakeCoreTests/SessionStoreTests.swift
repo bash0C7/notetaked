@@ -67,19 +67,6 @@ private func tokyoDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, 
     #expect(liveText == "こんにちは\n")
 }
 
-@Test func writeFinalOverwrites() async throws {
-    let dir = makeTempDirectory()
-    defer { try? FileManager.default.removeItem(at: dir) }
-
-    let store = SessionStore(directory: dir, start: Date(), timeZone: TimeZone(identifier: "Asia/Tokyo")!)
-
-    try await store.writeFinal("a")
-    try await store.writeFinal("b")
-
-    let content = try String(contentsOf: store.finalURL, encoding: .utf8)
-    #expect(content == "b")
-}
-
 @Test func urlsUsePrefix() {
     let dir = makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

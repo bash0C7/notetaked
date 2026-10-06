@@ -14,9 +14,9 @@ actor ServeSession {
             case .mic:
                 return [(.mic, { $0 })]
             case .system:
-                return [(.system, { _ in "リモート" })]
+                return [(.system, { _ in OwnerLabel.remote })]
             case .both:
-                return [(.mic, { $0 }), (.system, { _ in "リモート" })]
+                return [(.mic, { $0 }), (.system, { _ in OwnerLabel.remote })]
             }
         }
     }
@@ -54,7 +54,9 @@ actor ServeSession {
     /// micを固定したい入力機器のUID。nilなら既定の入力を使う
     private let inputDeviceUID: String?
 
-    private var store: SessionStore?
+    private let archive: SessionArchive
+    /// 収録中の収録のprefix。収録していなければnil
+    private var currentPrefix: String?
     private var reconciler = Reconciler()
     private var seq = 0
     private var live: [LiveStream] = []
@@ -76,10 +78,6 @@ actor ServeSession {
 
     private var peerListener: PeerListener?
     private var peerStates: [PeerConnectionID: PeerState] = [:]
-    /// 出力ディレクトリの`*.timed.jsonl`から作った収録一覧。start/stop/rotateのたびに
-    /// 更新する（受信seg以外のタイミングでは変わらないため常時再scanはしない）。
-    /// 進行中の収録は`endMS == nil`にして`SessionMatcher`へ渡す
-    private var sessions: [SessionSpan] = []
     /// device単位の受信済み最大seq（`ReceivedCursor`のin-memory mirror）
     private var receivedCursors: [String: Int] = [:]
     private let receivedCursorStore = ReceivedCursor.default()
@@ -88,7 +86,7 @@ actor ServeSession {
 
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
-        control: StdioControl, device: DeviceIdentity, inputDeviceUID: String? = nil
+        control: StdioControl, device: DeviceIdentity, archive: SessionArchive, inputDeviceUID: String? = nil
     ) {
         self.outputDirectory = outputDirectory
         self.owner = owner
@@ -96,8 +94,8 @@ actor ServeSession {
         self.locale = locale
         self.control = control
         self.device = device
+        self.archive = archive
         self.inputDeviceUID = inputDeviceUID
-        self.sessions = SessionIndex.scan(directory: outputDirectory)
     }
 
     /// serveが再起動する前から収録が続いていれば、同じ収録を引き継ぐ。収録中かどうかは望む状態のファイルで判断する。
@@ -111,21 +109,21 @@ actor ServeSession {
             return
         }
         guard let recording = desired?.recording else { return }
-        let store = SessionStore(directory: outputDirectory, prefix: recording.prefix)
-        let text: String
+        let records: [Record]
         do {
             // 電源断などで壊れたbyteがあっても、読める行で引き継ぐ
-            text = String(decoding: try Data(contentsOf: store.timedURL), as: UTF8.self)
+            records = try await archive.readRecords(prefix: recording.prefix, in: outputDirectory)
             try restoreSessionInfoIfMissing(sessionDirectory: URL(fileURLWithPath: recording.directory))
         } catch {
             await control.send(.error("failed to resume \(recording.prefix): \(error)"))
             await writeDesiredStopped()
             return
         }
-        let restored = Reconciler.restore(from: NDJSON.decodeAll(text), device: device.id)
+        let restored = Reconciler.restore(from: records, device: device.id)
+        await archive.begin(prefix: recording.prefix, in: outputDirectory)
         guard
             await beginLive(
-                store: store, sessionDirectory: URL(fileURLWithPath: recording.directory), startAtEnd: true,
+                prefix: recording.prefix, sessionDirectory: URL(fileURLWithPath: recording.directory), startAtEnd: true,
                 keepingCapture: false, reconciler: restored.reconciler, seq: restored.lastSeq)
         else {
             await writeDesiredStopped()
@@ -183,12 +181,13 @@ actor ServeSession {
         while SessionStore.prefix(for: date, timeZone: .current) == lastPrefix {
             date.addTimeInterval(1)
         }
-        let store = SessionStore(directory: outputDirectory, start: date)
-        let sessionDirectory = CaptureSessionPaths.sessionDirectory(prefix: store.prefix)
+        let prefix = SessionStore.prefix(for: date, timeZone: .current)
+        let sessionDirectory = CaptureSessionPaths.sessionDirectory(prefix: prefix)
+        await archive.begin(prefix: prefix, in: outputDirectory)
         do {
-            try await store.append(
-                .session(SessionRecord(id: store.prefix, started: Self.ms(date), owner: owner)))
-            try await store.append(
+            try await archive.appendLive(
+                .session(SessionRecord(id: prefix, started: Self.ms(date), owner: owner)))
+            try await archive.appendLive(
                 .device(
                     DeviceRecord(
                         device: device.id, deviceName: device.name, owner: owner, platform: .mac, offsetMS: 0)))
@@ -200,17 +199,17 @@ actor ServeSession {
             // 停止の書き直しが、ここで書く収録中を上書きしないよう、書く直前に取り下げる
             desiredStopPending = false
             try JSONFile.write(
-                desiredState(.init(prefix: store.prefix, directory: sessionDirectory.path)),
+                desiredState(.init(prefix: prefix, directory: sessionDirectory.path)),
                 to: CaptureStatePaths.captureDesiredURL)
         } catch {
-            await store.close()
+            await archive.abandonCurrent()
             await control.send(.error("failed to start session: \(error)"))
             await writeDesiredStopped()
             return false
         }
         guard
             await beginLive(
-                store: store, sessionDirectory: sessionDirectory, startAtEnd: false, keepingCapture: keepingCapture,
+                prefix: prefix, sessionDirectory: sessionDirectory, startAtEnd: false, keepingCapture: keepingCapture,
                 reconciler: Reconciler(), seq: 0)
         else {
             await writeDesiredStopped()
@@ -223,7 +222,7 @@ actor ServeSession {
     /// 先に全sourceの文字起こしを始め、状態を整えてから結果の受け取りを始める。
     /// 受け取りが先に動くと、確定した発話を保存先が無いまま落とす
     private func beginLive(
-        store: SessionStore, sessionDirectory: URL, startAtEnd: Bool, keepingCapture: Bool, reconciler: Reconciler,
+        prefix: String, sessionDirectory: URL, startAtEnd: Bool, keepingCapture: Bool, reconciler: Reconciler,
         seq: Int
     ) async -> Bool {
         var started: [StartedTranscription] = []
@@ -239,16 +238,16 @@ actor ServeSession {
                 for item in started {
                     await item.transcription.stop()
                 }
-                await store.close()
+                await archive.abandonCurrent()
                 await control.send(.error("failed to start live transcription: \(error)"))
                 return false
             }
         }
-        self.store = store
+        currentPrefix = prefix
         self.reconciler = reconciler
         self.seq = seq
         recording = true
-        lastPrefix = store.prefix
+        lastPrefix = prefix
         recordedPeerDevices = []
         if !keepingCapture {
             captureStatuses = []
@@ -266,7 +265,6 @@ actor ServeSession {
             }
             return LiveStream(source: source, transcription: item.transcription, consumer: consumer)
         }
-        refreshSessions()
         ensureCaptureWatch()
         return true
     }
@@ -288,14 +286,14 @@ actor ServeSession {
 
     private func handleFinal(_ piece: LiveTranscription.Piece, source: Source, owner: String) async {
         guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard let store else {
+        guard let currentPrefix else {
             await control.send(.log("収録していないため発話を保存できません: \(piece.text)"))
             return
         }
         seq += 1
         let segment = Segment(
             id: UUID(),
-            session: store.prefix,
+            session: currentPrefix,
             seq: seq,
             device: device.id,
             deviceName: device.name,
@@ -311,7 +309,7 @@ actor ServeSession {
             clockOffsetMS: 0,
             receivedAt: Self.ms(Date()))
         do {
-            try await store.append(.segment(segment))
+            try await archive.appendLive(.segment(segment))
         } catch {
             await control.send(.error("failed to append segment: \(error)"))
             return
@@ -364,7 +362,7 @@ actor ServeSession {
     }
 
     private func pollCaptureActual() async {
-        guard recording, let prefix = store?.prefix else {
+        guard recording, let prefix = currentPrefix else {
             if desiredStopPending {
                 await retryDesiredStopped()
             }
@@ -399,11 +397,11 @@ actor ServeSession {
     }
 
     private func statusEvent() -> StatusEvent {
-        guard recording, let store else {
+        guard recording, let currentPrefix else {
             return StatusEvent(recording: false, sources: [], outputDirectory: outputDirectory.path)
         }
         return StatusEvent(
-            recording: true, prefix: store.prefix, sources: sourceOption.sources.map(\.source),
+            recording: true, prefix: currentPrefix, sources: sourceOption.sources.map(\.source),
             inputName: micInput?.name, inputSpatial: micInput?.spatial, outputDirectory: outputDirectory.path,
             capture: captureStatuses.isEmpty ? nil : captureStatuses)
     }
@@ -411,13 +409,13 @@ actor ServeSession {
     // MARK: - rename_speaker
 
     private func renameSpeaker(id: String, name: String) async {
-        guard recording, let store else {
+        guard recording else {
             await control.send(.error("not recording"))
             return
         }
         let rename = SpeakerNameRecord(speaker: id, name: name)
         do {
-            try await store.append(.speakerName(rename))
+            try await archive.appendLive(.speakerName(rename))
         } catch {
             await control.send(.error("failed to rename speaker: \(error)"))
             return
@@ -441,24 +439,24 @@ actor ServeSession {
         await control.send(.status(statusEvent()))
     }
 
-    /// ライブの文字起こしを打ち切り、ここまでの発話で`final.md`を書いて収録を閉じる。
+    /// ライブの文字起こしを打ち切り、`session_end`を足して、ここまでの発話で`final.md`を書いて収録を閉じる。
     /// capture-daemonへの指示は呼び出し側が行う
-    private func finishRecording() async {
-        guard let store else { return }
+    @discardableResult
+    private func finishRecording() async -> String? {
+        guard let prefix = currentPrefix else { return nil }
         for stream in live {
             await stream.transcription.stop()
             await stream.consumer.value
         }
         live = []
         do {
-            try await store.writeFinal(TranscriptRenderer.markdown(reconciler.utterances, timeZone: .current))
+            try await archive.endCurrent(endedMS: Self.ms(Date()))
         } catch {
             await control.send(.error("failed to write final: \(error)"))
         }
-        await store.close()
-        self.store = nil
+        currentPrefix = nil
         recording = false
-        refreshSessions()
+        return prefix
     }
 
     // MARK: - rotate
@@ -466,14 +464,14 @@ actor ServeSession {
     /// 取り込みを止めずに新しい収録へ切り替える。望む状態の書き換えで、capture-daemonは書き込み先だけを切り替える。
     /// 中間の`recording:false`のstatusは出さない
     private func rotate() async {
-        guard recording, let oldPrefix = store?.prefix else {
+        guard recording, let oldPrefix = currentPrefix else {
             await control.send(.error("not recording"))
             return
         }
         await finishRecording()
-        if await startNewRecording(keepingCapture: true), let store {
+        if await startNewRecording(keepingCapture: true), let currentPrefix {
             await control.send(.status(statusEvent()))
-            await control.send(.log("rotated \(oldPrefix) -> \(store.prefix)"))
+            await control.send(.log("rotated \(oldPrefix) -> \(currentPrefix)"))
         } else {
             captureStatuses = []
             micInput = nil
@@ -626,13 +624,13 @@ actor ServeSession {
         guard let best = ClockOffset.best(state.offsetSamples), let hello = state.hello else {
             return
         }
-        guard let store, recording, !recordedPeerDevices.contains(hello.device) else { return }
+        guard recording, !recordedPeerDevices.contains(hello.device) else { return }
 
         let record = DeviceRecord(
             device: hello.device, deviceName: hello.deviceName, owner: hello.owner,
             platform: hello.platform, offsetMS: best.offsetMS)
         do {
-            try await store.append(.device(record))
+            try await archive.appendLive(.device(record))
             recordedPeerDevices.insert(hello.device)
         } catch {
             await control.send(.error("failed to append device record: \(error)"))
@@ -657,11 +655,12 @@ actor ServeSession {
         seg.receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
 
         let normalizedStart = seg.start + seg.clockOffsetMS
-        let matchedPrefix = SessionMatcher.match(segmentStartMS: normalizedStart, sessions: sessions)
+        let matchedPrefix = SessionMatcher.match(
+            segmentStartMS: normalizedStart, sessions: await archive.sessions(in: outputDirectory))
 
-        if let matchedPrefix, let store, recording, matchedPrefix == store.prefix {
+        if let matchedPrefix, recording, matchedPrefix == currentPrefix {
             do {
-                try await store.append(.segment(seg))
+                try await archive.appendLive(.segment(seg))
                 for utterance in reconciler.apply(.segment(seg)) {
                     await control.send(.utterance(utterance))
                 }
@@ -669,9 +668,20 @@ actor ServeSession {
                 await control.send(.error("failed to append peer segment: \(error)"))
             }
         } else if let matchedPrefix {
-            await appendToPastSession(prefix: matchedPrefix, segment: seg)
+            do {
+                try await archive.appendAndRender([.segment(seg)], prefix: matchedPrefix, in: outputDirectory)
+                await control.send(.log("appended peer seg to \(matchedPrefix), final.md regenerated"))
+            } catch {
+                await control.send(.error("failed to append peer seg to \(matchedPrefix): \(error)"))
+            }
         } else {
-            await appendOrphan(seg)
+            do {
+                try await archive.appendOrphan(seg, in: outputDirectory)
+                await control.send(
+                    .log("no matching session for peer seg from \(seg.device), appended to orphans.jsonl"))
+            } catch {
+                await control.send(.error("failed to append orphan seg: \(error)"))
+            }
         }
 
         updateCursor(device: seg.device, seq: seg.seq)
@@ -692,62 +702,6 @@ actor ServeSession {
         guard seq > current else { return }
         receivedCursors[device] = seq
         try? receivedCursorStore.save(device: device, seq: seq)
-    }
-
-    /// 停止済みの収録`prefix`のtimed.jsonlへ`segment`を追記し、その収録のfinal.mdを
-    /// 全recordの再foldから再生成する
-    private func appendToPastSession(prefix: String, segment: Segment) async {
-        let timedURL = SessionIndex.timedURL(directory: outputDirectory, prefix: prefix)
-        do {
-            let line = try NDJSON.encode(.segment(segment)) + "\n"
-            if !FileManager.default.fileExists(atPath: timedURL.path) {
-                FileManager.default.createFile(atPath: timedURL.path, contents: nil)
-            }
-            let handle = try FileHandle(forWritingTo: timedURL)
-            _ = try handle.seekToEnd()
-            try handle.write(contentsOf: Data(line.utf8))
-            try handle.close()
-
-            let text = try String(contentsOf: timedURL, encoding: .utf8)
-            let markdown = TranscriptRenderer.markdown(Reconciler.fold(NDJSON.decodeAll(text)), timeZone: .current)
-            let finalURL = SessionIndex.finalURL(directory: outputDirectory, prefix: prefix)
-            try Data(markdown.utf8).write(to: finalURL, options: .atomic)
-
-            await control.send(.log("appended peer seg to \(prefix), final.md regenerated"))
-        } catch {
-            await control.send(.error("failed to append peer seg to \(prefix): \(error)"))
-        }
-    }
-
-    /// どの収録にも入らないsegを`<output>/orphans.jsonl`へ追記して捨てない
-    private func appendOrphan(_ segment: Segment) async {
-        let orphansURL = outputDirectory.appendingPathComponent("orphans.jsonl")
-        do {
-            let line = try NDJSON.encode(.segment(segment)) + "\n"
-            if !FileManager.default.fileExists(atPath: orphansURL.path) {
-                FileManager.default.createFile(atPath: orphansURL.path, contents: nil)
-            }
-            let handle = try FileHandle(forWritingTo: orphansURL)
-            _ = try handle.seekToEnd()
-            try handle.write(contentsOf: Data(line.utf8))
-            try handle.close()
-            await control.send(
-                .log("no matching session for peer seg from \(segment.device), appended to orphans.jsonl"))
-        } catch {
-            await control.send(.error("failed to append orphan seg: \(error)"))
-        }
-    }
-
-    // MARK: - peer: session index cache
-
-    /// `sessions`をディスクの`*.timed.jsonl`から再構成する。進行中の収録があれば
-    /// `endMS`をnilへ差し替え、それ以降のstart/stop/rotateまでこの状態で使い続ける
-    private func refreshSessions() {
-        var scanned = SessionIndex.scan(directory: outputDirectory)
-        if let store, recording, let index = scanned.firstIndex(where: { $0.prefix == store.prefix }) {
-            scanned[index].endMS = nil
-        }
-        sessions = scanned
     }
 }
 #endif

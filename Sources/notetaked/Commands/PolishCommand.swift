@@ -44,7 +44,7 @@ struct Polish: AsyncParsableCommand {
             throw ValidationError("no session record in \(timedPath)")
         }
         let recordedAt = Date(timeIntervalSince1970: Double(sessionRecord.started) / 1000)
-        let utterances = Reconciler.fold(records)
+        let utterances = SessionTranscript.utterances(timedText: text)
         let turns = PolishChunker.turns(from: utterances)
         let chunks = PolishChunker.chunks(turns, maxCharacters: maxCharacters)
 

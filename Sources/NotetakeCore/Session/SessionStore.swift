@@ -40,11 +40,6 @@ public actor SessionStore {
         }
     }
 
-    /// final.mdを上書き（atomic）
-    public func writeFinal(_ markdown: String) throws {
-        try Data(markdown.utf8).write(to: finalURL, options: .atomic)
-    }
-
     public func close() {
         try? timedHandle?.close()
         try? liveHandle?.close()
@@ -52,28 +47,11 @@ public actor SessionStore {
         liveHandle = nil
     }
 
-    /// 書き手が落ちて改行で終わっていない最後の行は、その行だけが壊れた行になるよう改行で閉じてから追記する。
-    /// 末尾へ移動して返す
-    private func closeUnterminatedLastLine(of handle: FileHandle) throws {
-        let end = try handle.seekToEnd()
-        guard end > 0 else { return }
-        try handle.seek(toOffset: end - 1)
-        let last = try handle.read(upToCount: 1)
-        try handle.seekToEnd()
-        if last != Data([0x0A]) {
-            try handle.write(contentsOf: Data([0x0A]))
-        }
-    }
-
     private func openHandle(at url: URL, cached: inout FileHandle?) throws -> FileHandle {
         if let handle = cached {
             return handle
         }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        let handle = try FileHandle(forUpdating: url)
-        try closeUnterminatedLastLine(of: handle)
+        let handle = try TimedFile.openForAppend(at: url)
         cached = handle
         return handle
     }

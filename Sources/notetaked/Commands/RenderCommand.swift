@@ -19,13 +19,9 @@ struct Render: AsyncParsableCommand {
         }
         let prefix = String(filename.dropLast(".timed.jsonl".count))
 
-        let text = try String(contentsOf: timedURL, encoding: .utf8)
-        let utterances = Reconciler.fold(NDJSON.decodeAll(text))
-        let markdown = TranscriptRenderer.markdown(utterances, timeZone: .current)
-
-        let finalURL = timedURL.deletingLastPathComponent()
-            .appendingPathComponent("\(prefix).final.md")
-        try Data(markdown.utf8).write(to: finalURL, options: .atomic)
+        let directory = timedURL.deletingLastPathComponent()
+        try await SessionArchive().renderFinal(prefix: prefix, in: directory)
+        let finalURL = SessionFiles.finalURL(prefix: prefix, directory: directory)
         print(finalURL.path)
     }
 }

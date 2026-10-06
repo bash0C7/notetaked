@@ -74,7 +74,7 @@ struct Serve: AsyncParsableCommand {
         let session = ServeSession(
             outputDirectory: outputURL, owner: owner, sourceOption: sourceOption,
             locale: selectedLocale, control: stdioControl, device: DeviceIdentity.load(),
-            inputDeviceUID: inputDeviceUID)
+            archive: SessionArchive(), inputDeviceUID: inputDeviceUID)
 
         await stdioControl.send(
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))
