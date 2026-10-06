@@ -1,10 +1,9 @@
 #if canImport(Speech)
-import FluidAudio
 import Foundation
 import NotetakeCore
 
-/// serve daemonの収録状態（store / reconciler / seq / 起動中のCaptureStream）を保持し、
-/// stdinのCommandとcapture eventが競合しないよう1つのactorへ直列化する
+/// serveの収録の状態（出力ファイル、Reconciler、ライブの文字起こし、capture-daemonの状態）を持ち、
+/// stdinのコマンド、文字起こしの結果、peerからの受信が競合しないよう1つのactorへ直列化する
 @available(macOS 26, iOS 26, *)
 actor ServeSession {
     enum SourceOption: String {
@@ -22,20 +21,18 @@ actor ServeSession {
         }
     }
 
-    private struct RunningStream {
+    private struct LiveStream {
         let source: Source
-        let owner: String
-        let input: InputDevice
-        let stream: CaptureStream
+        let transcription: LiveTranscription
         let consumer: Task<Void, Never>
-        /// raw file経由のsource（mic/system）ならその`RawAudioReaderCapture`。
-        /// `.watch`（未実装）はnil
-        let rawCapture: RawAudioReaderCapture?
     }
 
-    /// `CaptureStatePaths.currentSessionMarkerURL`へ書く再開マーカーの中身
-    private struct SessionMarker: Codable {
-        let prefix: String
+    /// 状態を整える前の、始めたばかりのライブの文字起こし
+    private struct StartedTranscription {
+        let source: Source
+        let owner: String
+        let transcription: LiveTranscription
+        let outputs: AsyncStream<LiveTranscription.Output>
     }
 
     /// peer接続1本ぶんの状態（hello情報・clock offset・ping往復管理）
@@ -54,28 +51,26 @@ actor ServeSession {
     private let locale: Locale
     private let control: StdioControl
     private let device: DeviceIdentity
-    private let diarizerModels: DiarizerModels?
-    private let profileStore: SpeakerProfileStore?
-    /// micを固定したい入力デバイスのUID。nilなら常にOS既定（#14の既存動作のまま）
+    /// micを固定したい入力機器のUID。nilなら既定の入力を使う
     private let inputDeviceUID: String?
 
     private var store: SessionStore?
     private var reconciler = Reconciler()
     private var seq = 0
-    private var streams: [RunningStream] = []
-    /// 現在収録中のmic streamの入力機材。mic無しならnil。収録停止でnilに戻す
-    private var currentInput: InputDevice?
+    private var live: [LiveStream] = []
     private var recording = false
-    /// 直前に使ったprefix。同一秒内でのstart/rotateがprefixを衝突させないよう、
-    /// startCaptureで開始日時をずらすのに使う
+    /// 直前に使ったprefix。同じ秒の中で開始と区切りが重なってもprefixが衝突しないよう、開始時刻をずらすのに使う
     private var lastPrefix: String?
-    /// mic/systemのlocal話者idをMac横断の大域idへ束ねる。1回のserve起動（プロセス）の間、
-    /// stop→startやrotateをまたいで保持する（同じ人には同じ大域idを付け続けるため、
-    /// startCapture()ではリセットしない）
-    private var registry: SpeakerRegistry
-    /// profile由来の話者名を、そのcaptureで大域idが初めて出た時に1回だけ発話へ流すための判定。
-    /// captureごと（startCapture）にリセットする
-    private var nameAnnouncer = ProfileNameAnnouncer()
+    /// serveの寿命で1つ。収録ごとの記憶は`beginRecording`で消す
+    private var captureWatcher = CaptureActualWatcher()
+    /// 望む状態を停止へ書けなかった。書けるまで1秒ごとに書き直す
+    private var desiredStopPending = false
+    /// 直前に読めなかった実状態の失敗。同じ失敗はlogへ1度だけ出す
+    private var lastActualReadError: String?
+    private var captureStatuses: [CaptureStatus] = []
+    /// capture-daemonが実状態で伝えるmicの入力機器
+    private var micInput: InputDevice?
+    private var captureWatchTask: Task<Void, Never>?
 
     // MARK: - peer (iPhone/Watch)
 
@@ -91,19 +86,9 @@ actor ServeSession {
     /// 進行中の収録で既にDeviceRecordを書いたdevice id集合。新しいprefixで開始するたびリセットする
     private var recordedPeerDevices: Set<String> = []
 
-    // MARK: - capture-daemon control channel
-
-    private let captureCommandChannel = CaptureControlChannel<CaptureCommand>(fileURL: CaptureStatePaths.captureCommandURL)
-    private let captureEventChannel = CaptureControlChannel<CaptureEvent>(fileURL: CaptureStatePaths.captureEventURL)
-    private var lastCaptureEventSeenAt: Date?
-    private var captureEventPollTask: Task<Void, Never>?
-    /// source名（"mic"/"system"） -> そのsourceのcheckpointファイルURL。startCaptureのたび更新
-    private var checkpointURLs: [String: URL] = [:]
-
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
-        control: StdioControl, device: DeviceIdentity, diarizerModels: DiarizerModels?,
-        registry: SpeakerRegistry, profileStore: SpeakerProfileStore?, inputDeviceUID: String? = nil
+        control: StdioControl, device: DeviceIdentity, inputDeviceUID: String? = nil
     ) {
         self.outputDirectory = outputDirectory
         self.owner = owner
@@ -111,62 +96,54 @@ actor ServeSession {
         self.locale = locale
         self.control = control
         self.device = device
-        self.diarizerModels = diarizerModels
-        self.registry = registry
-        self.profileStore = profileStore
         self.inputDeviceUID = inputDeviceUID
         self.sessions = SessionIndex.scan(directory: outputDirectory)
     }
 
-    /// crash後の再起動で、直前に収録中だったsessionがあれば同じprefixで再開する。
-    /// actor外（`ServeCommand`の起動処理）から呼ばれる
-    func resumeIfNeeded() async {
-        guard let data = try? Data(contentsOf: CaptureStatePaths.currentSessionMarkerURL),
-            let marker = try? JSONDecoder().decode(SessionMarker.self, from: data)
-        else { return }
-        if await startCapture(resumePrefix: marker.prefix), let store {
-            await control.send(
-                .status(
-                    StatusEvent(
-                        recording: true, prefix: store.prefix,
-                        sources: streams.map(\.source),
-                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
-                        outputDirectory: outputDirectory.path)))
+    /// serveが再起動する前から収録が続いていれば、同じ収録を引き継ぐ。収録中かどうかは望む状態のファイルで判断する。
+    /// 再起動の間の音声はライブの表示には出ないが、生音声には残る
+    func resumeIfRecording() async {
+        let desired: CaptureDesiredState?
+        do {
+            desired = try JSONFile.read(CaptureDesiredState.self, from: CaptureStatePaths.captureDesiredURL)
+        } catch {
+            await control.send(.error("failed to read capture desired state: \(error)"))
+            return
         }
+        guard let recording = desired?.recording else { return }
+        let store = SessionStore(directory: outputDirectory, prefix: recording.prefix)
+        let text: String
+        do {
+            // 電源断などで壊れたbyteがあっても、読める行で引き継ぐ
+            text = String(decoding: try Data(contentsOf: store.timedURL), as: UTF8.self)
+            try restoreSessionInfoIfMissing(sessionDirectory: URL(fileURLWithPath: recording.directory))
+        } catch {
+            await control.send(.error("failed to resume \(recording.prefix): \(error)"))
+            await writeDesiredStopped()
+            return
+        }
+        let restored = Reconciler.restore(from: NDJSON.decodeAll(text), device: device.id)
+        guard
+            await beginLive(
+                store: store, sessionDirectory: URL(fileURLWithPath: recording.directory), startAtEnd: true,
+                keepingCapture: false, reconciler: restored.reconciler, seq: restored.lastSeq)
+        else {
+            await writeDesiredStopped()
+            return
+        }
+        await control.send(.status(statusEvent()))
+        await control.send(.log("resumed \(recording.prefix)"))
     }
 
-    /// inputFallback eventのポーリングを（まだ動いていなければ）開始する。
-    /// actorのinit内で`Task { [weak self] in ... }`を組むとself未完全初期化扱いでコンパイルが通らないため、
-    /// 最初の`startCapture()`で遅延起動する
-    private func ensureCaptureEventPolling() {
-        guard captureEventPollTask == nil else { return }
-        // channelファイルは前回processのeventを消さずに残るため、このinstanceのpolling開始時点を
-        // 「既読」として扱う。こうしないと再起動直後に前回runの`.inputFallback`を誤って再生してしまう。
-        lastCaptureEventSeenAt = Date()
-        captureEventPollTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                await self.pollCaptureEvents()
-                try? await Task.sleep(nanoseconds: 200_000_000)
-            }
-        }
-    }
-
-    private func pollCaptureEvents() async {
-        guard let (event, seenAt) = captureEventChannel.poll(after: lastCaptureEventSeenAt) else { return }
-        lastCaptureEventSeenAt = seenAt
-        if case .inputFallback = event {
-            await handleInputFallback()
-        }
-    }
-
-    /// "yyyy-MM-dd_HHmmss"（`SessionStore.prefix(for:timeZone:)`と同じformat）をDateへ復元する。
-    /// resumeでは`SessionStore(directory:start:)`にこのDateを渡すことで、同じprefix文字列を再現する
-    private static func date(fromPrefix prefix: String, timeZone: TimeZone) -> Date? {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd_HHmmss"
-        return formatter.date(from: prefix)
+    /// 再起動の前に生音声のディレクトリが消えていても、段階2が出力先を辿れるよう`session.json`を書き直す
+    private func restoreSessionInfoIfMissing(sessionDirectory: URL) throws {
+        let url = CaptureSessionPaths.sessionInfoURL(sessionDirectory: sessionDirectory)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        try JSONFile.write(
+            CaptureSessionInfo(
+                outputDirectory: outputDirectory.path, device: device.id, deviceName: device.name, owner: owner),
+            to: url)
     }
 
     func handle(_ command: Command) async {
@@ -193,206 +170,129 @@ actor ServeSession {
             await control.send(.error("already recording"))
             return
         }
-
-        if await startCapture(), let store {
-            await control.send(
-                .status(
-                    StatusEvent(
-                        recording: true, prefix: store.prefix,
-                        sources: streams.map(\.source),
-                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
-                        outputDirectory: outputDirectory.path)))
+        if await startNewRecording(keepingCapture: false) {
+            await control.send(.status(statusEvent()))
         }
     }
 
-    /// storeの作成・session/deviceレコード書き込み・CaptureStream起動までを行い、
-    /// 成功時は`store` / `reconciler` / `seq` / `streams` / `recording` / `lastPrefix`を更新する。
-    /// 失敗時は今までと同じ`.error(...)`を送って`false`を返す（呼び出し元がstatusを出す）。
-    /// `resumePrefix`が指定された場合（crash後の再開）は衝突回避の日時ずらしを行わず、
-    /// そのprefixを再現するDateから`SessionStore`を作る
-    private func startCapture(resumePrefix: String? = nil) async -> Bool {
-        ensureCaptureEventPolling()
-        let startDate: Date
-        if let resumePrefix {
-            guard let parsed = ServeSession.date(fromPrefix: resumePrefix, timeZone: .current) else {
-                await control.send(.error("failed to resume session: invalid prefix \(resumePrefix)"))
-                return false
-            }
-            startDate = parsed
-        } else {
-            var date = Date()
-            while SessionStore.prefix(for: date, timeZone: .current) == lastPrefix {
-                date.addTimeInterval(1)
-            }
-            startDate = date
+    /// 新しい収録を始める。出力ファイルへ収録とMacの記録を書き、生音声ディレクトリへ`session.json`を書いてから、
+    /// 望む状態でcapture-daemonへ書き込み先を伝え、ライブの文字起こしを始める
+    /// `keepingCapture`は区切りの時だけtrue。取り込みの状態と入力機器を引き継ぎ、表示が途切れないようにする
+    private func startNewRecording(keepingCapture: Bool) async -> Bool {
+        var date = Date()
+        while SessionStore.prefix(for: date, timeZone: .current) == lastPrefix {
+            date.addTimeInterval(1)
         }
-        let store = SessionStore(directory: outputDirectory, start: startDate)
+        let store = SessionStore(directory: outputDirectory, start: date)
+        let sessionDirectory = CaptureSessionPaths.sessionDirectory(prefix: store.prefix)
         do {
             try await store.append(
-                .session(
-                    SessionRecord(
-                        id: store.prefix,
-                        started: Int64((startDate.timeIntervalSince1970 * 1000).rounded()),
-                        owner: owner)))
+                .session(SessionRecord(id: store.prefix, started: Self.ms(date), owner: owner)))
             try await store.append(
                 .device(
                     DeviceRecord(
-                        device: device.id, deviceName: device.name, owner: owner,
-                        platform: .mac, offsetMS: 0)))
+                        device: device.id, deviceName: device.name, owner: owner, platform: .mac, offsetMS: 0)))
+            try JSONFile.write(
+                CaptureSessionInfo(
+                    outputDirectory: outputDirectory.path, device: device.id, deviceName: device.name,
+                    owner: owner),
+                to: CaptureSessionPaths.sessionInfoURL(sessionDirectory: sessionDirectory))
+            // 停止の書き直しが、ここで書く収録中を上書きしないよう、書く直前に取り下げる
+            desiredStopPending = false
+            try JSONFile.write(
+                desiredState(.init(prefix: store.prefix, directory: sessionDirectory.path)),
+                to: CaptureStatePaths.captureDesiredURL)
         } catch {
             await store.close()
             await control.send(.error("failed to start session: \(error)"))
+            await writeDesiredStopped()
             return false
         }
-
-        let sessionDirectory = CaptureSessionPaths.sessionDirectory(prefix: store.prefix)
-        let sourceNames = sourceOption.sources.map { $0.source == .system ? "system" : "mic" }
-        do {
-            try captureCommandChannel.send(
-                .startSession(
-                    directory: sessionDirectory.path, sources: sourceNames, inputDeviceUID: inputDeviceUID))
-        } catch {
-            await store.close()
-            await control.send(.error("failed to start capture: \(error)"))
+        guard
+            await beginLive(
+                store: store, sessionDirectory: sessionDirectory, startAtEnd: false, keepingCapture: keepingCapture,
+                reconciler: Reconciler(), seq: 0)
+        else {
+            await writeDesiredStopped()
             return false
         }
-
-        var started: [RunningStream] = []
-        var startError: Error?
-        var newCheckpointURLs: [String: URL] = [:]
-
-        for (source, ownerFor) in sourceOption.sources {
-            do {
-                let capture: any AudioCapture
-                var rawCapture: RawAudioReaderCapture?
-                switch source {
-                case .mic, .system:
-                    let sourceName = source == .system ? "system" : "mic"
-                    let rawFileURL = CaptureSessionPaths.rawFileURL(
-                        sessionDirectory: sessionDirectory, source: sourceName)
-                    let checkpointURL = CaptureSessionPaths.checkpointFileURL(
-                        sessionDirectory: sessionDirectory, source: sourceName)
-                    newCheckpointURLs[sourceName] = checkpointURL
-                    // checkpointは常にディスクから読み直す（crash後に再構築されたServeSessionは
-                    // in-memoryのcheckpointを持たないため、これがsource of truth）
-                    let startOffset = CaptureCheckpoint.load(from: checkpointURL).offsets[sourceName] ?? 0
-                    let raw = try await RawAudioReaderCapture(fileURL: rawFileURL, startOffset: startOffset)
-                    rawCapture = raw
-                    capture = raw
-                case .watch:
-                    throw CaptureStreamError.sourceNotImplemented(source)
-                }
-                let captureStream = try await CaptureStream(
-                    source: source, capture: capture, locale: locale,
-                    diarizerModels: diarizerModels)
-                let events = try await captureStream.start()
-                let streamOwner = ownerFor(owner)
-                let inputAt: @Sendable () -> InputDevice
-                if source == .system {
-                    inputAt = { .system }
-                } else {
-                    // mic capture自体はcapture-daemonプロセス側にあるため、このprocessからは
-                    // 生きたMicCaptureへ問い合わせられない。pin中かどうかに関わらずOS既定入力を返す
-                    // （非pin時は元の挙動と同じだが、pin中はcurrentInputDevice()相当の情報が失われる）
-                    inputAt = { InputDeviceProbe.current() }
-                }
-                let input: InputDevice = inputAt()
-                let consumer = Task { [weak self] in
-                    for await event in events {
-                        await self?.handle(
-                            streamEvent: event, source: source, owner: streamOwner, input: inputAt())
-                    }
-                }
-                started.append(
-                    RunningStream(
-                        source: source, owner: streamOwner, input: input, stream: captureStream,
-                        consumer: consumer, rawCapture: rawCapture))
-            } catch {
-                startError = error
-                break
-            }
-        }
-
-        if let startError {
-            for running in started {
-                try? await running.stream.stop()
-                await running.consumer.value
-            }
-            await store.close()
-            try? captureCommandChannel.send(.stopSession)
-            await control.send(.error("failed to start capture: \(startError)"))
-            return false
-        }
-
-        // 既存のtimed.jsonl（resumeなら前回crash分、新規sessionなら存在しない）を畳み込み、
-        // final.mdがcrash前の内容を失わないようreconciler/seqを復元する
-        var resumedReconciler = Reconciler()
-        var resumedSeq = 0
-        if let text = try? String(contentsOf: store.timedURL, encoding: .utf8) {
-            for record in NDJSON.decodeAll(text) {
-                resumedReconciler.apply(record)
-                if case .segment(let seg) = record {
-                    resumedSeq = max(resumedSeq, seg.seq)
-                }
-            }
-        }
-
-        self.store = store
-        self.reconciler = resumedReconciler
-        self.nameAnnouncer = ProfileNameAnnouncer()
-        self.seq = resumedSeq
-        self.streams = started
-        self.currentInput = started.first(where: { $0.source == .mic })?.input
-        self.recording = true
-        self.lastPrefix = store.prefix
-        self.recordedPeerDevices = []
-        self.checkpointURLs = newCheckpointURLs
-        refreshSessions()
-
-        if let data = try? JSONEncoder().encode(SessionMarker(prefix: store.prefix)) {
-            try? data.write(to: CaptureStatePaths.currentSessionMarkerURL, options: .atomic)
-        }
-
         return true
     }
 
-    /// pin中の入力デバイスが切断されOS既定へフォールバックした時、capture-daemonが送る
-    /// `.inputFallback` eventを`pollCaptureEvents()`が受けて呼ぶ
-    private func handleInputFallback() async {
-        await control.send(.inputReset)
+    /// sourceごとにライブの文字起こしを始め、収録中の状態へ移る。失敗したら始めた分を止めて`false`を返す。
+    /// 先に全sourceの文字起こしを始め、状態を整えてから結果の受け取りを始める。
+    /// 受け取りが先に動くと、確定した発話を保存先が無いまま落とす
+    private func beginLive(
+        store: SessionStore, sessionDirectory: URL, startAtEnd: Bool, keepingCapture: Bool, reconciler: Reconciler,
+        seq: Int
+    ) async -> Bool {
+        var started: [StartedTranscription] = []
+        for (source, ownerFor) in sourceOption.sources {
+            do {
+                let transcription = try await LiveTranscription(
+                    source: source, sessionDirectory: sessionDirectory, locale: locale, startAtEnd: startAtEnd)
+                let outputs = try await transcription.start()
+                started.append(
+                    StartedTranscription(
+                        source: source, owner: ownerFor(owner), transcription: transcription, outputs: outputs))
+            } catch {
+                for item in started {
+                    await item.transcription.stop()
+                }
+                await store.close()
+                await control.send(.error("failed to start live transcription: \(error)"))
+                return false
+            }
+        }
+        self.store = store
+        self.reconciler = reconciler
+        self.seq = seq
+        recording = true
+        lastPrefix = store.prefix
+        recordedPeerDevices = []
+        if !keepingCapture {
+            captureStatuses = []
+            micInput = nil
+        }
+        captureWatcher.beginRecording(keepingSnapshot: keepingCapture)
+        live = started.map { item in
+            let source = item.source
+            let streamOwner = item.owner
+            let outputs = item.outputs
+            let consumer = Task { [weak self] in
+                for await output in outputs {
+                    await self?.handle(output, source: source, owner: streamOwner)
+                }
+            }
+            return LiveStream(source: source, transcription: item.transcription, consumer: consumer)
+        }
+        refreshSessions()
+        ensureCaptureWatch()
+        return true
     }
 
-    // MARK: - stream events
+    // MARK: - live transcription
 
-    private func handle(streamEvent: StreamEvent, source: Source, owner: String, input: InputDevice) async {
-        switch streamEvent {
+    private func handle(_ output: LiveTranscription.Output, source: Source, owner: String) async {
+        switch output {
         case .volatile(let text):
             await control.send(.volatile(source: source, text: text))
-        case .final(let piece, let levelDBFS):
-            await handleFinal(piece, levelDBFS: levelDBFS, source: source, owner: owner, input: input)
+        case .final(let piece):
+            await handleFinal(piece, source: source, owner: owner)
         case .log(let message):
             await control.send(.log(message))
+        case .error(let message):
+            await control.send(.error(message))
         }
     }
 
-    private func handleFinal(
-        _ piece: AlignedPiece, levelDBFS: Double, source: Source, owner: String, input: InputDevice
-    ) async {
+    private func handleFinal(_ piece: LiveTranscription.Piece, source: Source, owner: String) async {
         guard !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard let store else { return }
-
-        seq += 1
-        let receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
-
-        var speaker: SpeakerTag?
-        var profileName: SpeakerNameRecord?
-        if let local = piece.localSpeaker, let embedding = piece.embedding {
-            let global = registry.assign(
-                streamKey: source.rawValue, localID: local, embedding: embedding)
-            speaker = SpeakerTag(local: local, global: global, embedding: embedding)
-            profileName = nameAnnouncer.record(for: global, in: registry)
+        guard let store else {
+            await control.send(.log("収録していないため発話を保存できません: \(piece.text)"))
+            return
         }
-
+        seq += 1
         let segment = Segment(
             id: UUID(),
             session: store.prefix,
@@ -402,53 +302,110 @@ actor ServeSession {
             owner: owner,
             platform: .mac,
             source: source,
-            input: input,
+            input: piece.input,
             start: piece.startMS,
             end: piece.endMS,
             text: piece.text,
             confidence: piece.confidence,
-            levelDBFS: levelDBFS,
-            speaker: speaker,
+            levelDBFS: piece.levelDBFS,
             clockOffsetMS: 0,
-            receivedAt: receivedAt)
-
-        if let profileName {
-            do {
-                try await store.append(.speakerName(profileName))
-            } catch {
-                await control.send(.error("failed to append speaker name: \(error)"))
-                return
-            }
-            for utterance in reconciler.apply(.speakerName(profileName)) {
-                await control.send(.utterance(utterance))
-            }
-        }
-
+            receivedAt: Self.ms(Date()))
         do {
             try await store.append(.segment(segment))
         } catch {
             await control.send(.error("failed to append segment: \(error)"))
             return
         }
-
-        let sourceName = source == .system ? "system" : "mic"
-        if let runningStream = streams.first(where: { $0.source == source }),
-            let rawCapture = runningStream.rawCapture,
-            let checkpointURL = checkpointURLs[sourceName]
-        {
-            // checkpointは「読み終えた位置」ではなく「finalizeされた音声の終端位置」を記録する。
-            // readerは最大12秒超のhold-limit（＋diarizer backlog）ぶん先まで読み進んでいるため、
-            // read位置をそのまま使うとcrash後の再開で未処理区間を読み飛ばし、data lossになる
-            let originMS = Int64((runningStream.stream.origin.timeIntervalSince1970 * 1000).rounded())
-            let audioElapsedMS = piece.endMS - originMS
-            var checkpoint = CaptureCheckpoint.load(from: checkpointURL)
-            checkpoint.offsets[sourceName] = rawCapture.offset(atOrBeforeAudioMS: audioElapsedMS)
-            try? checkpoint.save(to: checkpointURL)
-        }
-
         for utterance in reconciler.apply(.segment(segment)) {
             await control.send(.utterance(utterance))
         }
+    }
+
+    // MARK: - capture-daemon
+
+    private func desiredState(_ recording: CaptureDesiredState.Recording?) -> CaptureDesiredState {
+        CaptureDesiredState(
+            recording: recording, sources: sourceOption.sources.map(\.source), pinnedInputUID: inputDeviceUID)
+    }
+
+    /// capture-daemonへ取り込みを止めるよう伝える
+    /// 書けなければ、書けるまで実状態を読む繰り返しで書き直す
+    private func writeDesiredStopped() async {
+        do {
+            try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
+            desiredStopPending = false
+        } catch {
+            desiredStopPending = true
+            ensureCaptureWatch()
+            await control.send(.error("failed to write capture desired state: \(error)"))
+        }
+    }
+
+    private func retryDesiredStopped() async {
+        do {
+            try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
+            desiredStopPending = false
+            await control.send(.log("capture desired stateを停止へ書き直しました"))
+        } catch {
+            // 失敗は書いた時に伝えてある。書けるまで1秒ごとに続ける
+        }
+    }
+
+    /// 実状態を1秒ごとに読む処理を、まだ動いていなければ始める。
+    /// actorの`init`ではselfを捕まえるTaskを作れないため、最初の収録で始める
+    private func ensureCaptureWatch() {
+        guard captureWatchTask == nil else { return }
+        captureWatchTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                await self.pollCaptureActual()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func pollCaptureActual() async {
+        guard recording, let prefix = store?.prefix else {
+            if desiredStopPending {
+                await retryDesiredStopped()
+            }
+            return
+        }
+        let actual: CaptureActualState?
+        do {
+            actual = try JSONFile.read(CaptureActualState.self, from: CaptureStatePaths.captureActualURL)
+            lastActualReadError = nil
+        } catch {
+            // 解釈できない実状態は、capture-daemonが応答していない時と同じに扱う。原因は1度だけlogへ出す
+            actual = nil
+            let message = "実状態を読めません: \(error)"
+            if message != lastActualReadError {
+                lastActualReadError = message
+                await control.send(.log(message))
+            }
+        }
+        let changes = captureWatcher.observe(
+            actual, prefix: prefix, sources: sourceOption.sources.map(\.source), nowMS: Self.ms(Date()))
+        if let snapshot = changes.snapshot {
+            captureStatuses = snapshot.statuses
+            micInput = snapshot.micInput
+            await control.send(.status(statusEvent()))
+        }
+        if changes.inputReset {
+            await control.send(.inputReset)
+        }
+        for message in changes.errors {
+            await control.send(.error(message))
+        }
+    }
+
+    private func statusEvent() -> StatusEvent {
+        guard recording, let store else {
+            return StatusEvent(recording: false, sources: [], outputDirectory: outputDirectory.path)
+        }
+        return StatusEvent(
+            recording: true, prefix: store.prefix, sources: sourceOption.sources.map(\.source),
+            inputName: micInput?.name, inputSpatial: micInput?.spatial, outputDirectory: outputDirectory.path,
+            capture: captureStatuses.isEmpty ? nil : captureStatuses)
     }
 
     // MARK: - rename_speaker
@@ -458,7 +415,6 @@ actor ServeSession {
             await control.send(.error("not recording"))
             return
         }
-
         let rename = SpeakerNameRecord(speaker: id, name: name)
         do {
             try await store.append(.speakerName(rename))
@@ -466,22 +422,6 @@ actor ServeSession {
             await control.send(.error("failed to rename speaker: \(error)"))
             return
         }
-
-        registry.setName(name, for: id)
-        nameAnnouncer.markAnnounced(id)
-        do {
-            try await store.writeSpeakers(registry.profiles)
-        } catch {
-            await control.send(.error("failed to write speakers: \(error)"))
-        }
-        if let profileStore {
-            do {
-                try profileStore.save(registry.namedProfiles)
-            } catch {
-                await control.send(.error("failed to save speaker profiles: \(error)"))
-            }
-        }
-
         for utterance in reconciler.apply(.speakerName(rename)) {
             await control.send(.utterance(utterance))
         }
@@ -490,107 +430,61 @@ actor ServeSession {
     // MARK: - stop
 
     private func stop() async {
-        guard recording, store != nil else {
+        guard recording else {
             await control.send(.error("not recording"))
             return
         }
-
-        await stopCapture()
-
-        await control.send(
-            .status(
-                StatusEvent(
-                    recording: false, prefix: nil, sources: [],
-                    outputDirectory: outputDirectory.path)))
+        await finishRecording()
+        captureStatuses = []
+        micInput = nil
+        await writeDesiredStopped()
+        await control.send(.status(statusEvent()))
     }
 
-    /// streamsの停止・final書き出し・storeのcloseを行い、`store` / `recording`をリセットする
-    private func stopCapture() async {
+    /// ライブの文字起こしを打ち切り、ここまでの発話で`final.md`を書いて収録を閉じる。
+    /// capture-daemonへの指示は呼び出し側が行う
+    private func finishRecording() async {
         guard let store else { return }
-
-        for running in streams {
-            do {
-                try await running.stream.stop()
-            } catch {
-                await control.send(.error("failed to stop capture: \(error)"))
-                // CaptureStream.stop()はfailure時もevent streamをfinishさせるが、
-                // 万一終わらなかった場合にconsumerのfor-awaitが無限にwedgeしないよう保険で
-                // cancelしてからawaitする
-                running.consumer.cancel()
-            }
-            await running.consumer.value
+        for stream in live {
+            await stream.transcription.stop()
+            await stream.consumer.value
         }
-        streams = []
-
-        let markdown = TranscriptRenderer.markdown(reconciler.resolveFallbackSpeakers(), timeZone: .current)
+        live = []
         do {
-            try await store.writeFinal(markdown)
+            try await store.writeFinal(TranscriptRenderer.markdown(reconciler.utterances, timeZone: .current))
         } catch {
             await control.send(.error("failed to write final: \(error)"))
         }
-
-        if !registry.profiles.isEmpty {
-            do {
-                try await store.writeSpeakers(registry.profiles)
-            } catch {
-                await control.send(.error("failed to write speakers: \(error)"))
-            }
-        }
-        if let profileStore {
-            do {
-                try profileStore.save(registry.namedProfiles)
-            } catch {
-                await control.send(.error("failed to save speaker profiles: \(error)"))
-            }
-        }
-
         await store.close()
-
         self.store = nil
-        currentInput = nil
         recording = false
         refreshSessions()
-
-        try? captureCommandChannel.send(.stopSession)
-        checkpointURLs.removeAll()
-        try? FileManager.default.removeItem(at: CaptureStatePaths.currentSessionMarkerURL)
     }
 
     // MARK: - rotate
 
-    /// 収録を止めて新しいprefixで直ちに開始し直す。中間の`recording:false`statusは出さない
-    /// （appの`restartPending`再起動と競合しないため）
+    /// 取り込みを止めずに新しい収録へ切り替える。望む状態の書き換えで、capture-daemonは書き込み先だけを切り替える。
+    /// 中間の`recording:false`のstatusは出さない
     private func rotate() async {
-        guard recording, let store else {
+        guard recording, let oldPrefix = store?.prefix else {
             await control.send(.error("not recording"))
             return
         }
-        let oldPrefix = store.prefix
-
-        await stopCapture()
-
-        if await startCapture(), let store = self.store {
-            await control.send(
-                .status(
-                    StatusEvent(
-                        recording: true, prefix: store.prefix,
-                        sources: streams.map(\.source),
-                        inputName: currentInput?.name, inputSpatial: currentInput?.spatial,
-                        outputDirectory: outputDirectory.path)))
+        await finishRecording()
+        if await startNewRecording(keepingCapture: true), let store {
+            await control.send(.status(statusEvent()))
             await control.send(.log("rotated \(oldPrefix) -> \(store.prefix)"))
         } else {
-            await control.send(
-                .status(
-                    StatusEvent(
-                        recording: false, prefix: nil, sources: [],
-                        outputDirectory: outputDirectory.path)))
+            captureStatuses = []
+            micInput = nil
+            await control.send(.status(statusEvent()))
         }
     }
 
     // MARK: - quit
 
     private func quit() async {
-        captureEventPollTask?.cancel()
+        captureWatchTask?.cancel()
         if recording {
             await stop()
         }
@@ -602,6 +496,10 @@ actor ServeSession {
             await peerListener.stop()
             self.peerListener = nil
         }
+    }
+
+    private static func ms(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1000).rounded())
     }
 
     // MARK: - peer: pairing / listener lifecycle
@@ -811,12 +709,7 @@ actor ServeSession {
             try handle.close()
 
             let text = try String(contentsOf: timedURL, encoding: .utf8)
-            var reconciler = Reconciler()
-            for record in NDJSON.decodeAll(text) {
-                reconciler.apply(record)
-            }
-            let utterances = reconciler.resolveFallbackSpeakers()
-            let markdown = TranscriptRenderer.markdown(utterances, timeZone: .current)
+            let markdown = TranscriptRenderer.markdown(Reconciler.fold(NDJSON.decodeAll(text)), timeZone: .current)
             let finalURL = SessionIndex.finalURL(directory: outputDirectory, prefix: prefix)
             try Data(markdown.utf8).write(to: finalURL, options: .atomic)
 

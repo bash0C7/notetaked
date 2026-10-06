@@ -19,13 +19,16 @@ public actor SessionStore {
     private var liveHandle: FileHandle?
     private var timedHandle: FileHandle?
 
-    public init(directory: URL, start: Date, timeZone: TimeZone = .current) {
-        let prefix = SessionStore.prefix(for: start, timeZone: timeZone)
+    public init(directory: URL, prefix: String) {
         self.prefix = prefix
         self.liveURL = directory.appendingPathComponent("\(prefix).live.txt")
         self.timedURL = directory.appendingPathComponent("\(prefix).timed.jsonl")
         self.finalURL = directory.appendingPathComponent("\(prefix).final.md")
         self.speakersURL = directory.appendingPathComponent("\(prefix).speakers.json")
+    }
+
+    public init(directory: URL, start: Date, timeZone: TimeZone = .current) {
+        self.init(directory: directory, prefix: SessionStore.prefix(for: start, timeZone: timeZone))
     }
 
     /// timed.jsonlへ `NDJSON.encode(record) + "\n"` を追記。`.segment`で`platform == .mac`なら live.txt へ `text + "\n"` も追記。ファイルは初回appendで作成、FileHandleは開いたまま保持
@@ -59,6 +62,19 @@ public actor SessionStore {
         liveHandle = nil
     }
 
+    /// 書き手が落ちて改行で終わっていない最後の行は、その行だけが壊れた行になるよう改行で閉じてから追記する。
+    /// 末尾へ移動して返す
+    private func closeUnterminatedLastLine(of handle: FileHandle) throws {
+        let end = try handle.seekToEnd()
+        guard end > 0 else { return }
+        try handle.seek(toOffset: end - 1)
+        let last = try handle.read(upToCount: 1)
+        try handle.seekToEnd()
+        if last != Data([0x0A]) {
+            try handle.write(contentsOf: Data([0x0A]))
+        }
+    }
+
     private func openHandle(at url: URL, cached: inout FileHandle?) throws -> FileHandle {
         if let handle = cached {
             return handle
@@ -66,8 +82,8 @@ public actor SessionStore {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
-        let handle = try FileHandle(forWritingTo: url)
-        _ = try handle.seekToEnd()
+        let handle = try FileHandle(forUpdating: url)
+        try closeUnterminatedLastLine(of: handle)
         cached = handle
         return handle
     }

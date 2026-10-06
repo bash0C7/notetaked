@@ -92,6 +92,46 @@ private func tokyoDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, 
     #expect(store.speakersURL.lastPathComponent == "\(store.prefix).speakers.json")
 }
 
+@Test func storeOpenedByPrefixUsesThatPrefix() {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let store = SessionStore(directory: dir, prefix: "2026-10-03_100000")
+
+    #expect(store.prefix == "2026-10-03_100000")
+    #expect(store.timedURL.lastPathComponent == "2026-10-03_100000.timed.jsonl")
+}
+
+@Test func appendClosesALastLineThatDoesNotEndWithNewline() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SessionStore(directory: dir, prefix: "2026-10-03_100000")
+    try Data(#"{"type":"session","id":"s"#.utf8).write(to: store.timedURL)
+
+    try await store.append(.session(SessionRecord(id: "s1", started: 0, owner: "bash")))
+    await store.close()
+
+    let lines = try String(contentsOf: store.timedURL, encoding: .utf8)
+        .split(separator: "\n", omittingEmptySubsequences: true)
+    #expect(lines.count == 2)
+    #expect(NDJSON.decodeAll(try String(contentsOf: store.timedURL, encoding: .utf8)).count == 1)
+}
+
+@Test func appendKeepsALastLineThatEndsWithNewline() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SessionStore(directory: dir, prefix: "2026-10-03_100000")
+
+    try await store.append(.session(SessionRecord(id: "s1", started: 0, owner: "bash")))
+    await store.close()
+    try await store.append(.session(SessionRecord(id: "s2", started: 1, owner: "bash")))
+    await store.close()
+
+    let text = try String(contentsOf: store.timedURL, encoding: .utf8)
+    #expect(text.split(separator: "\n", omittingEmptySubsequences: false).count == 3)
+    #expect(NDJSON.decodeAll(text).count == 2)
+}
+
 @Test func writeSpeakersWritesSortedPrettyJSON() async throws {
     let dir = makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
