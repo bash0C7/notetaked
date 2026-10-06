@@ -11,3 +11,4 @@
 - 署名: iOS / watchOS / mac appは`Apps/project.yml`のAutomatic + TeamでPersonal TeamのApple Development証明書を使う。daemonは`Makefile`がkeychainから失効していないApple Development identityを選び、初回証明書作成前だけad-hoc署名でbootstrapする。本物の署名へ切り替えた直後はTCC（マイク / システム音声）の再許可が出るので、userが画面の前にいる時に行う（手順はHANDOFF.md）。keychainに残る失効証明書で署名しない
 - commit messageの末尾にCo-Authored-Byと、実行中のagentのsession trailer（Claude-Session / Codex-Session）を付ける。merge / PRのundraftはuserが切り出すまで話題にしない
 - 日本語と英数字の間に空白を入れない（コード内コメント・doc・commit message本文）
+- 報告は聞かれたことだけに答える。聞かれていない事実（無視設定のファイル、経緯、確認の水増し）を足さない。「確かめた」と書くのは、実際にbuild・実行・実機で確認したことだけにする
