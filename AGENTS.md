@@ -12,3 +12,4 @@
 - commit messageの末尾にCo-Authored-Byと、実行中のagentのsession trailer（Claude-Session / Codex-Session）を付ける。merge / PRのundraftはuserが切り出すまで話題にしない
 - 日本語と英数字の間に空白を入れない（コード内コメント・doc・commit message本文）
 - 報告は聞かれたことだけに答える。聞かれていない事実（無視設定のファイル、経緯、確認の水増し）を足さない。「確かめた」と書くのは、実際にbuild・実行・実機で確認したことだけにする
+- 作業の完了は、commitしてpushし、`git status`で未commit・未pushが無いと確かめるところまで。commitを積んだまま、pushを残して報告しない
