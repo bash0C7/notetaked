@@ -2,19 +2,19 @@
 
 ## 状態（2026-10-06）
 
-- **段階1（取り込みと生音声）実装済み・`make verify`通過・CLIでの一巡は実機で確認済み・appでの確認と消灯の確認は未実施**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、plan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`、branch `batch-finalize-redesign`。段階1と段階2の間は、収録中も停止後も`final.md`に話者が付かない。`/Applications/Notetake.app`はmainの版のまま。段階1の版へ置き換えるかはuserが決める（置き換えると、段階2まで話者が付かない）。
-- **実機で確かめたこと（2026-10-06、`daemon-realtest`の`cli-cycle.sh`で全項目PASS）**: 開始と区切りで収録が2つできる、発話が壁時計の時刻で記録される、serveのSIGKILLからの引き継ぎ、capture-daemonのSIGKILLからの再開、停止、親が終わったcapture-daemonの自己終了。この確認で、入力機器が切り替わるとマイクの`installTap`のformat不一致でcapture-daemonが落ちる不具合を見つけ、formatを渡さない形に直した
-- **実機で未確認**: appでの確認（Task 14 Step 3。メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイの消灯中のsystem音声（Task 6。userの判断で行っていない。消灯で止まったstreamは、10秒buffer無しで作り直す見張りで受ける設計）、固定した入力機器が外れた時（Task 14 Step 5）
-- **次の手順**: 段階2（確定処理）の計画を`docs/superpowers/plans/`へ書き、userの承認を得てから実装する
-- **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**:
-  - micの音声が途切れると、その後の発話時刻が実際より早く記録される（2026-10-01 20:02の収録で最大138分）
-  - ディスプレイの消灯でScreenCaptureKitがstreamを止め、system音声の取り込みが再開しない
-  - `SpeakerRegistry`の割り当て表が`serve`の寿命で残るため、区切りの後に最初に話した人が前の収録の`1`と同じ大域idになる
-  - 状態ディレクトリにheartbeatの一時ファイルが残る（生音声はOSの一時ディレクトリの掃除に任せる設計のため、削除しないのは不具合ではない）
-  - appがserveをハングと判定するとquitを送り、収録が止まって望む状態も空になる。Macのスリープ復帰の直後に誤って起きうる
-  - appが落ちてもcapture-daemonが残り、次に起動したcapture-daemonと同じ生音声へ追記して壊す
-- **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む実機確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
-- **ScreenCaptureKitのsystem音声**: 無音の間もbufferを渡す（main時代の生音声4収録で、音声の秒数が収録時間と一致した）。消灯で止まるか、点灯からどれだけで戻るかは未確認
+- **branch** `batch-finalize-redesign`。mainより24 commit先、未push。spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`
+- **段階1（取り込みと生音声）**: 実装済み。`daemon-realtest`の`cli-cycle.sh`で全項目PASS（実機）。`/Applications/Notetake.app`は段階1の版で、userが動作を確認済み。段階2のコードは入っていない
+- **段階2（確定処理）**: Task 1〜7が実装済みで、`make verify`は`47aa5ef`で通過。Task 8（README、HANDOFF、skill）が未
+  - 実機で確かめた: serveの起動時の復旧が、tmpの生音声（`say -o`で作った22秒、音を出さない）を、子process経由で最後まで確定した。`running`から`finalized`まで約0.43秒。`silent-finalize.py`で再現できる
+  - 直した不具合: serveのstdinの読み取りが、子のstderrの行と終了を止め、確定が124秒遅れた。`FileHandle.bytes`は読み取りを共有のキューで行う。入力ごとに専用threadで読む`LineStream`へ替えた（再現テストは`FinalizeProcessTests`）
+  - 実機で未確認: 停止から確定までの通し（実際の取り込みを伴う）、appの「収録の話者」window、確定の失敗と再試行の表示、`make install-app`した版での動作
+  - 単体テストだけで見ている: 再試行、起動時の復旧、改名、話者をまとめる、確定し直し、話者の突き合わせ
+  - 話者分離: 合成音声2人（Kyoko / Otoya）の発話が、どちらも「話者1」になった。原因は未調査。人の声の分離には正解データが無い。人数が合わなければ`--speakers N`で確定し直す
+- **次の手順**: ①Task 8 ②使い捨てのbuildでappの画面を確認する（`/Applications`は触らない） ③人の声での話者分離をどう確かめるか、userに聞く ④`/Applications`を段階2の版へ置き換えるかを、appと収録が止まっているのを確認してuserに聞く
+- **検証の方法**: 音を出す実機テストは行わない（イヤホンへ流れ続けるため）。確定は`.claude/skills/daemon-realtest/scripts/silent-finalize.py`で生音声を作り、serveで確定させる。serveのeventは各行に`t`（epochミリ秒）を持つので、段階ごとの所要時間はログから読める。`finalize-check.sh`は音を出す古い確認で、編集が未commitのまま残っている（破棄してよい）
+- **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
+- **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**: micの音声が途切れた後の発話時刻のずれ、ディスプレイ消灯でsystem音声が再開しない、`SpeakerRegistry`の割り当て表が収録をまたぐ、appが落ちた後にcapture-daemonが残り同じ生音声へ追記して壊す
+- **未確認（段階1）**: appでの確認（メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイ消灯中のsystem音声（userの判断で行っていない）、固定した入力機器が外れた時
 - **使われなくなった状態ファイル**: `~/Library/Application Support/Notetake/state/`の`capture-command.json`、`capture-event.json`、`capture.heartbeat`、`current-session.json`と、`.tmp-`を含む一時ファイルは、どのprocessも読まない。手で消してよい
 
 ## 状態（2026-09-28）

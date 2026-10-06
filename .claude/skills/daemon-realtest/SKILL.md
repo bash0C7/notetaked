@@ -22,7 +22,7 @@ description: capture-daemonとserveをCLIで起動し、生音声の書き込み
 
 ## CLIで一巡する
 
-`scripts/cli-cycle.sh <出力先>`（約2分、system音声で`say`が流れる）の後に`python3 scripts/cli-cycle-report.py <出力先>`。確かめる項目:
+`scripts/cli-cycle.sh <出力先>`（約2分、system音声で`say`が流れるため、イヤホンやスピーカーから音が出る。userの在席を確かめてから走らせる）の後に`python3 scripts/cli-cycle-report.py <出力先>`。確かめる項目:
 
 - 開始と区切りで収録が2つでき、発話が壁時計の時刻（話し始めから4秒以内）で記録される。収録中の発話に話者は付かない
 - 区切りの前後でmicの生音声の時刻が続いている（取り込みを止めずに書き込み先だけを切り替える）
@@ -32,6 +32,10 @@ description: capture-daemonとserveをCLIで起動し、生音声の書き込み
 - 起動したprocessが終わったcapture-daemonは、自分で取り込みを止めて終える（appが落ちた後に残り、次のcapture-daemonと同じ生音声へ書くことが無い）
 
 `FAIL`の時は、出力先の`events.log`（serveのevent）、`serve.err`、`capture.err`、`steps.log`（各段階の時刻）と、生音声の`.meta.jsonl`を読む。
+
+## 確定を音なしで確かめる
+
+`python3 scripts/silent-finalize.py <作業directory> <prefix>`で、`say -o`が書き出した2人分の音声から、tmpに生音声ディレクトリと出力先の`timed.jsonl`の先頭を作る。続けて`.build/release/notetaked serve --output <作業directory>/out --owner 山田 --source system`を、stdinを開いたままのFIFOにつないで起動すると、起動時の復旧が確定する。音は出ない。serveのeventは各行に`t`（epochミリ秒）を持つので、`finalize_state`の`running`から`finalized`までの時間が読める。確かめた後は、tmpの生音声ディレクトリを消す。合成音声2人が別の話者に分かれるかは、ライブラリの分け方で決まるので、合否にしない。
 
 ## 消灯中のsystem音声
 

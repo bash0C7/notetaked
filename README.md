@@ -14,7 +14,7 @@ Macのメニューバーappとdaemonで会議音声（マイク + システム�
 | NotetakeMobile | `Apps/NotetakeMobile` | iPhone app。Bonjour + TLS PSKでMacへ接続し、マイク（iPhone 16eは空間音声FOAで方位付き）の文字起こしをsegとして送る。Watchからの小片を中継する |
 | NotetakeWatch | `Apps/NotetakeWatch` | Watch app。20秒のAAC小片を`WCSession.transferFile`でiPhoneへ送る |
 
-出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
+出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。収録の停止または区切りの後に、その収録の生音声全体を一括で文字起こしと話者分離（確定）し、話者付きの`.final.md`と`<prefix>.speakers.json`（話者ごとの名前と発話秒数）を書く。話者の名前はメニューの「収録の話者」windowで付け、人数を指定して確定し直せる。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
 
 ## 必要なもの
 
