@@ -1,8 +1,10 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-10-03）
+## 状態（2026-10-06）
 
-- **段階1（取り込みと生音声）実装済み・`make verify`通過・実機確認は未確認（Task 14で確かめる）**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、plan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`、branch `batch-finalize-redesign`。段階1と段階2の間は、収録中も停止後も`final.md`に話者が付かない。`/Applications/Notetake.app`は未確認（Task 14で決める）
+- **段階1（取り込みと生音声）実装済み・`make verify`通過・CLIでの一巡は実機で確認済み・appでの確認と消灯の確認は未実施**: spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`、plan `docs/superpowers/plans/2026-10-03-capture-and-raw-audio.md`、branch `batch-finalize-redesign`。段階1と段階2の間は、収録中も停止後も`final.md`に話者が付かない。`/Applications/Notetake.app`はmainの版のまま。段階1の版へ置き換えるかはuserが決める（置き換えると、段階2まで話者が付かない）。
+- **実機で確かめたこと（2026-10-06、`daemon-realtest`の`cli-cycle.sh`で全項目PASS）**: 開始と区切りで収録が2つできる、発話が壁時計の時刻で記録される、serveのSIGKILLからの引き継ぎ、capture-daemonのSIGKILLからの再開、停止、親が終わったcapture-daemonの自己終了。この確認で、入力機器が切り替わるとマイクの`installTap`のformat不一致でcapture-daemonが落ちる不具合を見つけ、formatを渡さない形に直した
+- **実機で未確認**: appでの確認（Task 14 Step 3。メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイの消灯中のsystem音声（Task 6。userの判断で行っていない。消灯で止まったstreamは、10秒buffer無しで作り直す見張りで受ける設計）、固定した入力機器が外れた時（Task 14 Step 5）
 - **次の手順**: 段階2（確定処理）の計画を`docs/superpowers/plans/`へ書き、userの承認を得てから実装する
 - **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**:
   - micの音声が途切れると、その後の発話時刻が実際より早く記録される（2026-10-01 20:02の収録で最大138分）
@@ -12,7 +14,7 @@
   - appがserveをハングと判定するとquitを送り、収録が止まって望む状態も空になる。Macのスリープ復帰の直後に誤って起きうる
   - appが落ちてもcapture-daemonが残り、次に起動したcapture-daemonと同じ生音声へ追記して壊す
 - **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む実機確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
-- **ScreenCaptureKitのsystem音声**: 消灯で止まるか、点灯からどれだけで戻るか、無音の間もbufferを渡すかは未確認（Task 6で確かめる）
+- **ScreenCaptureKitのsystem音声**: 無音の間もbufferを渡す（main時代の生音声4収録で、音声の秒数が収録時間と一致した）。消灯で止まるか、点灯からどれだけで戻るかは未確認
 - **使われなくなった状態ファイル**: `~/Library/Application Support/Notetake/state/`の`capture-command.json`、`capture-event.json`、`capture.heartbeat`、`current-session.json`と、`.tmp-`を含む一時ファイルは、どのprocessも読まない。手で消してよい
 
 ## 状態（2026-09-28）
