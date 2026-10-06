@@ -5,7 +5,7 @@ description: iPhone 16e / Apple Watch Series 8へNotetakeをbuild・インスト
 
 # device — iPhone / Watchの実機操作
 
-端末: iPhone 16e `FE7B47C9-2CF0-5509-A52C-1C0D806CC085`（有線、ロック解除が要る）、Apple Watch Series 8 `4583DD30-701C-5787-8BAC-600F4F495DEA`（ロック解除 + Mac近接。`process launch`と`copy`はトンネルが切れやすい。起動はWatch画面から）。iPhone 13 Proは対象外。署名はproject.ymlのAutomatic + Team。無料profileは1端末3 appまで（不要なappは`xcrun devicectl device uninstall app --device <id> <bundle id>`）。
+端末: iPhone 16e `FE7B47C9-2CF0-5509-A52C-1C0D806CC085`（有線、ロック解除が要る）、Apple Watch Series 8 `4583DD30-701C-5787-8BAC-600F4F495DEA`（ロック解除 + Mac近接。`process launch`と`copy`はトンネルが切れやすい。起動はWatch画面から）。iPhone 13 Proは`input.spatial: false`でFOA方位経路を実行できず、scriptsの対象外。署名はproject.ymlのAutomatic + Team。無料profileは1端末3 appまで（不要なappは`xcrun devicectl device uninstall app --device <id> <bundle id>`）。
 
 - インストール: `scripts/install.sh iphone` / `scripts/install.sh watch`（`.build/DerivedData-device`を使い`make verify`と衝突しない）
 - 起動: `scripts/launch.sh iphone` / `scripts/launch.sh iphone --console`（`peer client:` / `recorder:` / `WatchRelay:`の行が読める。consoleを切ってもappは落ちない）

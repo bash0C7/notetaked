@@ -180,7 +180,7 @@ make verify   # swift build（警告ゼロ）→ swift test → make app → iOS
 
 ## 申し送り（Mac必須・user作業を含む）
 
-- **Apple Development証明書は再発行済み**（有効identity `A3F23595F28DC4E18B5063DF519E424A44778AB4`、失効した3本もkeychainに残る）。iOS / watchOSは`Apps/project.yml`のbase設定（`Automatic` + Team `SM5792D355`）でそのまま実機署名できる。daemon / mac appは**まだad-hoc署名のまま**（`Makefile`の`DAEMON_IDENTITY ?= -`、mac targetの`CODE_SIGN_STYLE: Manual` + `CODE_SIGN_IDENTITY: "-"`）。本物の署名へ切り替えると署名が変わりTCC（マイク / システム音声）の再許可ダイアログが出るため、**userが画面の前にいる時に**: `make app DAEMON_IDENTITY=A3F23595F28DC4E18B5063DF519E424A44778AB4` と、project.ymlのmac targetから`CODE_SIGN_STYLE: Manual` / `CODE_SIGN_IDENTITY: "-"`の2行を削除して`make app`
+- **署名**: Apple Development証明書は再発行済み（失効した3本もkeychainに残る。有効なidentityは`security find-identity -v -p codesigning`で確認）。iOS / watchOS / mac appは`Apps/project.yml`のbase設定（`Automatic` + Team `SM5792D355`）で署名する。daemonは`Makefile`の`DAEMON_IDENTITY`がkeychainから失効していないApple Development identityを選び、見つからない時だけad-hoc署名になる。署名が変わるとTCC（マイク / システム音声 / Screen Recording）の再許可ダイアログが出るため、証明書の作り直しやad-hocからの切替を伴う`make app` / `make install-app`は**userが画面の前にいる時に**行う
 - **TCC**: ad-hoc署名でrebuildすると再許可が要る可能性（未確認）。appが子processで起動したdaemonのマイク／システム音声許可は親app（Notetake.app）に帰属。`tccutil reset Microphone/AudioCapture io.github.bash0c7.notetake`でリセット可
 - **`swift package resolve`のbinaryTarget取得はkeychain照会で落ちる**（`Failed to find credentials for 'https://github.com' in keychain: status -128`）。`swift package --disable-keychain --disable-netrc resolve`で回避。Bash sandbox内ではgit cloneが途中で止まるためsandbox外で実行
 - **ネットワークが要る初回処理**: `swift package resolve`のbinaryTarget（GitHub releases）、ja-JP音声モデル（済み）。オフライン化（モデルのapp同梱）は未対応
