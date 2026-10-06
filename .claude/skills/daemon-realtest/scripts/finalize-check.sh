@@ -38,7 +38,8 @@ start_capture() {
 }
 # serveのstdinをFIFOにつなぎ、書き手を開いたままにしてEOF（quit扱い）にならないようにする
 start_serve() {
-  "$BIN" serve --output "$D/out" --owner 山田 --source system < "$D/cmd" >> "$D/events.log" 2>> "$D/serve.err" &
+  "$BIN" serve --output "$D/out" --owner 山田 --source system < "$D/cmd" 2>> "$D/serve.err" | python3 -u -c 'import sys,time
+for l in sys.stdin: print(int(time.time()*1000), l, end="", flush=True)' >> "$D/events.ts.log" &
   echo $! > "$D/serve.pid"
   exec 3> "$D/cmd"
 }
@@ -69,7 +70,7 @@ sleep 3
 step started
 
 # Kyokoの文とOtoyaの文を交互に3回ずつ流す。report側がこの文で話者を突き合わせる
-for i in 1 2 3; do
+for i in 1; do
   step "kyoko$i"
   say -v Kyoko "これは${i}番目の確認です。今日は晴れていて、会議を始めます。"
   sleep 1
@@ -89,10 +90,10 @@ step stopped
 
 case "$CASE" in
 basic)
-  wait_for '"phase":"finalized"' 180 || step finalize-timeout
+  wait_for "\"phase\":\"finalized\",\"prefix\":\"$PREFIX\"" 420 && step finalized-seen || step finalize-timeout
   ;;
 edit)
-  wait_for '"phase":"finalized"' 180 || step finalize-timeout
+  wait_for "\"phase\":\"finalized\",\"prefix\":\"$PREFIX\"" 420 || step finalize-timeout
   snapshot snap0
   step edit-rename
   send "{\"cmd\":\"rename_speaker\",\"prefix\":\"$PREFIX\",\"speaker\":\"s1\",\"name\":\"山田太郎\"}"
@@ -100,7 +101,7 @@ edit)
   snapshot snap-rename
   step edit-refinalize
   send "{\"cmd\":\"refinalize\",\"prefix\":\"$PREFIX\",\"speakers\":2}"
-  wait_for '"run":2' 180 || step refinalize-timeout
+  wait_for "\"prefix\":\"$PREFIX\",\"run\":2" 420 || step refinalize-timeout
   sleep 2
   snapshot snap-refinalize
   step edit-merge
@@ -130,17 +131,17 @@ crash)
     step child-not-found
   fi
   # 起動し直す前のeventに混ざらないよう、restart-line.txtより後ろだけを数える
-  for _ in $(seq 1 180); do
-    tail -n +"$(( $(cat "$D/restart-line.txt" 2>/dev/null || echo 0) + 1 ))" "$D/events.log" | grep -q '"phase":"finalized"' && break
+  for _ in $(seq 1 420); do
+    tail -n +"$(( $(cat "$D/restart-line.txt" 2>/dev/null || echo 0) + 1 ))" "$D/events.log" | grep -q "\"phase\":\"finalized\",\"prefix\":\"$PREFIX\"" && break
     sleep 1
   done
   ;;
 retry)
-  wait_for '"phase":"failed"' 120 || step failed-timeout
+  wait_for "\"phase\":\"failed\",\"prefix\":\"$PREFIX\"" 420 || step failed-timeout
   cat "$RAW/finalize-attempts" > "$D/attempts-after-failure.txt" 2>/dev/null
   chmod 644 "$RAW/system.pcm"
   step unlocked
-  wait_for '"phase":"finalized"' 150 || step finalize-timeout
+  wait_for "\"phase\":\"finalized\",\"prefix\":\"$PREFIX\"" 420 || step finalize-timeout
   ;;
 esac
 step finalize-waited

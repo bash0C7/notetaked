@@ -3,14 +3,14 @@
 ## 状態（2026-10-06）
 
 - **branch** `batch-finalize-redesign`。mainより24 commit先、未push。spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`
-- **段階1（取り込みと生音声）**: 実装済み。`daemon-realtest`の`cli-cycle.sh`で全項目PASS（実機）。`/Applications/Notetake.app`は段階1の版で、userが動作を確認済み。段階2のコードは入っていない
+- **段階1（取り込みと生音声）**: 実装済み。`daemon-realtest`の`cli-cycle.sh`で全項目PASS（実機）。`/Applications/Notetake.app`は段階2の版（`make install-app`、`47aa5ef`相当）に置き換え済み。userが使って「やれてそう」と言った段階で、不具合の報告は無い
 - **段階2（確定処理）**: Task 1〜7が実装済みで、`make verify`は`47aa5ef`で通過。Task 8（README、HANDOFF、skill）が未
   - 実機で確かめた: serveの起動時の復旧が、tmpの生音声（`say -o`で作った22秒、音を出さない）を、子process経由で最後まで確定した。`running`から`finalized`まで約0.43秒。`silent-finalize.py`で再現できる
   - 直した不具合: serveのstdinの読み取りが、子のstderrの行と終了を止め、確定が124秒遅れた。`FileHandle.bytes`は読み取りを共有のキューで行う。入力ごとに専用threadで読む`LineStream`へ替えた（再現テストは`FinalizeProcessTests`）
-  - 実機で未確認: 停止から確定までの通し（実際の取り込みを伴う）、appの「収録の話者」window、確定の失敗と再試行の表示、`make install-app`した版での動作
+  - 実機で未確認（私は見ていない。userは使用中）: 停止から確定までの通し、appの「収録の話者」window、確定の失敗と再試行の表示
   - 単体テストだけで見ている: 再試行、起動時の復旧、改名、話者をまとめる、確定し直し、話者の突き合わせ
-  - 話者分離: 合成音声2人（Kyoko / Otoya）の発話が、どちらも「話者1」になった。原因は未調査。人の声の分離には正解データが無い。人数が合わなければ`--speakers N`で確定し直す
-- **次の手順**: ①Task 8 ②使い捨てのbuildでappの画面を確認する（`/Applications`は触らない） ③人の声での話者分離をどう確かめるか、userに聞く ④`/Applications`を段階2の版へ置き換えるかを、appと収録が止まっているのを確認してuserに聞く
+  - 話者分離: 合成音声2人（Kyoko / Otoya）の発話が、どちらも「話者1」になった。原因は未調査。人の声の分離の検証は行わない（userの判断）。人数が合わなければ`--speakers N`で確定し直す
+- **次の手順**: ①Task 8 ②使い捨てのbuildでappの画面を確認する（`/Applications`は触らない） ③userの使用で出たfeedbackに対応する（人の声での話者分離の検証は、userが不要と決めた）
 - **検証の方法**: 音を出す実機テストは行わない（イヤホンへ流れ続けるため）。確定は`.claude/skills/daemon-realtest/scripts/silent-finalize.py`で生音声を作り、serveで確定させる。serveのeventは各行に`t`（epochミリ秒）を持つので、段階ごとの所要時間はログから読める。`finalize-check.sh`は音を出す古い確認で、編集が未commitのまま残っている（破棄してよい）
 - **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
 - **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**: micの音声が途切れた後の発話時刻のずれ、ディスプレイ消灯でsystem音声が再開しない、`SpeakerRegistry`の割り当て表が収録をまたぐ、appが落ちた後にcapture-daemonが残り同じ生音声へ追記して壊す
