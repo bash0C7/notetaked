@@ -221,6 +221,19 @@ public actor Transcriber {
         }
     }
 
+    /// 結果のsequenceが失敗で終わっていれば、その失敗
+    public func resultsError() -> Error? {
+        resultsLoopError
+    }
+
+    /// 入力を閉じ、確定していない発話を待たずに終える。収録の停止と区切りで使う
+    public func cancel() async {
+        inputContinuation?.finish()
+        await analyzer.cancelAndFinishNow()
+        resultsTask?.cancel()
+        piecesContinuation?.finish()
+    }
+
     private static func makePiece(from result: SpeechTranscriber.Result, origin: Date) -> TranscriptPiece {
         let text = result.text
         let originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())

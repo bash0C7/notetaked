@@ -266,3 +266,20 @@ public struct Reconciler: Sendable {
         utterances.insert(utterance, at: index)
     }
 }
+
+
+extension Reconciler {
+    /// 既存の`timed.jsonl`の記録を畳み込み、`device`のsegの最大の`seq`を返す。
+    /// serveが収録を途中から引き継ぐ時に、表示と`seq`を続きから始めるために使う
+    public static func restore(from records: [Record], device: String) -> (reconciler: Reconciler, lastSeq: Int) {
+        var reconciler = Reconciler()
+        var lastSeq = 0
+        for record in records {
+            reconciler.apply(record)
+            if case .segment(let segment) = record, segment.device == device {
+                lastSeq = max(lastSeq, segment.seq)
+            }
+        }
+        return (reconciler, lastSeq)
+    }
+}

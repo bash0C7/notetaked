@@ -311,3 +311,22 @@ private func seg(
     #expect(out[0].locationPlatform == .ios)
     #expect(LocationLabel.text(for: out[0]) == "iPhone")
 }
+
+@Test func restoreFoldsRecordsAndFindsTheLastSeqOfTheDevice() {
+    func segment(device: String, seq: Int, start: Int64, text: String) -> Record {
+        .segment(
+            Segment(
+                id: UUID(), session: "s1", seq: seq, device: device, deviceName: device, owner: "山田",
+                platform: .mac, source: .mic, input: .test, start: start, end: start + 1000, text: text))
+    }
+
+    let restored = Reconciler.restore(
+        from: [
+            segment(device: "mac1", seq: 7, start: 0, text: "こんにちは"),
+            segment(device: "iphone1", seq: 40, start: 5000, text: "資料を送っておきますね"),
+        ],
+        device: "mac1")
+
+    #expect(restored.lastSeq == 7)
+    #expect(restored.reconciler.utterances.count == 2)
+}
