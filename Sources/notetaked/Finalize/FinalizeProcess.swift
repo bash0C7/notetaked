@@ -120,8 +120,8 @@ enum FinalizeProcess {
             }
         }
         watchdog.cancel()
-        // 子processの終了後に残っている出力を読み切る。読めなかった場合も、成否は終了状態で決める
-        _ = try? await reader.value
+        // 子processの終了後に残っている出力を読み切る。成否は終了状態で決める
+        await reader.value
         if progress.isMarkedStalled {
             throw FinalizeProcessError.stalled(after: stallTimeout)
         }

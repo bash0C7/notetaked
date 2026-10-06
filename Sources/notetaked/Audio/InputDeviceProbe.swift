@@ -18,6 +18,35 @@ enum InputDeviceProbe {
         return discovery.devices.map(makeInputDevice)
     }
 
+    /// OSの既定の入力機器の`AudioDeviceID`。無ければnil
+    static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+                == noErr, deviceID != 0
+        else { return nil }
+        return deviceID
+    }
+
+    /// `AudioDeviceID`から機器の情報を作る。接続中の一覧にあればその情報、無ければCoreAudioの名前を使う
+    static func inputDevice(forID deviceID: AudioDeviceID) -> InputDevice {
+        let uid = deviceUID(of: deviceID)
+        if let uid, let known = resolve(uid: uid) { return known }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var name: CFString = "unknown" as CFString
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        let status = withUnsafeMutablePointer(to: &name) { AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, $0) }
+        return InputDevice(name: status == noErr ? name as String : "unknown", uid: uid ?? "unknown", spatial: false)
+    }
+
     /// UIDから接続中デバイスを解決する。見つからなければnil
     static func resolve(uid: String) -> InputDevice? {
         all().first { $0.uid == uid }
@@ -52,7 +81,7 @@ enum InputDeviceProbe {
         return nil
     }
 
-    private static func deviceUID(of deviceID: AudioDeviceID) -> String? {
+    static func deviceUID(of deviceID: AudioDeviceID) -> String? {
         var uidAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal,

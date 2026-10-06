@@ -3,19 +3,26 @@ import AVFoundation
 import CoreAudio
 import Foundation
 import NotetakeCore
+import os
 
-/// 既定の入力機器（AVAudioEngine）か、固定した入力機器（AUHAL）から音声を取り込む。
-/// AVAudioEngineは既定の入力が変わると自ら止まるため、構成変更の通知でtapを張り直す。
-/// `engine.start()`が失敗したら、1秒から倍にしていき最大30秒間隔で再試行する。
-/// 固定した機器が外れたら既定の入力へ戻し、そのことを`noteInput`で伝える
+/// 既定の入力機器か、固定した入力機器から、AUHALで音声を取り込む。
+/// AVAudioEngineは入力と出力を1組のI/Oとして扱うため、出力機器（AirPodsなど）と入力機器が違うと、
+/// startが`-10868`で失敗したり、startが成功しても音声が1つも届かなかったりする。AUHALは入力だけを開くので影響を受けない。
+/// 既定の入力・機器の一覧・今の機器のサンプルレートが変わった時、取り込みを始められなかった時、
+/// 音声が`CaptureStall.timeout`届かない時に、取り込みを作り直す。
+/// 失敗は1秒から倍にしていき最大30秒間隔で再試行する。固定した機器が使えない時は既定の入力へ戻し、`noteInput`で伝える
 actor MicCapture: SourceCapture {
     private let pinnedUID: String?
-    private let engine = AVAudioEngine()
     private var sink: (any CaptureSink)?
-    private var pinned: AUHALPinnedCapture?
-    private var fellBack = false
-    private var observers: [any NSObjectProtocol] = []
+    private var capture: AUHALInputCapture?
+    private var captureDeviceID: AudioDeviceID?
+    private var captureStartedAt = Date()
+    /// 固定した機器を開けなかった。機器の一覧が変わるまで、既定の入力を使う
+    private var pinnedUnusable = false
+    private var observers: [AudioObjectObserver] = []
+    private var rateObserver: AudioObjectObserver?
     private var retryTask: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
     private var failures = 0
 
     init(pinnedUID: String?) {
@@ -24,85 +31,78 @@ actor MicCapture: SourceCapture {
 
     func start(into sink: any CaptureSink) async {
         self.sink = sink
-        observeDevices()
-        if startPinnedIfAvailable(sink) { return }
-        startEngine()
+        observeHardware()
+        rebuild()
+        startWatchdog()
     }
 
     func stop() async {
         sink = nil
         retryTask?.cancel()
         retryTask = nil
-        for observer in observers {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        watchdogTask?.cancel()
+        watchdogTask = nil
         observers = []
-        pinned?.stop()
-        pinned = nil
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        rateObserver = nil
+        capture?.stop()
+        capture = nil
+        captureDeviceID = nil
     }
 
-    /// 固定した機器が接続中ならAUHALで取り込む。AVAudioEngineの入力に機器を直接設定すると、
-    /// formatが追従せずcrashや無音になるため、固定時はAVAudioEngineを使わない。
-    /// 接続中なのに開けなかった時は、固定を残したまま既定の入力で取り込み、そのことを伝える
-    private func startPinnedIfAvailable(_ sink: any CaptureSink) -> Bool {
-        guard
-            let pinnedUID,
-            let device = InputDeviceProbe.all().first(where: { $0.uid == pinnedUID }),
-            let deviceID = InputDeviceProbe.audioDeviceID(forUID: pinnedUID)
-        else { return false }
-        guard let capture = AUHALPinnedCapture(deviceID: deviceID) else {
-            fallBackToDefaultInput(sink, detail: "設定できません")
-            return false
+    /// 取り込む機器。固定した機器が接続中ならそれ、無ければ既定の入力。どちらも無ければnil
+    private func target() -> (id: AudioDeviceID, fellBackFromPinned: Bool)? {
+        if !pinnedUnusable,
+            let uid = InputDeviceResolution.resolvedUID(
+                pinnedUID: pinnedUID, availableUIDs: Set(InputDeviceProbe.all().map(\.uid))),
+            let id = InputDeviceProbe.audioDeviceID(forUID: uid)
+        {
+            return (id, false)
         }
-        do {
-            try capture.start(into: sink)
-        } catch {
-            capture.stop()
-            fallBackToDefaultInput(sink, detail: "\(error)")
-            return false
-        }
-        pinned = capture
-        sink.noteInput(device, fellBackFromPinned: false)
-        sink.noteState(.recording, reason: nil)
-        return true
+        guard let id = InputDeviceProbe.defaultInputDeviceID() else { return nil }
+        return (id, pinnedUID != nil)
     }
 
-    private func fallBackToDefaultInput(_ sink: any CaptureSink, detail: String) {
-        fellBack = true
-        sink.noteError("固定した入力機器を開けないため、既定の入力で取り込みます: \(detail)")
-    }
-
-    private func startEngine() {
+    private func rebuild() {
         guard let sink else { return }
         retryTask?.cancel()
         retryTask = nil
-        let input = engine.inputNode
-        input.removeTap(onBus: 0)
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        rateObserver = nil
+        capture?.stop()
+        capture = nil
+        captureDeviceID = nil
+        guard let target = target() else {
             fail("入力機器がありません")
             return
         }
-        // AVAudioNodeTapBlockは@Sendableではないため、明示しないとactorに隔離されたclosureと推論され、
-        // audioのthreadから呼ばれた時に実行時の隔離検査で止まる
-        // formatを渡すと、機器の切り替えで入力のformatが読んだ後に変わった時、tapの取り付けがNSExceptionで
-        // processごと落ちる。nilなら入力ノードの今のformatで届き、bufferが自分のformatを持つ
-        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { @Sendable buffer, _ in
-            sink.ingest(buffer)
-        }
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            fail(error.localizedDescription)
+        guard let next = AUHALInputCapture(deviceID: target.id) else {
+            openFailed(target: target, detail: "設定できません")
             return
         }
+        do {
+            try next.start(into: sink)
+        } catch {
+            next.stop()
+            openFailed(target: target, detail: "\(error)")
+            return
+        }
+        capture = next
+        captureDeviceID = target.id
+        captureStartedAt = Date()
         failures = 0
-        sink.noteInput(InputDeviceProbe.current(), fellBackFromPinned: fellBack)
+        observeSampleRate(of: target.id)
+        sink.noteInput(InputDeviceProbe.inputDevice(forID: target.id), fellBackFromPinned: target.fellBackFromPinned)
         sink.noteState(.recording, reason: nil)
+    }
+
+    /// 固定した機器を開けなかった時は、固定を残したまま既定の入力で取り込み、そのことを伝える
+    private func openFailed(target: (id: AudioDeviceID, fellBackFromPinned: Bool), detail: String) {
+        if pinnedUID != nil, !pinnedUnusable, !target.fellBackFromPinned {
+            pinnedUnusable = true
+            sink?.noteError("固定した入力機器を開けないため、既定の入力で取り込みます: \(detail)")
+            rebuild()
+            return
+        }
+        fail("入力機器を開けません: \(detail)")
     }
 
     private func fail(_ reason: String) {
@@ -112,37 +112,79 @@ actor MicCapture: SourceCapture {
         retryTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await self?.restartEngine()
+            await self?.rebuild()
         }
     }
 
-    private func restartEngine() {
-        guard sink != nil, pinned == nil else { return }
-        startEngine()
+    /// 既定の入力か機器の一覧が変わった。取り込み中の機器が今の取り込み先と違えば作り直す
+    private func hardwareChanged(devicesChanged: Bool) {
+        guard sink != nil else { return }
+        if devicesChanged { pinnedUnusable = false }
+        if capture == nil || target()?.id != captureDeviceID {
+            rebuild()
+        }
     }
 
-    private func observeDevices() {
-        let center = NotificationCenter.default
-        observers.append(
-            center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) {
-                [weak self] _ in
-                Task { await self?.restartEngine() }
-            })
-        observers.append(
-            center.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: nil) {
-                [weak self] notification in
-                guard let uid = (notification.object as? AVCaptureDevice)?.uniqueID else { return }
-                Task { await self?.deviceDisconnected(uid: uid) }
-            })
+    private func observeHardware() {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        for (selector, devices) in [(kAudioHardwarePropertyDefaultInputDevice, false), (kAudioHardwarePropertyDevices, true)] {
+            observers.append(
+                AudioObjectObserver(object: system, selector: selector) { [weak self] in
+                    Task { await self?.hardwareChanged(devicesChanged: devices) }
+                })
+        }
     }
 
-    private func deviceDisconnected(uid: String) {
-        guard uid == pinnedUID, let pinned, let sink else { return }
-        pinned.stop()
-        self.pinned = nil
-        fellBack = true
-        sink.noteState(.retrying, reason: "固定した入力機器が外れたため、既定の入力へ切り替えます")
-        startEngine()
+    /// AirPodsは入力を開くと通話用のprofileへ切り替わりサンプルレートが変わる。レートが変わったら作り直す
+    private func observeSampleRate(of deviceID: AudioDeviceID) {
+        rateObserver = AudioObjectObserver(object: deviceID, selector: kAudioDevicePropertyNominalSampleRate) {
+            [weak self] in
+            Task { await self?.sampleRateChanged(deviceID: deviceID) }
+        }
+    }
+
+    private func sampleRateChanged(deviceID: AudioDeviceID) {
+        guard sink != nil, captureDeviceID == deviceID else { return }
+        rebuild()
+    }
+
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                await self?.checkStall()
+            }
+        }
+    }
+
+    private func checkStall() {
+        guard let capture, let sink else { return }
+        guard CaptureStall.isStalled(lastBufferAt: capture.lastBufferAt, startedAt: captureStartedAt, now: Date())
+        else { return }
+        sink.noteState(.retrying, reason: "音声が\(Int(CaptureStall.timeout))秒届かないため、取り込みを作り直します")
+        rebuild()
+    }
+}
+
+/// CoreAudioのオブジェクトのpropertyの変化を受ける。解放されると登録を外す
+final class AudioObjectObserver: @unchecked Sendable {
+    private let object: AudioObjectID
+    private var address: AudioObjectPropertyAddress
+    private let queue = DispatchQueue(label: "AudioObjectObserver")
+    private let block: AudioObjectPropertyListenerBlock
+
+    init(object: AudioObjectID, selector: AudioObjectPropertySelector, onChange: @escaping @Sendable () -> Void) {
+        self.object = object
+        address = AudioObjectPropertyAddress(
+            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        block = { _, _ in onChange() }
+        AudioObjectAddPropertyListenerBlock(object, &address, queue, block)
+    }
+
+    deinit {
+        AudioObjectRemovePropertyListenerBlock(object, &address, queue, block)
     }
 }
 
@@ -151,7 +193,7 @@ actor MicCapture: SourceCapture {
 /// 届くbufferのformatは常に`format`と一致する。
 /// `@unchecked Sendable`: `start`と`stop`は所有する`MicCapture`（actor）からだけ呼ばれ、
 /// render callbackはCore Audioのaudioのthreadで`sink`を読むだけである
-final class AUHALPinnedCapture: @unchecked Sendable {
+final class AUHALInputCapture: @unchecked Sendable {
     enum CaptureError: Error {
         case setupFailed(step: String, status: OSStatus)
         case notConfigured
@@ -162,6 +204,10 @@ final class AUHALPinnedCapture: @unchecked Sendable {
     private var sink: (any CaptureSink)?
     /// 直前のrender callbackの結果。audioのthreadだけが読み書きし、失敗が変わった時だけ伝える
     private var lastRenderFailure: OSStatus = noErr
+    private let lastBuffer = OSAllocatedUnfairLock<Date?>(initialState: nil)
+
+    /// 直前にbufferが届いた時刻。まだ届いていなければnil
+    var lastBufferAt: Date? { lastBuffer.withLock { $0 } }
 
     init?(deviceID: AudioDeviceID) {
         var descriptor = AudioComponentDescription(
@@ -212,7 +258,7 @@ final class AUHALPinnedCapture: @unchecked Sendable {
         self.sink = sink
 
         var callback = AURenderCallbackStruct(
-            inputProc: auhalPinnedCaptureRenderCallback,
+            inputProc: auhalInputCaptureRenderCallback,
             inputProcRefCon: Unmanaged.passUnretained(self).toOpaque())
         let callbackStatus = AudioUnitSetProperty(
             audioUnit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0,
@@ -260,6 +306,7 @@ final class AUHALPinnedCapture: @unchecked Sendable {
             return status
         }
         lastRenderFailure = noErr
+        lastBuffer.withLock { $0 = Date() }
         sink.ingest(pcmBuffer)
         return noErr
     }
@@ -267,12 +314,12 @@ final class AUHALPinnedCapture: @unchecked Sendable {
     private func noteRenderFailure(_ status: OSStatus, to sink: any CaptureSink, what: String) {
         guard status != lastRenderFailure else { return }
         lastRenderFailure = status
-        sink.noteError("固定した入力機器の音声を取り込めません（\(what): \(status)）")
+        sink.noteError("入力機器の音声を取り込めません（\(what): \(status)）")
     }
 }
 
 /// `AURenderCallback`は`@convention(c)`でclosureの捕捉を使えないため、`inRefCon`からインスタンスを戻す
-private func auhalPinnedCaptureRenderCallback(
+private func auhalInputCaptureRenderCallback(
     inRefCon: UnsafeMutableRawPointer,
     ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
     inTimeStamp: UnsafePointer<AudioTimeStamp>,
@@ -280,7 +327,7 @@ private func auhalPinnedCaptureRenderCallback(
     inNumberFrames: UInt32,
     ioData: UnsafeMutablePointer<AudioBufferList>?
 ) -> OSStatus {
-    let capture = Unmanaged<AUHALPinnedCapture>.fromOpaque(inRefCon).takeUnretainedValue()
+    let capture = Unmanaged<AUHALInputCapture>.fromOpaque(inRefCon).takeUnretainedValue()
     return capture.render(
         ioActionFlags: ioActionFlags, inTimeStamp: inTimeStamp, inBusNumber: inBusNumber,
         inNumberFrames: inNumberFrames)

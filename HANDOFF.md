@@ -14,6 +14,9 @@
 - **検証の方法**: 音を出す実機テストは行わない（イヤホンへ流れ続けるため）。確定は`.claude/skills/daemon-realtest/scripts/silent-finalize.py`で生音声を作り、serveで確定させる。serveのeventは各行に`t`（epochミリ秒）を持つので、段階ごとの所要時間はログから読める。
 - **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
 - **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**: micの音声が途切れた後の発話時刻のずれ、ディスプレイ消灯でsystem音声が再開しない、`SpeakerRegistry`の割り当て表が収録をまたぐ、appが落ちた後にcapture-daemonが残り同じ生音声へ追記して壊す
+- **マイクの取り込み（AUHALへ統一）**: 既定の入力でも`AVAudioEngine`を使わず、入力だけのAUHALで取り込む。`AVAudioEngine`は出力機器と組になるため、既定の入力が出力（AirPods）と違うと、startが`-10868`で失敗するか、startが成功しても音声が届かなかった（probeで確認）。既定の入力・機器の一覧・今の機器のサンプルレートが変わった時、開始に失敗した時、音声が5秒届かない時（`CaptureStall`）に作り直す
+  - 実機で確かめた（音なし）: 収録中に既定の入力をAirPodsとMacBookの間で3往復して、毎回`recording`のまま追従し、43.8秒の収録に43.8秒分の音声が録れた。固定した機器は既定の入力が変わっても動かない。固定が無ければ`fell_back_from_pinned`で既定へ追従する
+  - 未確認: 3時間の収録（`144154`）が14:56に止まった引き金は再現できていない。途絶の見張りは、判定の単体テストだけで、実機では動かしていない。固定した機器の物理的な切断（`blueutil`）は、この変更の後に確かめていない
 - **未確認（段階1）**: appでの確認（メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイ消灯中のsystem音声（userの判断で行っていない）、固定した入力機器が外れた時
 - **使われなくなった状態ファイル**: `~/Library/Application Support/Notetake/state/`の`capture-command.json`、`capture-event.json`、`capture.heartbeat`、`current-session.json`と、`.tmp-`を含む一時ファイルは、どのprocessも読まない。手で消してよい
 
