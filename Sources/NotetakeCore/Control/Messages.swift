@@ -8,16 +8,23 @@ public enum ControlError: Error, Equatable {
 public enum Command: Codable, Sendable, Equatable {
     case start
     case stop
-    case renameSpeaker(id: String, name: String)
+    case renameSpeaker(prefix: String, id: String, name: String)
+    case mergeSpeakers(prefix: String, from: String, into: String)
+    /// 確定し直す。`speakers`は話者の人数の目標
+    case refinalize(prefix: String, speakers: Int?)
     case rotate
     case pairCode(String)
     case quit
 
     enum CodingKeys: String, CodingKey {
         case cmd
+        case prefix
         case speaker
         case name
         case code
+        case from
+        case into
+        case speakers
     }
 
     public init(from decoder: Decoder) throws {
@@ -29,9 +36,19 @@ public enum Command: Codable, Sendable, Equatable {
         case "stop":
             self = .stop
         case "rename_speaker":
-            let speaker = try container.decode(String.self, forKey: .speaker)
-            let name = try container.decode(String.self, forKey: .name)
-            self = .renameSpeaker(id: speaker, name: name)
+            self = .renameSpeaker(
+                prefix: try container.decode(String.self, forKey: .prefix),
+                id: try container.decode(String.self, forKey: .speaker),
+                name: try container.decode(String.self, forKey: .name))
+        case "merge_speakers":
+            self = .mergeSpeakers(
+                prefix: try container.decode(String.self, forKey: .prefix),
+                from: try container.decode(String.self, forKey: .from),
+                into: try container.decode(String.self, forKey: .into))
+        case "refinalize":
+            self = .refinalize(
+                prefix: try container.decode(String.self, forKey: .prefix),
+                speakers: try container.decodeIfPresent(Int.self, forKey: .speakers))
         case "rotate":
             self = .rotate
         case "pair_code":
@@ -51,10 +68,20 @@ public enum Command: Codable, Sendable, Equatable {
             try container.encode("start", forKey: .cmd)
         case .stop:
             try container.encode("stop", forKey: .cmd)
-        case .renameSpeaker(let id, let name):
+        case .renameSpeaker(let prefix, let id, let name):
             try container.encode("rename_speaker", forKey: .cmd)
+            try container.encode(prefix, forKey: .prefix)
             try container.encode(id, forKey: .speaker)
             try container.encode(name, forKey: .name)
+        case .mergeSpeakers(let prefix, let from, let into):
+            try container.encode("merge_speakers", forKey: .cmd)
+            try container.encode(prefix, forKey: .prefix)
+            try container.encode(from, forKey: .from)
+            try container.encode(into, forKey: .into)
+        case .refinalize(let prefix, let speakers):
+            try container.encode("refinalize", forKey: .cmd)
+            try container.encode(prefix, forKey: .prefix)
+            try container.encodeIfPresent(speakers, forKey: .speakers)
         case .rotate:
             try container.encode("rotate", forKey: .cmd)
         case .pairCode(let code):

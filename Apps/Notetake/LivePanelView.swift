@@ -69,7 +69,7 @@ struct LivePanelView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(appModel.utterances) { utterance in
-                            UtteranceRow(utterance: utterance, appModel: appModel, timeFormatter: Self.timeFormatter)
+                            UtteranceRow(utterance: utterance, timeFormatter: Self.timeFormatter)
                         }
                         ForEach(orderedVolatile, id: \.source) { entry in
                             VolatileRow(source: entry.source, text: entry.text)
@@ -135,51 +135,22 @@ struct LivePanelView: View {
     }
 }
 
-/// 1件のutteranceを表示する行。話者名がクリック可能な場合はpopoverで改名する。
+/// 1件のutteranceを表示する行。収録中の発話には話者が付かないため、命名は「収録の話者」windowで行う。
 private struct UtteranceRow: View {
     let utterance: Utterance
-    let appModel: AppModel
     let timeFormatter: DateFormatter
-
-    @State private var showRenamePopover = false
-    @State private var nameDraft = ""
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text(timeFormatter.string(from: Date(timeIntervalSince1970: Double(utterance.start) / 1000)))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
-            if let speakerID = utterance.speakerID {
-                Button(utterance.speaker) {
-                    nameDraft = utterance.speaker
-                    showRenamePopover = true
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
-                .fontWeight(.semibold)
-                .popover(isPresented: $showRenamePopover) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextField("話者名", text: $nameDraft)
-                            .onSubmit { confirmRename(speakerID: speakerID) }
-                        Button("確定") { confirmRename(speakerID: speakerID) }
-                    }
-                    .padding()
-                    .frame(minWidth: 200)
-                }
-            } else {
-                Text(utterance.speaker)
-                    .fontWeight(.semibold)
-            }
+            Text(utterance.speaker).fontWeight(.semibold)
             Text(LocationLabel.text(for: utterance))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(utterance.text)
         }
-    }
-
-    private func confirmRename(speakerID: String) {
-        appModel.renameSpeaker(id: speakerID, name: nameDraft)
-        showRenamePopover = false
     }
 }
 

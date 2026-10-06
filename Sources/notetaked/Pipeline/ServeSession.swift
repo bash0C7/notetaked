@@ -153,8 +153,16 @@ actor ServeSession {
             await start()
         case .stop:
             await stop()
-        case .renameSpeaker(let id, let name):
-            await renameSpeaker(id: id, name: name)
+        case .renameSpeaker(let prefix, let id, let name):
+            await editSpeakers(prefix: prefix) { archive, directory, device in
+                try await archive.renameSpeaker(prefix: prefix, in: directory, device: device, id: id, name: name)
+            }
+        case .mergeSpeakers(let prefix, let from, let into):
+            await editSpeakers(prefix: prefix) { archive, directory, device in
+                try await archive.mergeSpeakers(prefix: prefix, in: directory, device: device, from: from, into: into)
+            }
+        case .refinalize(let prefix, let speakers):
+            await refinalize(prefix: prefix, speakers: speakers)
         case .rotate:
             await rotate()
         case .pairCode(let code):
@@ -409,23 +417,51 @@ actor ServeSession {
             capture: captureStatuses.isEmpty ? nil : captureStatuses)
     }
 
-    // MARK: - rename_speaker
+    // MARK: - 確定済みの収録の話者
 
-    private func renameSpeaker(id: String, name: String) async {
-        guard recording else {
-            await control.send(.error("not recording"))
-            return
-        }
-        let rename = SpeakerNameRecord(speaker: id, name: name)
+    private func editSpeakers(
+        prefix: String,
+        change: (SessionArchive, URL, String) async throws -> FinalizedEvent
+    ) async {
         do {
-            try await archive.appendLive(.speakerName(rename))
+            await control.send(.finalized(try await change(archive, outputDirectory, device.id)))
+        } catch let error as SessionArchiveError {
+            await control.send(.error(Self.message(for: error)))
         } catch {
-            await control.send(.error("failed to rename speaker: \(error)"))
+            await control.send(.error("\(prefix): 話者を変えられません: \(error)"))
+        }
+    }
+
+    private static func message(for error: SessionArchiveError) -> String {
+        switch error {
+        case .recording:
+            return "収録中の話者は変えられません"
+        case .notFinalized:
+            return "確定済みの収録ではありません"
+        case .missingTimed(let prefix):
+            return "\(prefix)の記録が見つかりません"
+        case .unknownSpeaker(let id):
+            return "話者\(id)が見つかりません"
+        }
+    }
+
+    private func refinalize(prefix: String, speakers: Int?) async {
+        guard prefix != currentPrefix else {
+            await control.send(.error("収録中の収録は確定し直せません"))
             return
         }
-        for utterance in reconciler.apply(.speakerName(rename)) {
-            await control.send(.utterance(utterance))
+        await finalizer.refinalize(prefix: prefix, speakers: speakers)
+    }
+
+    /// 起動時に、確定していない収録を確定の順番待ちへ入れる
+    func recoverFinalizations() async {
+        let scanned = FinalizeRecovery.scan()
+        for error in scanned.errors {
+            await control.send(.log("確定していない収録を調べられません: \(error)"))
         }
+        await finalizer.recover(
+            actions: FinalizeRecovery.actions(facts: scanned.facts, recordingPrefix: currentPrefix),
+            gaveUp: FinalizeRecovery.gaveUp(facts: scanned.facts, recordingPrefix: currentPrefix))
     }
 
     // MARK: - stop

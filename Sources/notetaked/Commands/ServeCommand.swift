@@ -100,6 +100,7 @@ struct Serve: AsyncParsableCommand {
             .status(StatusEvent(recording: false, sources: [], outputDirectory: outputURL.path)))
 
         await session.resumeIfRecording()
+        await session.recoverFinalizations()
 
         if let pairCode {
             await session.handle(.pairCode(pairCode))

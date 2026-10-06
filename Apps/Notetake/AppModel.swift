@@ -370,8 +370,16 @@ final class AppModel {
         client?.send(.rotate)
     }
 
-    func renameSpeaker(id: String, name: String) {
-        client?.send(.renameSpeaker(id: id, name: name))
+    func renameSpeaker(prefix: String, id: String, name: String) {
+        client?.send(.renameSpeaker(prefix: prefix, id: id, name: name))
+    }
+
+    func mergeSpeakers(prefix: String, from: String, into: String) {
+        client?.send(.mergeSpeakers(prefix: prefix, from: from, into: into))
+    }
+
+    func refinalize(prefix: String, speakers: Int?) {
+        client?.send(.refinalize(prefix: prefix, speakers: speakers))
     }
 
     func copyAllToPasteboard() {

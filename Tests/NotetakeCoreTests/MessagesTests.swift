@@ -5,8 +5,20 @@ import Testing
 @Test func commandExactStrings() throws {
     #expect(try Command.start.encodedLine() == "{\"cmd\":\"start\"}")
     #expect(
-        try Command.renameSpeaker(id: "g3", name: "田中").encodedLine()
-            == "{\"cmd\":\"rename_speaker\",\"name\":\"田中\",\"speaker\":\"g3\"}"
+        try Command.renameSpeaker(prefix: "2026-10-06_100000", id: "s3", name: "田中").encodedLine()
+            == "{\"cmd\":\"rename_speaker\",\"name\":\"田中\",\"prefix\":\"2026-10-06_100000\",\"speaker\":\"s3\"}"
+    )
+    #expect(
+        try Command.mergeSpeakers(prefix: "p", from: "s3", into: "s1").encodedLine()
+            == "{\"cmd\":\"merge_speakers\",\"from\":\"s3\",\"into\":\"s1\",\"prefix\":\"p\"}"
+    )
+    #expect(
+        try Command.refinalize(prefix: "p", speakers: 3).encodedLine()
+            == "{\"cmd\":\"refinalize\",\"prefix\":\"p\",\"speakers\":3}"
+    )
+    #expect(
+        try Command.refinalize(prefix: "p", speakers: nil).encodedLine()
+            == "{\"cmd\":\"refinalize\",\"prefix\":\"p\"}"
     )
     #expect(try Command.rotate.encodedLine() == "{\"cmd\":\"rotate\"}")
     #expect(
@@ -19,7 +31,10 @@ import Testing
     let commands: [Command] = [
         .start,
         .stop,
-        .renameSpeaker(id: "g3", name: "田中"),
+        .renameSpeaker(prefix: "p", id: "s3", name: "田中"),
+        .mergeSpeakers(prefix: "p", from: "s3", into: "s1"),
+        .refinalize(prefix: "p", speakers: nil),
+        .refinalize(prefix: "p", speakers: 2),
         .rotate,
         .pairCode("123456"),
         .quit,

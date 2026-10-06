@@ -4,6 +4,7 @@ import NotetakeCore
 enum FinalizeQueueError: Error, CustomStringConvertible {
     case rawAudioMissing(String)
     case resultMismatch(expected: Int, actual: Int?)
+    case alreadyQueued(String)
 
     var description: String {
         switch self {
@@ -11,6 +12,8 @@ enum FinalizeQueueError: Error, CustomStringConvertible {
             return "\(prefix)の生音声が残っていません"
         case .resultMismatch(let expected, let actual):
             return "確定処理の結果の回が合いません（期待 \(expected)、結果 \(actual.map(String.init) ?? "なし")）"
+        case .alreadyQueued(let prefix):
+            return "\(prefix)は確定処理の順番待ちか実行中です"
         }
     }
 }
@@ -20,8 +23,12 @@ enum FinalizeQueueError: Error, CustomStringConvertible {
 actor FinalizeQueue {
     struct Job: Equatable, Sendable {
         var prefix: String
-        /// 話者の人数の目標
+        /// 話者の人数の目標。手動の確定し直しだけが持つ
         var speakers: Int?
+        /// 手動の確定し直し。自動の再試行の回数に数えず、失敗しても自動では再試行しない
+        var manual = false
+        /// `finalize.json`が既にあるため、子processを走らせず取り込みだけを行う
+        var importOnly = false
     }
 
     struct Dependencies: Sendable {
@@ -45,6 +52,7 @@ actor FinalizeQueue {
     private var pending: [Job] = []
     private var running: Job?
     private var states: [String: FinalizeStateEvent] = [:]
+    private var retryTimers: [String: Task<Void, Never>] = [:]
     private var worker: Task<Void, Never>?
     private var lastProgressPercent: [String: Int] = [:]
     private var shuttingDown = false
@@ -59,18 +67,41 @@ actor FinalizeQueue {
 
     // MARK: - 入口
 
-    /// 順番待ちへ入れる。既に順番待ちか実行中なら何もしない
+    /// 順番待ちへ入れる。既に順番待ちか実行中なら何もしない。手動の確定し直しは、自動の再試行の待ちを取り消す
     func enqueue(_ job: Job) async {
         guard !shuttingDown else { return }
-        guard running?.prefix != job.prefix, !pending.contains(where: { $0.prefix == job.prefix }) else { return }
+        if job.manual {
+            retryTimers.removeValue(forKey: job.prefix)?.cancel()
+        }
+        guard running?.prefix != job.prefix, !pending.contains(where: { $0.prefix == job.prefix }) else {
+            if job.manual {
+                await dependencies.emit(.error("\(FinalizeQueueError.alreadyQueued(job.prefix))"))
+            }
+            return
+        }
         pending.append(job)
         await setState(FinalizeStateEvent(prefix: job.prefix, phase: .waiting))
         startWorker()
     }
 
-    /// serveの停止。実行中の子processを止める
+    /// 手動の確定し直し。生音声が残っていなければ、順番待ちへ入れずにerrorを返す
+    func refinalize(prefix: String, speakers: Int?) async {
+        do {
+            _ = try readInfo(prefix: prefix)
+        } catch {
+            await dependencies.emit(.error("確定し直せません: \(error)"))
+            return
+        }
+        await enqueue(Job(prefix: prefix, speakers: speakers, manual: true))
+    }
+
+    /// serveの停止。待っている再試行と実行中の子processを止める。この間の失敗は数えない
     func shutdown() async {
         shuttingDown = true
+        for timer in retryTimers.values {
+            timer.cancel()
+        }
+        retryTimers = [:]
         pending = []
         worker?.cancel()
         await worker?.value
@@ -100,8 +131,9 @@ actor FinalizeQueue {
     }
 
     private func isReady(_ job: Job) -> Bool {
-        FinalizeGate.canStart(
-            prefix: job.prefix, actual: dependencies.readActual(), nowMS: Self.ms(dependencies.now()))
+        job.importOnly
+            || FinalizeGate.canStart(
+                prefix: job.prefix, actual: dependencies.readActual(), nowMS: Self.ms(dependencies.now()))
     }
 
     private func process(_ job: Job) async {
@@ -114,10 +146,18 @@ actor FinalizeQueue {
             let records = try await dependencies.archive.readRecords(prefix: job.prefix, in: outputDirectory)
             let resultURL = CaptureSessionPaths.finalizeResultURL(sessionDirectory: sessionDirectory)
 
-            let run = (FinalizedRuns.latestRun(in: records, device: info.device) ?? 0) + 1
-            let prefix = job.prefix
-            try await dependencies.runChild(sessionDirectory, run, job.speakers) { [weak self] line in
-                Task { await self?.noteLine(line, prefix: prefix) }
+            let run: Int
+            if job.importOnly {
+                guard let result = try JSONFile.read(FinalizeResult.self, from: resultURL) else {
+                    throw FinalizeQueueError.resultMismatch(expected: 0, actual: nil)
+                }
+                run = result.run
+            } else {
+                run = (FinalizedRuns.latestRun(in: records, device: info.device) ?? 0) + 1
+                let prefix = job.prefix
+                try await dependencies.runChild(sessionDirectory, run, job.speakers) { [weak self] line in
+                    Task { await self?.noteLine(line, prefix: prefix) }
+                }
             }
             let result = try JSONFile.read(FinalizeResult.self, from: resultURL)
             guard let result, result.run == run else {
@@ -126,6 +166,7 @@ actor FinalizeQueue {
             let outcome = try await dependencies.archive.importFinalize(
                 result: result, info: info, prefix: job.prefix, receivedAt: Self.ms(dependencies.now()))
             await report(outcome, prefix: job.prefix)
+            FinalizeAttempts.clear(sessionDirectory: sessionDirectory)
             await dependencies.emit(.finalized(outcome.event))
             await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
         } catch {
@@ -166,11 +207,85 @@ actor FinalizeQueue {
 
     // MARK: - 失敗
 
-    /// 失敗した収録は、暫定版の`final.md`が残る
     private func fail(_ job: Job, error: Error) async {
         guard !shuttingDown else { return }
-        await dependencies.emit(.error("\(job.prefix): 確定処理に失敗しました: \(error)"))
-        await setState(FinalizeStateEvent(prefix: job.prefix, phase: .gaveUp, detail: "\(error)"))
+        let message = "\(error)"
+        let sessionDirectory = CaptureSessionPaths.sessionDirectory(
+            prefix: job.prefix, baseTemporaryDirectory: dependencies.rawBase)
+        if job.manual {
+            await dependencies.emit(.error("\(job.prefix): 確定し直しに失敗しました: \(message)"))
+            if let run = await latestFinalizedRun(prefix: job.prefix) {
+                await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
+            } else {
+                await setState(FinalizeStateEvent(prefix: job.prefix, phase: .gaveUp, detail: message))
+            }
+            return
+        }
+        var failures = 0
+        do {
+            failures = try FinalizeAttempts.read(sessionDirectory: sessionDirectory)
+        } catch {
+            await dependencies.emit(.log("\(job.prefix): 失敗の回数を読めないため、0回として数えます: \(error)"))
+        }
+        failures += 1
+        do {
+            try FinalizeAttempts.write(failures, sessionDirectory: sessionDirectory)
+        } catch {
+            await dependencies.emit(.error("\(job.prefix): 失敗の回数を書けません: \(error)"))
+        }
+        guard let delay = FinalizeRetryPolicy.delay(afterFailureCount: failures) else {
+            await dependencies.emit(.error("\(job.prefix): 確定処理を諦めました（自動の再試行を使い切りました）: \(message)"))
+            await setState(FinalizeStateEvent(prefix: job.prefix, phase: .gaveUp, detail: message))
+            return
+        }
+        let retryAt = Self.ms(dependencies.now().addingTimeInterval(delay))
+        await dependencies.emit(.log("\(job.prefix): 確定処理に失敗しました。\(Int(delay / 60))分後に再試行します: \(message)"))
+        await setState(FinalizeStateEvent(prefix: job.prefix, phase: .failed, detail: message, retryAt: retryAt))
+        let prefix = job.prefix
+        let sleep = dependencies.sleep
+        retryTimers[prefix] = Task { [weak self] in
+            // 待ちの取り消しは、手動の確定し直しかserveの停止による
+            guard (try? await sleep(delay)) != nil else { return }
+            await self?.retry(prefix: prefix)
+        }
+    }
+
+    private func retry(prefix: String) async {
+        retryTimers[prefix] = nil
+        await enqueue(Job(prefix: prefix, speakers: nil, manual: false))
+    }
+
+    // MARK: - 起動時の回復
+
+    /// 起動時に、確定していない収録を順番待ちへ入れる。`render`は`final.md`だけ書き直す
+    func recover(actions: [RecoveryAction], gaveUp: [String]) async {
+        for prefix in gaveUp {
+            await setState(
+                FinalizeStateEvent(prefix: prefix, phase: .gaveUp, detail: "自動の再試行を使い切りました"))
+        }
+        for action in actions {
+            switch action {
+            case .finalize(let prefix):
+                await enqueue(Job(prefix: prefix, speakers: nil, manual: false))
+            case .importResult(let prefix, _):
+                await enqueue(Job(prefix: prefix, speakers: nil, manual: false, importOnly: true))
+            case .render(let prefix):
+                await repair(prefix: prefix)
+            }
+        }
+    }
+
+    private func repair(prefix: String) async {
+        do {
+            let info = try readInfo(prefix: prefix)
+            if let event = try await dependencies.archive.repair(
+                prefix: prefix, in: URL(fileURLWithPath: info.outputDirectory), device: info.device)
+            {
+                await dependencies.emit(.finalized(event))
+            }
+        } catch {
+            await dependencies.emit(.error("\(prefix): final.mdを書き直せません: \(error)"))
+        }
     }
 
     // MARK: - 補助
@@ -185,6 +300,14 @@ actor FinalizeQueue {
             throw FinalizeQueueError.rawAudioMissing(prefix)
         }
         return info
+    }
+
+    private func latestFinalizedRun(prefix: String) async -> Int? {
+        guard let info = try? readInfo(prefix: prefix),
+            let records = try? await dependencies.archive.readRecords(
+                prefix: prefix, in: URL(fileURLWithPath: info.outputDirectory))
+        else { return nil }
+        return FinalizedRuns.latestRun(in: records, device: info.device)
     }
 
     private func setState(_ state: FinalizeStateEvent) async {

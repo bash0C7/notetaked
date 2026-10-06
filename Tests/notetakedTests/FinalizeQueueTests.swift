@@ -215,22 +215,140 @@ private func text(_ url: URL) throws -> String {
     #expect(harness.log.runs.map(\.prefix) == ["p1", "p2"])
 }
 
-@Test func aFailedRunLeavesTheProvisionalFinalAndReportsTheFailure() async throws {
+@Test func failuresRetryAtOneTenAndSixtyMinutesThenGiveUp() async throws {
     let harness = Harness()
     defer { harness.cleanUp() }
     try await harness.seedSession("p1")
-    let queue = harness.queue(runChild: { _, _, _, _ in
-        throw FinalizeProcessError.exited(status: 1, stderrTail: "model")
-    })
+    let log = harness.log
+    let queue = harness.queue(
+        runChild: { _, _, _, _ in throw FinalizeProcessError.exited(status: 1, stderrTail: "model") },
+        sleep: { delay in
+            log.addDelay(delay)
+            try await Task.sleep(for: .milliseconds(5))
+        })
 
     await queue.enqueue(.init(prefix: "p1", speakers: nil))
     await waitUntil { await queue.state(of: "p1")?.phase == .gaveUp }
 
-    #expect(harness.log.errors().contains { $0.contains("model") })
-    #expect(try text(SessionFiles.finalURL(prefix: "p1", directory: harness.output)).contains("暫定の発話"))
+    #expect(log.delays.filter { $0 >= 60 } == [60, 600, 3_600])
+    #expect(log.runs.count == 4)
+    #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 4)
+    #expect(log.states(of: "p1").filter { $0 == .failed }.count == 3)
+    #expect(log.errors().contains { $0.contains("諦めました") })
+    #expect(await queue.state(of: "p1")?.detail?.contains("model") == true)
 }
 
-@Test func shutdownStopsTheRunningChildWithoutReportingAFailure() async throws {
+@Test func successClearsTheFailureCount() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let calls = Counter()
+    let queue = harness.queue(runChild: { prefix, run, _, _ in
+        if calls.next() == 1 { throw FinalizeProcessError.stalled(after: 300) }
+        try harness.writeResult(prefix: prefix, run: run)
+    })
+
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 0)
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
+@Test func manualRefinalizeUsesTheNextRunKeepsNamesAndDoesNotCountFailures() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let queue = harness.queue()
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+    _ = try await harness.archive.renameSpeaker(
+        prefix: "p1", in: harness.output, device: deviceID, id: "s1", name: "佐藤花子")
+
+    await queue.refinalize(prefix: "p1", speakers: 2)
+    await waitUntil { await queue.state(of: "p1")?.run == 2 }
+
+    #expect(harness.log.runs.map(\.run) == [1, 2])
+    #expect(harness.log.runs.last?.speakers == 2)
+    #expect(try text(SessionFiles.finalURL(prefix: "p1", directory: harness.output)).contains("**佐藤花子**"))
+    #expect(harness.log.logs().contains { $0.contains("名前を引き継ぎました s1") })
+    let records = try await harness.archive.readRecords(prefix: "p1", in: harness.output)
+    #expect(Reconciler.fold(records).map(\.speaker) == ["佐藤花子", "話者2"])
+}
+
+@Test func manualFailureKeepsTheEarlierFinalizationAndSchedulesNothing() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let calls = Counter()
+    let log = harness.log
+    let queue = harness.queue(
+        runChild: { prefix, run, _, _ in
+            if calls.next() == 2 { throw FinalizeProcessError.exited(status: 1, stderrTail: "x") }
+            try harness.writeResult(prefix: prefix, run: run)
+        },
+        sleep: { delay in
+            log.addDelay(delay)
+            try await Task.sleep(for: .milliseconds(5))
+        })
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    await queue.refinalize(prefix: "p1", speakers: nil)
+    await waitUntil { log.errors().contains { $0.contains("確定し直しに失敗") } }
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(await queue.state(of: "p1")?.run == 1)
+    #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 0)
+    #expect(log.delays.filter { $0 >= 60 }.isEmpty)
+}
+
+@Test func refinalizeWithoutRawAudioReportsAnError() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    let queue = harness.queue()
+
+    await queue.refinalize(prefix: "gone", speakers: nil)
+
+    #expect(harness.log.errors().contains { $0.contains("生音声が残っていません") })
+    #expect(await queue.state(of: "gone") == nil)
+}
+
+@Test func recoveryImportsAReadyResultWithoutRunningTheChildAndReportsGivenUpSessions() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    try harness.writeResult(prefix: "p1", run: 1)
+    let queue = harness.queue()
+
+    await queue.recover(actions: [.importResult(prefix: "p1", run: 1)], gaveUp: ["p0"])
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(harness.log.runs.isEmpty)
+    #expect(await queue.state(of: "p0")?.phase == .gaveUp)
+    #expect(try SpeakersFile.read(from: SpeakersFile.url(prefix: "p1", directory: harness.output))?.run == 1)
+}
+
+@Test func recoveryRenderRewritesTheFinalOfAFinalizedSession() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let queue = harness.queue()
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+    try? FileManager.default.removeItem(at: SessionFiles.finalURL(prefix: "p1", directory: harness.output))
+
+    await queue.recover(actions: [.render(prefix: "p1")], gaveUp: [])
+
+    #expect(try text(SessionFiles.finalURL(prefix: "p1", directory: harness.output)).contains("**話者1**"))
+}
+
+@Test func shutdownStopsPendingRetriesWithoutCountingTheInterruptedRun() async throws {
     let harness = Harness()
     defer { harness.cleanUp() }
     try await harness.seedSession("p1")
@@ -242,6 +360,6 @@ private func text(_ url: URL) throws -> String {
 
     await queue.shutdown()
 
-    #expect(!harness.log.states(of: "p1").contains(.gaveUp))
-    #expect(harness.log.errors().isEmpty)
+    #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 0)
+    #expect(!harness.log.states(of: "p1").contains(.failed))
 }
