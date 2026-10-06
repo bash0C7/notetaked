@@ -9,9 +9,9 @@ public enum Source: String, Codable, Sendable {
 }
 
 public struct SpeakerTag: Codable, Sendable, Equatable {
-    public var local: String?        // stream内のlocal id（話者分離が付ける、M3）
-    public var global: String?       // Mac側SpeakerRegistryが付けた大域id（M3）
-    public var embedding: [Float]?   // 256次元（M3）
+    public var local: String?        // 話者分離がsourceの中で付けたid
+    public var global: String?       // 話者のid。表示名はspeaker_nameの記録が付ける
+    public var embedding: [Float]?   // 話者の声の特徴（256次元）
 
     public init(local: String? = nil, global: String? = nil, embedding: [Float]? = nil) {
         self.local = local

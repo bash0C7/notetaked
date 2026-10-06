@@ -2,7 +2,7 @@ import Foundation
 
 /// SpeechのAttributedString.runsから作る、run単位の時間範囲付きテキスト片。
 /// Speechフレームワークに依存しないため、Speechが使えないplatformでも
-/// Aligner等の純粋ロジックがこの型を利用できる。
+/// 話者の割り当てなどの純粋な処理がこの型を使える。
 public struct TranscriptRun: Sendable, Equatable {
     public var text: String
     public var startMS: Int64

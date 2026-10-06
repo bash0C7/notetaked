@@ -1,3 +1,4 @@
+import NotetakeCore
 import SwiftUI
 
 /// メニューバーアイコンをクリックした時に表示するメニュー内容。
@@ -14,6 +15,12 @@ struct MenuContent: View {
 
     var body: some View {
         Text(statusText)
+        if appModel.isRecording {
+            ForEach(appModel.captureStatuses, id: \.source) { status in
+                Text(CaptureStatusLabel.text(for: status))
+                    .foregroundStyle(.secondary)
+            }
+        }
         if let nextRotationAt = appModel.nextRotationAt {
             Text("次の区切り " + Self.nextRotationFormatter.string(from: nextRotationAt))
                 .foregroundStyle(.secondary)

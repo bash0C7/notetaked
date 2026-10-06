@@ -2,7 +2,7 @@ import Foundation
 
 /// device単位で受信済みseg`seq`の冪等判定に使うcursorの永続化。
 /// `~/Library/Application Support/Notetake/received/<device>.cursor`に受信済み最大seqを
-/// 10進文字列で保存する（`DeviceIdentity` / `SpeakerProfileStore`と同じディレクトリ規則）。
+/// 10進文字列で保存する（`DeviceIdentity`と同じディレクトリ規則）。
 /// deviceごとに1ファイルなので、呼び出し側（ServeSession）は`[String: Int]`のin-memory mirrorを
 /// 持ち、初回だけ`load(device:)`でここから復元する
 struct ReceivedCursor {

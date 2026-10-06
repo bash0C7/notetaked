@@ -14,7 +14,6 @@ public actor SessionStore {
     public nonisolated let liveURL: URL
     public nonisolated let timedURL: URL
     public nonisolated let finalURL: URL
-    public nonisolated let speakersURL: URL
 
     private var liveHandle: FileHandle?
     private var timedHandle: FileHandle?
@@ -24,7 +23,6 @@ public actor SessionStore {
         self.liveURL = directory.appendingPathComponent("\(prefix).live.txt")
         self.timedURL = directory.appendingPathComponent("\(prefix).timed.jsonl")
         self.finalURL = directory.appendingPathComponent("\(prefix).final.md")
-        self.speakersURL = directory.appendingPathComponent("\(prefix).speakers.json")
     }
 
     public init(directory: URL, start: Date, timeZone: TimeZone = .current) {
@@ -45,14 +43,6 @@ public actor SessionStore {
     /// final.mdを上書き（atomic）
     public func writeFinal(_ markdown: String) throws {
         try Data(markdown.utf8).write(to: finalURL, options: .atomic)
-    }
-
-    /// speakers.jsonを上書き（JSON、sortedKeys、prettyPrinted、atomic）
-    public func writeSpeakers(_ profiles: [SpeakerProfile]) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-        let data = try encoder.encode(profiles)
-        try data.write(to: speakersURL, options: .atomic)
     }
 
     public func close() {

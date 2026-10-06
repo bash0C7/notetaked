@@ -12,8 +12,6 @@ description: 収録の成果物（<prefix>.final.md / .timed.jsonl / .speakers.j
   - segの`platform`（mac / ios / watchos）と`source`（mic / system / watch）、`input.name`、`speaker.global`
   - `speaker_name` recordはprofile由来（capture初出）またはrename
   - 停止後に届いたpeer segは`appended peer seg to <prefix>, final.md regenerated`、該当セッションが無ければ`orphans.jsonl`
-- 話者の大域profile: `~/Library/Application Support/Notetake/speakers.json`（`name`付きcentroid）。cosine類似は`ruby -rjson`で計算できる（`SpeakerRegistry.Config.threshold` 0.7）
 - 受信cursor（冪等）: `~/Library/Application Support/Notetake/received/<device>.cursor`
 - 分離の遅延目安: `received_at - end`（`ruby -rjson`で算出）
 - 整形結果: `<prefix>.polished.md`（先頭`# yyyy-MM-dd 参加者`、時刻無し）
-- issue #8検証（短い相槌の話者分裂、区切り/停止時の第二パス`resolveFallbackSpeakers()`の効果確認）: `scripts/fallback-diff.sh [prefix|latest] [dir]`。実際のfinal.md（第二パス適用済み）と`notetaked render`での再生成（第二パス無し、ライブ表示相当）をdiffし、第二パスがどの行の話者を変えたかを示す。final.mdは実行後に元へ復元される

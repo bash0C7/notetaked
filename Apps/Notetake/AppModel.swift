@@ -18,6 +18,7 @@ final class AppModel {
     private static let maxRestartsPerWindow = 5
     private static let restartWindow: TimeInterval = 60
     private static let restartDelay: TimeInterval = 1
+    private static let wakeGrace: TimeInterval = 30
 
     var outputDirectory: URL? {
         didSet { persistOutputDirectory() }
@@ -55,6 +56,8 @@ final class AppModel {
     var utterances: [Utterance] = []
     var volatile: [Source: String] = [:]
     var sources: [Source] = []
+    /// 収録中のsourceごとの取り込みの状態（daemonの`status.capture`）。停止中は空
+    var captureStatuses: [CaptureStatus] = []
     /// 現在の収録の入力機材（daemonの`status.input_name`）。停止中はnil
     var inputName: String?
     var inputSpatial: Bool?
@@ -76,6 +79,10 @@ final class AppModel {
     private var daemonStartedAt: Date?
     private let captureSupervisor: CaptureDaemonSupervisor?
     private var heartbeatMonitorTask: Task<Void, Never>?
+    /// Macがスリープから戻った時刻。戻った直後は、serveとcapture-daemonが心拍を書き直す前で古く見えるため、
+    /// `wakeGrace`の間はハングの判定をしない
+    private var lastWakeAt: Date?
+    private var wakeObserver: (any NSObjectProtocol)?
     /// 現在の収録（`prefix`）が開始した時刻。自動区切りの期限計算の起点。
     private var recordingStartedAt: Date?
     /// 自動区切りを待機している`Task`。設定変更・収録状態の変化のたびに取り消して張り直す。
@@ -128,19 +135,29 @@ final class AppModel {
         } else {
             captureSupervisor = nil
         }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.lastWakeAt = Date()
+            }
+        }
         heartbeatMonitorTask = Task { @MainActor [weak self] in
             while let self, !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !self.isShuttingDown else { continue }
+                if let lastWakeAt = self.lastWakeAt, Date().timeIntervalSince(lastWakeAt) < Self.wakeGrace {
+                    continue
+                }
                 if let captureSupervisor = self.captureSupervisor, !captureSupervisor.isHealthy {
                     await captureSupervisor.gracefulRestart()
                 }
                 if Heartbeat.currentStatus(of: CaptureStatePaths.processHeartbeatURL, threshold: 15) == .stale,
                    self.daemonRunning,
                    Date().timeIntervalSince(self.daemonStartedAt ?? .distantPast) >= 30 {
-                    self.lastError = "processがハングしたため再起動します"
-                    await self.client?.terminate(wasRecording: self.isRecording)
-                    // terminate()が実際に殺せたとしても、handleExit()のprocess.terminationHandler経由の
+                    self.lastError = "serveが応答しないため、止めて起動し直します"
+                    await self.client?.forceKill()
+                    // forceKill()で止めた後も、handleExit()のprocess.terminationHandler経由の
                     // 到達を待たずここで確実にリセットする（ensureDaemon()の早期returnガードが
                     // daemonRunning==trueのままだと再起動をブロックし続けるため）。
                     self.client = nil
@@ -290,6 +307,7 @@ final class AppModel {
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
         prefix = nil
+        captureStatuses = []
         connectedPeers = [:]
         clearRotation()
         if code != 0 {
@@ -463,9 +481,10 @@ final class AppModel {
                 utterances = []
                 volatile = [:]
             }
-            if status.recording {
+            if isNewRecording {
                 lastError = nil
-            } else {
+            }
+            if !status.recording {
                 volatile = [:]
             }
             if let previousPrefix, !status.recording || isNewRecording {
@@ -478,6 +497,7 @@ final class AppModel {
             sources = status.sources
             inputName = status.inputName
             inputSpatial = status.inputSpatial
+            captureStatuses = status.capture ?? []
             if isNewRecording {
                 recordingStartedAt = Date()
                 scheduleRotation()
@@ -499,7 +519,7 @@ final class AppModel {
         case .volatile(let source, let text):
             volatile[source] = text
         case .error(let message):
-            lastError = message
+            lastError = "\(Date().formatted(date: .omitted, time: .shortened)) \(message)"
             FileHandle.standardError.write(Data("notetaked error: \(message)\n".utf8))
         case .log(let message):
             lastLog = message

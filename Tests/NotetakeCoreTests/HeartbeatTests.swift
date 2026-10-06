@@ -36,9 +36,6 @@ import Testing
 @Test func statePathsAreDistinct() {
     let paths = [
         CaptureStatePaths.processHeartbeatURL,
-        CaptureStatePaths.captureCommandURL,
-        CaptureStatePaths.captureEventURL,
-        CaptureStatePaths.currentSessionMarkerURL,
         CaptureStatePaths.captureDesiredURL,
         CaptureStatePaths.captureActualURL,
     ]

@@ -91,6 +91,17 @@ final class DaemonClient {
     /// 10秒、そうでなければ2秒を締め切りとする。SIGTERM後はさらに3秒待ってからSIGKILLへ
     /// エスカレーションする（`ServeCommand`がSIGTERMをclean shutdown経路として使うため、
     /// actorがハングしている場合に備えた最終手段）。
+    /// 応答しないserveをSIGKILLで止める。quitを送ると、serveは収録を止めて望む状態を空にするため送らない。
+    /// 望む状態が残るので、起動し直したserveが同じ収録を引き継ぐ
+    func forceKill() async {
+        guard process.isRunning else { return }
+        kill(process.processIdentifier, SIGKILL)
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
     func terminate(wasRecording: Bool = false) async {
         guard process.isRunning else { return }
         send(.quit)

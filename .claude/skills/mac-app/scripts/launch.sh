@@ -19,12 +19,12 @@ fi
 : > "$LOG"
 open --stderr "$LOG" --stdout "$LOG" "$APP"
 ready=false
-for _ in $(seq 1 60); do tail -n 30 "$LOG" 2>/dev/null | grep -q 'diarizer ready' && break; sleep 1; done
-if tail -n 30 "$LOG" 2>/dev/null | grep -q 'diarizer ready'; then
+for _ in $(seq 1 60); do tail -n 30 "$LOG" 2>/dev/null | grep -q 'serve ready' && break; sleep 1; done
+if tail -n 30 "$LOG" 2>/dev/null | grep -q 'serve ready'; then
   ready=true
 fi
 if [ "$ready" != true ]; then
-  echo "Notetake.app did not reach diarizer ready after deployment restart" >&2
+  echo "Notetake.app did not reach serve ready after deployment restart" >&2
   tail -n 30 "$LOG" >&2 || true
   exit 1
 fi

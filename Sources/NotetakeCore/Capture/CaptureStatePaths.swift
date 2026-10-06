@@ -8,9 +8,6 @@ public enum CaptureStatePaths {
     }
 
     public static var processHeartbeatURL: URL { stateDirectory().appendingPathComponent("process.heartbeat") }
-    public static var captureCommandURL: URL { stateDirectory().appendingPathComponent("capture-command.json") }
-    public static var captureEventURL: URL { stateDirectory().appendingPathComponent("capture-event.json") }
-    public static var currentSessionMarkerURL: URL { stateDirectory().appendingPathComponent("current-session.json") }
     public static var captureDesiredURL: URL { stateDirectory().appendingPathComponent("capture-desired.json") }
     public static var captureActualURL: URL { stateDirectory().appendingPathComponent("capture-actual.json") }
 }

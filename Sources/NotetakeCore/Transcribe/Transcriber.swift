@@ -166,8 +166,7 @@ public actor Transcriber {
     ///
     /// cancelAndFinishNow()を呼んでも transcriber.results シーケンスが自然には終わらない
     /// ことがあるため、この2つの強制終了経路では results-consumption task をcancelし、
-    /// start()が返したAsyncStreamのcontinuationも直接finishして呼び出し側（CaptureStreamの
-    /// forwardTask）がwedgeしないようにする。
+    /// start()が返したAsyncStreamのcontinuationも直接finishして、piecesを読む側が待ち続けないようにする。
     public func finish() async throws {
         inputContinuation?.finish()
 
