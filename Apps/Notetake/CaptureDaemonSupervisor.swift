@@ -1,10 +1,8 @@
 import Foundation
 import NotetakeCore
 
-/// notetaked capture-daemonを子processとして起動・監視する。stdio連携は無く、
-/// heartbeatファイルのmtimeだけで生存確認する（クラッシュ・ハング両方をこの一本の仕組みで検知する。
-/// notetaked serveのDaemonClientと違い、Process.terminationHandlerによる即時クラッシュ検知は行わない —
-/// クラッシュしてもheartbeatが15秒以内に古くなるため、同じ経路でカバーされる）
+/// notetaked capture-daemonを子processとして起動・監視する。capture-daemonは実状態のファイルを1秒ごとに書くため、
+/// その更新時刻が15秒止まったら、落ちたかハングしたと見なして起動し直す
 @MainActor
 final class CaptureDaemonSupervisor {
     private static let heartbeatThreshold: TimeInterval = 15
@@ -35,7 +33,7 @@ final class CaptureDaemonSupervisor {
     }
 
     var isHealthy: Bool {
-        Heartbeat.currentStatus(of: CaptureStatePaths.captureHeartbeatURL, threshold: Self.heartbeatThreshold) == .alive
+        Heartbeat.currentStatus(of: CaptureStatePaths.captureActualURL, threshold: Self.heartbeatThreshold) == .alive
     }
 
     /// SIGTERMで猶予を与えて止め、それでも生きていればSIGKILLしてから再起動する
