@@ -87,7 +87,9 @@ actor MicCapture: SourceCapture {
         }
         // AVAudioNodeTapBlockは@Sendableではないため、明示しないとactorに隔離されたclosureと推論され、
         // audioのthreadから呼ばれた時に実行時の隔離検査で止まる
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { @Sendable buffer, _ in
+        // formatを渡すと、機器の切り替えで入力のformatが読んだ後に変わった時、tapの取り付けがNSExceptionで
+        // processごと落ちる。nilなら入力ノードの今のformatで届き、bufferが自分のformatを持つ
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { @Sendable buffer, _ in
             sink.ingest(buffer)
         }
         engine.prepare()

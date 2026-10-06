@@ -2,25 +2,24 @@
 
 ツール名（daemon / ツール全体）は`notetaked`、読みは「のたてけでぃー」（ローマ字読み）。語源はnotetake（速記）+ daemonの`d`。
 
-Macのメニューバーappとdaemonで会議音声（マイク + システム音声）をリアルタイムに文字起こしし、iPhone / Apple Watchで拾った音声も同じ収録に統合してMarkdownの議事録にする。全てローカルで動く（Speech / FluidAudio / Foundation Models）。
+Macのメニューバーappとdaemonで会議音声（マイク + システム音声）をリアルタイムに文字起こしし、iPhone / Apple Watchで拾った音声も同じ収録に統合してMarkdownの議事録にする。全てローカルで動く（Speech / Foundation Models）。
 
 ## 構成
 
 | 部品 | 場所 | 役割 |
 |---|---|---|
-| `notetaked` | `Sources/notetaked` | daemon（CLI）。`serve`で収録・話者分離・iPhone / Watchからの受信・`final.md`生成、`polish`で対話整形、`render` / `transcribe` / `capture` |
-| `NotetakeCore` | `Sources/NotetakeCore` | 共有ロジック。Segment / Reconciler / SpeakerRegistry / LocationLabel / DirectionEstimator / PeerMessage など |
-| `NotetakeDiarization` | `Sources/NotetakeDiarization` | FluidAudioによる話者分離 |
-| Notetake.app | `Apps/Notetake` | メニューバーapp。daemonを子processとして起動・監視・再起動・終了し、ライブパネル（本文・話者命名・区切る・整形）と設定Windowを持つ |
+| `notetaked` | `Sources/notetaked` | daemon（CLI）。`capture-daemon`でマイクとsystem音声を生音声として書き、`serve`で収録の開始・停止・区切り、ライブの文字起こし、iPhone / Watchからの受信、`final.md`の生成を行う。`polish`で対話整形、`render` / `transcribe` |
+| `NotetakeCore` | `Sources/NotetakeCore` | 共有ロジック。生音声の形式と時刻の基準点 / Segment / Reconciler / LocationLabel / DirectionEstimator / PeerMessageなど |
+| Notetake.app | `Apps/Notetake` | メニューバーapp。capture-daemonとserveを子processとして起動・監視・再起動・終了し、メニューにsourceごとの取り込みの状態を出す。ライブパネル（本文・区切る・整形）と設定Windowを持つ |
 | NotetakeMobile | `Apps/NotetakeMobile` | iPhone app。Bonjour + TLS PSKでMacへ接続し、マイク（iPhone 16eは空間音声FOAで方位付き）の文字起こしをsegとして送る。Watchからの小片を中継する |
 | NotetakeWatch | `Apps/NotetakeWatch` | Watch app。20秒のAAC小片を`WCSession.transferFile`でiPhoneへ送る |
 
-出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.speakers.json` / `.polished.md`、`orphans.jsonl`。大域の話者profileは`~/Library/Application Support/Notetake/speakers.json`。
+出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
 
 ## 必要なもの
 
 - macOS（Apple Silicon、Apple Intelligence有効なMacで`polish`が動く）、Xcode、xcodegen
-- 初回はネット: `swift package --disable-keychain --disable-netrc resolve`（FluidAudioのbinaryTarget）、FluidAudioのモデル（Hugging Face、`serve`初回）、ja-JP音声モデル
+- 初回はネット: `swift package --disable-keychain --disable-netrc resolve`（FluidAudioのbinaryTarget）、ja-JP音声モデル
 - iPhone / Watchは実機のみ（Apple Development証明書、`Apps/project.yml`のAutomatic署名）
 
 ## ビルドと検証
@@ -45,11 +44,11 @@ make clean    # .buildと生成済みXcodeプロジェクトを削除
 ## 使い方
 
 1. `make install-app`後に`open /Applications/Notetake.app`で起動（`open`で開く。binary直起動はUIが壊れる）。設定Windowで保存先・自分の名前・自動で区切る間隔（時間、0で区切らない）・ペアリングコード
-2. メニュー / ライブパネルの「収録開始」「収録停止」「区切る」（prefixを切り替える）「整形」（直前の収録を`polish`）。パネルの話者名クリックで命名（次回起動以降も同じ声に同じ名前が付く）
+2. メニュー / ライブパネルの「収録開始」「収録停止」「区切る」（prefixを切り替える）「整形」（直前の収録を`polish`）。メニューにsourceごとの取り込みの状態（取り込み中 / 再開待ち / 停止）が出る。ディスプレイの消灯などでsystem音声が止まると、capture-daemonが5秒ごとに作り直す。
 3. iPhone: Notetakeにペアリングコードを入力→「接続: <Mac名>」→「開始」。segはMacの収録に時刻で割り当てられ、切断中の分は再接続後に送られて`final.md`が再生成される
 4. Watch: Notetakeで「開始」→iPhone経由でMacへ届く（`（Watch）`行）
 
-CLI単体: `.build/release/notetaked serve --output <dir> --owner <名前> --source both [--pair-code 123456] [--no-diarize]`（stdinに`{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdoutに`status` / `utterance` / `volatile` / `peer` / `log` / `error`イベント）。
+CLI単体: `.build/release/notetaked capture-daemon`を起動しておき、`.build/release/notetaked serve --output <dir> --owner <名前> --source both [--pair-code 123456]`（stdinに`{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdoutに`status` / `utterance` / `volatile` / `peer` / `log` / `error` / `input_reset`イベント）。serveは`capture-desired.json`でcapture-daemonへ取り込みを指示する。
 
 ## 既知の制限
 
@@ -58,6 +57,6 @@ CLI単体: `.build/release/notetaked serve --output <dir> --owner <名前> --sou
 ## ドキュメント
 
 - `HANDOFF.md`: 現在の状態・環境の注意・次にやること（作業はここから）
-- `docs/superpowers/specs/2026-09-12-notetake-design.md`: 全体設計（binding）。他のspec / planは`docs/superpowers/`
-- `.claude/skills/`: `verify`（検証ゲート）/ `mac-app`（appの起動・メニュー・設定の自動操作）/ `device`（iPhone / Watchのインストール・起動・crash log）/ `recordings`（収録結果の確認）
+- `docs/superpowers/specs/2026-09-12-notetake-design.md`: 最初の全体設計（収録中の話者分離を前提にしている）。現行の設計は`docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`。他のspec / planは`docs/superpowers/`
+- `.claude/skills/`: `verify`（検証ゲート）/ `mac-app`（appの起動・メニュー・設定の自動操作）/ `device`（iPhone / Watchのインストール・起動・crash log）/ `recordings`（収録結果と生音声の確認）/ `daemon-realtest`（capture-daemonとserveのCLIでの実機検証）
 - 課題: GitHub issues

@@ -57,7 +57,7 @@ def main():
         segs2 = [r for r in second if r.get("t") == "seg"]
 
         for key, segs in (("say1", segs1), ("say2", segs2), ("say3", segs2), ("say4", segs2)):
-            candidates = [s for s in segs if s["start"] >= steps[key] - 1000]
+            candidates = [s for s in segs if s["start"] >= steps[key] - 500]
             seg = min(candidates, key=lambda s: s["start"]) if candidates else None
             delay = seg["start"] - steps[key] if seg else None
             check(
@@ -106,7 +106,8 @@ def main():
     check("final.mdが2つ書かれた", len(glob.glob(f"{directory}/out/*.final.md")) == 2)
     with open(f"{directory}/state-dir.txt", encoding="utf-8") as listing:
         leftovers = [name for name in listing.read().split() if name.endswith(".tmp")]
-    check("状態ディレクトリに一時ファイルが残っていない", not leftovers, " ".join(leftovers))
+    # serveとcapture-daemonをSIGKILLで止めるため、書き込みの最中に止まった一時ファイルは最大2つ残りうる
+    check("状態ディレクトリに一時ファイルが溜まっていない（SIGKILLの2回分まで許す）", len(leftovers) <= 2, " ".join(leftovers))
     with open(f"{directory}/orphan.txt", encoding="utf-8") as orphan:
         check("起動したprocessが終わったcapture-daemonは自分で終えた", orphan.read().strip() == "exited")
 

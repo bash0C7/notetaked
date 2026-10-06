@@ -64,14 +64,14 @@ step say1
 say -v Kyoko "一つ目の確認です。時刻が壁時計に合っているかを確かめます。"
 sleep 1
 say -v Otoya "はい、わかりました。"
-sleep 8
+sleep 6
 
 send '{"cmd":"rotate"}'
 sleep 3
 step rotated
 step say2
 say -v Kyoko "区切った後の発話です。"
-sleep 8
+sleep 6
 
 kill -9 "$(cat "$D/serve.pid")"
 exec 3>&-
@@ -82,7 +82,7 @@ wait_for 'resumed' || step serve-not-resumed
 step serve-restarted
 step say3
 say -v Kyoko "serveを起動し直した後の発話です。"
-sleep 8
+sleep 6
 
 kill -9 "$(cat "$D/capture.pid")"
 step capture-killed
@@ -93,7 +93,7 @@ sleep 4
 step capture-restarted
 step say4
 say -v Kyoko "capture-daemonを起動し直した後の発話です。"
-sleep 8
+sleep 6
 
 send '{"cmd":"stop"}'
 sleep 3
