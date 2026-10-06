@@ -11,7 +11,7 @@
   - 単体テストだけで見ている: 再試行、起動時の復旧、改名、話者をまとめる、確定し直し、話者の突き合わせ
   - 話者分離: 合成音声2人（Kyoko / Otoya）の発話が、どちらも「話者1」になった。原因は未調査。人の声の分離の検証は行わない（userの判断）。人数が合わなければ`--speakers N`で確定し直す
 - **次の手順**: ①Task 8 ②使い捨てのbuildでappの画面を確認する（`/Applications`は触らない） ③userの使用で出たfeedbackに対応する（人の声での話者分離の検証は、userが不要と決めた）
-- **検証の方法**: 音を出す実機テストは行わない（イヤホンへ流れ続けるため）。確定は`.claude/skills/daemon-realtest/scripts/silent-finalize.py`で生音声を作り、serveで確定させる。serveのeventは各行に`t`（epochミリ秒）を持つので、段階ごとの所要時間はログから読める。`finalize-check.sh`は音を出す古い確認で、編集が未commitのまま残っている（破棄してよい）
+- **検証の方法**: 音を出す実機テストは行わない（イヤホンへ流れ続けるため）。確定は`.claude/skills/daemon-realtest/scripts/silent-finalize.py`で生音声を作り、serveで確定させる。serveのeventは各行に`t`（epochミリ秒）を持つので、段階ごとの所要時間はログから読める。
 - **環境**: 開発機はApple M4 Pro（48GB、macOS 27.0.1）。`make daemon`の署名が終わる前にbinaryを起動すると、amfidが署名を無効と判定し、Gatekeeperがbinaryをゴミ箱へ移して通知を出す。起動はビルドの完了後に行う。前面の`sleep`はClaude Codeで使えないため、待ちを含む確認はscriptを`run_in_background`で走らせ、終了の知らせを待つ
 - **mainに残る不具合（branchの段階1で直した。mainへはまだ入れていない）**: micの音声が途切れた後の発話時刻のずれ、ディスプレイ消灯でsystem音声が再開しない、`SpeakerRegistry`の割り当て表が収録をまたぐ、appが落ちた後にcapture-daemonが残り同じ生音声へ追記して壊す
 - **未確認（段階1）**: appでの確認（メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイ消灯中のsystem音声（userの判断で行っていない）、固定した入力機器が外れた時
