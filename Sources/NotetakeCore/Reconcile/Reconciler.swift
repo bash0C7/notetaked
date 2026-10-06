@@ -12,7 +12,9 @@ public struct Reconciler: Sendable {
 
     private var config: Config
     public private(set) var utterances: [Utterance] = []          // start昇順
-    public private(set) var speakerNames: [String: String] = [:]  // 大域id → 名前
+    public private(set) var speakerNames: [String: String] = [:]  // 話者id → 名前
+    /// まとめた話者の行き先（`from` → `into`）
+    private var mergedInto: [String: String] = [:]
 
     public init(config: Config = Config()) {
         self.config = config
@@ -22,18 +24,23 @@ public struct Reconciler: Sendable {
     @discardableResult
     public mutating func apply(_ record: Record) -> [Utterance] {
         switch record {
-        case .session, .device:
+        case .session, .device, .sessionEnd, .finalized:
             return []
         case .speakerName(let rename):
             return applySpeakerName(rename)
+        case .speakerMerge(let merge):
+            return applySpeakerMerge(merge)
         case .segment(let seg):
             return applySegment(seg)
         }
     }
 
+    /// (device, source)の組ごとに、`finalized`の記録がある最新の回の確定版の発話を使い、暫定版と古い回の
+    /// 発話を無視する。確定版の無い組は暫定版を使う。名前とまとめは、使っている回の記録だけを当てる
     public static func fold(_ records: [Record], config: Config = Config()) -> [Utterance] {
+        let runs = FinalizedRuns(records: records)
         var reconciler = Reconciler(config: config)
-        for record in records {
+        for record in records where runs.includes(record) {
             reconciler.apply(record)
         }
         return reconciler.utterances
@@ -41,14 +48,46 @@ public struct Reconciler: Sendable {
 
     // MARK: - speaker_name
 
+    /// 空の名前は名前の取り消しで、表示は既定の名前（「話者1」等）へ戻る
     private mutating func applySpeakerName(_ rename: SpeakerNameRecord) -> [Utterance] {
-        speakerNames[rename.speaker] = rename.name
+        let id = resolve(rename.speaker)
+        let name = rename.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        speakerNames[id] = name.isEmpty ? nil : name
         var changed: [Utterance] = []
-        for i in utterances.indices where utterances[i].speakerID == rename.speaker {
-            utterances[i].speaker = label(speakerID: utterances[i].speakerID, ownerLabel: utterances[i].ownerLabel)
+        for i in utterances.indices where utterances[i].speakerID == id {
+            utterances[i].speaker = label(speakerID: id, ownerLabel: utterances[i].ownerLabel)
             changed.append(utterances[i])
         }
         return changed
+    }
+
+    // MARK: - speaker_merge
+
+    /// `from`の発話を`into`へ移す。`into`に名前が無ければ`from`の名前を引き継ぐ
+    private mutating func applySpeakerMerge(_ merge: SpeakerMergeRecord) -> [Utterance] {
+        let from = resolve(merge.from)
+        let into = resolve(merge.into)
+        guard from != into else { return [] }
+        mergedInto[from] = into
+        if speakerNames[into] == nil {
+            speakerNames[into] = speakerNames[from]
+        }
+        speakerNames[from] = nil
+        var changed: [Utterance] = []
+        for i in utterances.indices where utterances[i].speakerID == from || utterances[i].speakerID == into {
+            utterances[i].speakerID = into
+            utterances[i].speaker = label(speakerID: into, ownerLabel: utterances[i].ownerLabel)
+            changed.append(utterances[i])
+        }
+        return changed
+    }
+
+    private func resolve(_ id: String) -> String {
+        var current = id
+        while let next = mergedInto[current] {
+            current = next
+        }
+        return current
     }
 
     // MARK: - segment
@@ -99,7 +138,7 @@ public struct Reconciler: Sendable {
             id: seg.id,
             start: start,
             end: end,
-            speakerID: seg.speaker?.global,
+            speakerID: seg.speaker?.global.map(resolve),
             speaker: "",
             text: seg.text,
             confidence: seg.confidence,
@@ -153,7 +192,7 @@ public struct Reconciler: Sendable {
         }
 
         if merged.speakerID == nil {
-            merged.speakerID = seg.speaker?.global
+            merged.speakerID = seg.speaker?.global.map(resolve)
         }
         merged.speaker = label(speakerID: merged.speakerID, ownerLabel: merged.ownerLabel)
         return merged
@@ -178,7 +217,7 @@ public struct Reconciler: Sendable {
 
     private func label(speakerID: String?, ownerLabel: String) -> String {
         guard let speakerID else { return ownerLabel }
-        return speakerNames[speakerID] ?? speakerID
+        return speakerNames[speakerID] ?? SpeakerLabel.defaultName(for: speakerID)
     }
 
     // MARK: - ordered insert

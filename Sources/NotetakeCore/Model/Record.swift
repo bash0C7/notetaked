@@ -37,10 +37,48 @@ public struct DeviceRecord: Codable, Sendable, Equatable {
 public struct SpeakerNameRecord: Codable, Sendable, Equatable {
     public var speaker: String
     public var name: String
+    /// 確定版の話者への名前は、どの回の話者かを持つ。無ければ従来の大域idへの名前
+    public var run: Int?
 
-    public init(speaker: String, name: String) {
+    public init(speaker: String, name: String, run: Int? = nil) {
         self.speaker = speaker
         self.name = name
+        self.run = run
+    }
+}
+
+/// 収録の終了。収録の一覧が終了時刻に使う
+public struct SessionEndRecord: Codable, Sendable, Equatable {
+    public var ended: Int64   // epoch ms
+
+    public init(ended: Int64) {
+        self.ended = ended
+    }
+}
+
+/// 確定処理の結果の取り込みが済んだ印。`device`の`sources`は、この回の確定版に置き換わる
+public struct FinalizedRecord: Codable, Sendable, Equatable {
+    public var run: Int
+    public var device: String
+    public var sources: [Source]
+
+    public init(run: Int, device: String, sources: [Source]) {
+        self.run = run
+        self.device = device
+        self.sources = sources
+    }
+}
+
+/// 確定版の話者`from`を`into`へまとめる
+public struct SpeakerMergeRecord: Codable, Sendable, Equatable {
+    public var run: Int
+    public var from: String
+    public var into: String
+
+    public init(run: Int, from: String, into: String) {
+        self.run = run
+        self.from = from
+        self.into = into
     }
 }
 
@@ -49,6 +87,9 @@ public enum Record: Codable, Sendable, Equatable {
     case device(DeviceRecord)            // t: "device"
     case speakerName(SpeakerNameRecord)  // t: "speaker_name"
     case segment(Segment)                // t: "seg"
+    case sessionEnd(SessionEndRecord)    // t: "session_end"
+    case finalized(FinalizedRecord)      // t: "finalized"
+    case speakerMerge(SpeakerMergeRecord)  // t: "speaker_merge"
 
     enum CodingKeys: String, CodingKey {
         case t
@@ -66,6 +107,12 @@ public enum Record: Codable, Sendable, Equatable {
             self = .speakerName(try SpeakerNameRecord(from: decoder))
         case "seg":
             self = .segment(try Segment(from: decoder))
+        case "session_end":
+            self = .sessionEnd(try SessionEndRecord(from: decoder))
+        case "finalized":
+            self = .finalized(try FinalizedRecord(from: decoder))
+        case "speaker_merge":
+            self = .speakerMerge(try SpeakerMergeRecord(from: decoder))
         default:
             throw NDJSONError.unknownType(type)
         }
@@ -85,6 +132,15 @@ public enum Record: Codable, Sendable, Equatable {
             try payload.encode(to: encoder)
         case .segment(let payload):
             try container.encode("seg", forKey: .t)
+            try payload.encode(to: encoder)
+        case .sessionEnd(let payload):
+            try container.encode("session_end", forKey: .t)
+            try payload.encode(to: encoder)
+        case .finalized(let payload):
+            try container.encode("finalized", forKey: .t)
+            try payload.encode(to: encoder)
+        case .speakerMerge(let payload):
+            try container.encode("speaker_merge", forKey: .t)
             try payload.encode(to: encoder)
         }
     }

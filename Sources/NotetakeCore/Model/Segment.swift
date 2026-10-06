@@ -8,6 +8,11 @@ public enum Source: String, Codable, Sendable {
     case mic, system, watch
 }
 
+/// 確定処理が付ける印。`pass`が無いsegは収録中の暫定版
+public enum SegmentPass: String, Codable, Sendable {
+    case final
+}
+
 public struct SpeakerTag: Codable, Sendable, Equatable {
     public var local: String?        // 話者分離がsourceの中で付けたid
     public var global: String?       // 話者のid。表示名はspeaker_nameの記録が付ける
@@ -39,6 +44,8 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
     public var direction: Direction? = nil
     public var clockOffsetMS: Int64   // key: clock_offset_ms、Macが受信時に付与。既定0
     public var receivedAt: Int64?     // key: received_at
+    public var pass: SegmentPass?     // 確定版は`final`。暫定版はnil
+    public var run: Int?              // 確定版を作った確定処理の回の番号。暫定版はnil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -59,6 +66,8 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         case direction
         case clockOffsetMS = "clock_offset_ms"
         case receivedAt = "received_at"
+        case pass
+        case run
     }
 
     public init(
@@ -79,7 +88,9 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         speaker: SpeakerTag? = nil,
         direction: Direction? = nil,
         clockOffsetMS: Int64 = 0,
-        receivedAt: Int64? = nil
+        receivedAt: Int64? = nil,
+        pass: SegmentPass? = nil,
+        run: Int? = nil
     ) {
         self.id = id
         self.session = session
@@ -99,5 +110,7 @@ public struct Segment: Codable, Sendable, Equatable, Identifiable {
         self.direction = direction
         self.clockOffsetMS = clockOffsetMS
         self.receivedAt = receivedAt
+        self.pass = pass
+        self.run = run
     }
 }
