@@ -9,16 +9,12 @@ actor StdioControl {
     func commands() -> AsyncStream<Command> {
         let (stream, continuation) = AsyncStream<Command>.makeStream()
         let task = Task {
-            do {
-                for try await line in FileHandle.standardInput.bytes.lines {
-                    do {
-                        continuation.yield(try Command.decode(line: line))
-                    } catch {
-                        await send(.error("invalid command: \(line)"))
-                    }
+            for await line in LineStream.lines(of: FileHandle.standardInput.fileDescriptor) {
+                do {
+                    continuation.yield(try Command.decode(line: line))
+                } catch {
+                    await send(.error("invalid command: \(line)"))
                 }
-            } catch {
-                await send(.error("stdin read failed: \(error)"))
             }
             continuation.finish()
         }
@@ -27,7 +23,7 @@ actor StdioControl {
     }
 
     func send(_ event: Event) async {
-        guard let line = try? event.encodedLine() else { return }
+        guard let line = try? event.encodedLine(atMS: Int64(Date().timeIntervalSince1970 * 1000)) else { return }
         print(line)
         fflush(stdout)
     }

@@ -243,4 +243,26 @@ public enum Event: Codable, Sendable, Equatable {
         let data = try encoder.encode(self)
         return String(decoding: data, as: UTF8.self)
     }
+
+    /// 送出時刻（epochのミリ秒）を`t`として足した1行。段階ごとの所要時間をログから読めるようにする。
+    /// 受け手のdecodeは未知のキーを無視する
+    public func encodedLine(atMS: Int64) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(SentEvent(event: self, sentMS: atMS))
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+private struct SentEvent: Encodable {
+    let event: Event
+    let sentMS: Int64
+
+    private enum CodingKeys: String, CodingKey { case t }
+
+    func encode(to encoder: Encoder) throws {
+        try event.encode(to: encoder)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sentMS, forKey: .t)
+    }
 }

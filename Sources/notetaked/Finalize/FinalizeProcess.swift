@@ -71,7 +71,7 @@ enum FinalizeProcess {
 
         let progress = Progress()
         let reader = Task {
-            for try await line in pipe.fileHandleForReading.bytes.lines {
+            for await line in LineStream.lines(of: pipe.fileHandleForReading.fileDescriptor) {
                 progress.touch(line)
                 onLine(line)
             }
@@ -104,6 +104,8 @@ enum FinalizeProcess {
                 }
                 do {
                     try process.run()
+                    // 親が書き込み側を持ち続けると、子が終わってもEOFが来ない
+                    try? pipe.fileHandleForWriting.close()
                     // 起動の前に取り消されていた場合は、起動した直後に止める
                     if Task.isCancelled {
                         process.terminate()

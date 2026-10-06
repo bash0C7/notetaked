@@ -66,3 +66,39 @@ private final class Lines: @unchecked Sendable {
     _ = try? await task.value
     #expect(Date().timeIntervalSince(start) < 15)
 }
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
+/// serveはstdinを`bytes.lines`で読み続ける。書き込みの来ない読み取りが同時にあっても、
+/// 子の出力と終了は待たされずに届く
+@Test func childOutputIsNotHeldUpByAnIdleReaderOfAnotherPipe() async throws {
+    let idle = Pipe()
+    let idleReader = Task {
+        for try await _ in idle.fileHandleForReading.bytes.lines {}
+    }
+    defer {
+        idleReader.cancel()
+        try? idle.fileHandleForWriting.close()
+    }
+    try await Task.sleep(for: .milliseconds(300))
+
+    let lines = Lines()
+    let finished = Flag()
+    let run = Task {
+        try await FinalizeProcess.run(executable: shell, arguments: ["-c", "echo one >&2; echo two >&2"]) {
+            lines.add($0)
+        }
+        finished.set()
+    }
+    for _ in 0..<80 where !finished.isSet {
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    run.cancel()
+    #expect(finished.isSet)
+    #expect(lines.all == ["one", "two"])
+}

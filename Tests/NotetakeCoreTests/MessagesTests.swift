@@ -165,3 +165,19 @@ import Testing
         #expect(try Event.decode(line: try event.encodedLine()) == event)
     }
 }
+
+@Test func eventLineCarriesSendTime() throws {
+    let line = try Event.log("x").encodedLine(atMS: 1_791_261_651_127)
+    #expect(line == "{\"ev\":\"log\",\"message\":\"x\",\"t\":1791261651127}")
+    #expect(try Event.decode(line: line) == .log("x"))
+}
+
+@Test func everyEventKindCarriesSendTime() throws {
+    let events: [Event] = [
+        .inputReset, .error("e"), .log("l"), .volatile(source: .mic, text: "t"),
+        .finalizeState(FinalizeStateEvent(prefix: "p", phase: .waiting)),
+    ]
+    for event in events {
+        #expect(try event.encodedLine(atMS: 5).contains("\"t\":5"))
+    }
+}
