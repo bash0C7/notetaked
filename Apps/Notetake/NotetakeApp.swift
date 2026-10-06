@@ -54,6 +54,10 @@ struct NotetakeApp: App {
             LivePanelView(appModel: appDelegate.appModel)
         }
         .defaultSize(width: 640, height: 480)
+        Window("収録の話者", id: "speakers") {
+            SpeakersWindowView(appModel: appDelegate.appModel)
+        }
+        .defaultSize(width: 760, height: 480)
         Window("iPhoneとペアリング", id: "pairing") {
             PairingQRView(appModel: appDelegate.appModel)
         }

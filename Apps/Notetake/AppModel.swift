@@ -365,6 +365,13 @@ final class AppModel {
         client?.send(.stop)
     }
 
+    /// メニューとライブパネルの操作ボタンの有効無効
+    var recordingControls: RecordingControls {
+        RecordingControls(
+            isRecording: isRecording, hasOutputDirectory: outputDirectory != nil, isPolishing: isPolishing,
+            lastFinishedPrefix: lastFinishedPrefix, finalizeStates: finalizeStates)
+    }
+
     func rotateRecording() {
         lastError = nil
         client?.send(.rotate)
@@ -401,7 +408,7 @@ final class AppModel {
     /// 直前に完了した収録（`lastFinishedPrefix`）の`timed.jsonl`を`notetaked polish`にかけ、
     /// `<prefix>.polished.md`を生成する。子processなので多重起動は`isPolishing`で防ぐ。
     func polishLastRecording() {
-        guard !isPolishing else { return }
+        guard recordingControls.canPolish else { return }
         guard let prefix = lastFinishedPrefix else { return }
         guard let outputDirectory else { return }
         guard let executable = Bundle.main.executableURL?

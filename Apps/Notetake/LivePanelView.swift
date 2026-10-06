@@ -40,13 +40,17 @@ struct LivePanelView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     Button("セッション開始") { appModel.startRecording() }
-                        .disabled(appModel.outputDirectory == nil || appModel.isRecording)
+                        .disabled(!appModel.recordingControls.canStart)
                     Button("セッション終了") { appModel.stopRecording() }
-                        .disabled(!appModel.isRecording)
+                        .disabled(!appModel.recordingControls.canStop)
                     Button("区切る") { appModel.rotateRecording() }
-                        .disabled(!appModel.isRecording)
+                        .disabled(!appModel.recordingControls.canRotate)
                     Button("整形") { appModel.polishLastRecording() }
-                        .disabled(appModel.lastFinishedPrefix == nil || appModel.isPolishing)
+                        .disabled(!appModel.recordingControls.canPolish)
+                    if let polishNote = appModel.recordingControls.polishNote {
+                        Text(polishNote)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("常に前面", isOn: $floating)
                         .onChange(of: floating) {
                             applyFloating(floating)

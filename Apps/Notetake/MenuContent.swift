@@ -37,13 +37,17 @@ struct MenuContent: View {
             Text(lastError)
                 .foregroundStyle(.red)
         }
+        ForEach(FinalizeStatusLabel.menuLines(states: appModel.finalizeStates), id: \.self) { line in
+            Text(line)
+                .foregroundStyle(.secondary)
+        }
         Divider()
         Button("収録開始") { appModel.startRecording() }
-            .disabled(appModel.outputDirectory == nil || appModel.isRecording)
+            .disabled(!appModel.recordingControls.canStart)
         Button("収録停止") { appModel.stopRecording() }
-            .disabled(appModel.outputDirectory == nil || !appModel.isRecording)
+            .disabled(!appModel.recordingControls.canStop)
         Button("収録を区切る") { appModel.rotateRecording() }
-            .disabled(!appModel.isRecording)
+            .disabled(!appModel.recordingControls.canRotate)
         Divider()
         Button("ライブパネルを開く") {
             NSApp.activate()
@@ -56,7 +60,15 @@ struct MenuContent: View {
         Button("フォルダを開く") { appModel.openOutputFolder() }
             .disabled(appModel.outputDirectory == nil)
         Button("直前の収録を整形") { appModel.polishLastRecording() }
-            .disabled(appModel.lastFinishedPrefix == nil || appModel.isPolishing)
+            .disabled(!appModel.recordingControls.canPolish)
+        if let polishNote = appModel.recordingControls.polishNote {
+            Text(polishNote)
+                .foregroundStyle(.secondary)
+        }
+        Button("収録の話者…") {
+            NSApp.activate()
+            openWindow(id: "speakers")
+        }
         Divider()
         SettingsLink {
             Text("設定…")
