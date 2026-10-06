@@ -60,13 +60,7 @@ actor LiveTranscription {
         // 時刻の原点を1970年にすると、発話の時刻は文字起こしへ渡した最初のsampleからのmsになる
         transcriber = try await Transcriber(locale: locale, origin: Date(timeIntervalSince1970: 0))
         try Self.validateInputSampleRate(transcriber.inputFormat.sampleRate)
-        guard
-            let sourceFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32, sampleRate: Double(CapturePCM.sampleRate), channels: 1,
-                interleaved: false)
-        else {
-            preconditionFailure("16kHz mono Float32 is always a valid format")
-        }
+        let sourceFormat = PCMBuffer.captureFormat()
         self.sourceFormat = sourceFormat
         converter = try AudioConverter(from: sourceFormat, to: transcriber.inputFormat)
     }
@@ -119,7 +113,7 @@ actor LiveTranscription {
         }
         guard !samples.isEmpty else { return }
         do {
-            let converted = try converter.convert(try makeBuffer(samples))
+            let converted = try converter.convert(try PCMBuffer.make(samples: samples, format: sourceFormat))
             let frames = AVAudioFramePosition(converted.frameLength)
             await transcriber.feed(converted, at: fedFrames)
             fedFrames += frames
@@ -159,22 +153,6 @@ actor LiveTranscription {
                 Piece(
                     text: piece.text, startMS: location.startMS, endMS: location.endMS,
                     confidence: piece.confidence, levelDBFS: level, input: input)))
-    }
-
-    private func makeBuffer(_ samples: [Float]) throws -> AVAudioPCMBuffer {
-        guard
-            let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(samples.count)),
-            let channel = buffer.floatChannelData?[0]
-        else {
-            throw AudioConverterError.bufferAllocationFailed
-        }
-        samples.withUnsafeBufferPointer { source in
-            if let base = source.baseAddress {
-                channel.update(from: base, count: samples.count)
-            }
-        }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        return buffer
     }
 
     /// 同じ失敗が続く間は1度だけ伝える

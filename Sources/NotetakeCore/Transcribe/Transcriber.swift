@@ -64,11 +64,14 @@ public actor Transcriber {
         try await request.downloadAndInstall()
     }
 
-    private static func makeTranscriber(locale: Locale) -> SpeechTranscriber {
+    /// ライブの文字起こしは暫定の結果（`.volatileResults`）も受け取る。一括の文字起こしは確定した結果だけ受け取る
+    public static func makeTranscriber(
+        locale: Locale, reportingOptions: Set<SpeechTranscriber.ReportingOption> = [.volatileResults]
+    ) -> SpeechTranscriber {
         SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            reportingOptions: reportingOptions,
             attributeOptions: [.audioTimeRange, .transcriptionConfidence]
         )
     }
@@ -233,7 +236,7 @@ public actor Transcriber {
         piecesContinuation?.finish()
     }
 
-    private static func makePiece(from result: SpeechTranscriber.Result, origin: Date) -> TranscriptPiece {
+    public static func makePiece(from result: SpeechTranscriber.Result, origin: Date) -> TranscriptPiece {
         let text = result.text
         let originMS = Int64((origin.timeIntervalSince1970 * 1000).rounded())
         let startMS = originMS + Int64((CMTimeGetSeconds(result.range.start) * 1000).rounded())
