@@ -84,6 +84,7 @@ public struct StatusEvent: Codable, Sendable, Equatable {
     public var inputName: String?       // key: input_name
     public var inputSpatial: Bool?      // key: input_spatial
     public var outputDirectory: String  // key: output_directory
+    public var capture: [CaptureStatus]?  // 収録中のsourceごとの取り込みの状態
 
     enum CodingKeys: String, CodingKey {
         case recording
@@ -92,6 +93,7 @@ public struct StatusEvent: Codable, Sendable, Equatable {
         case inputName = "input_name"
         case inputSpatial = "input_spatial"
         case outputDirectory = "output_directory"
+        case capture
     }
 
     public init(
@@ -100,7 +102,8 @@ public struct StatusEvent: Codable, Sendable, Equatable {
         sources: [Source],
         inputName: String? = nil,
         inputSpatial: Bool? = nil,
-        outputDirectory: String
+        outputDirectory: String,
+        capture: [CaptureStatus]? = nil
     ) {
         self.recording = recording
         self.prefix = prefix
@@ -108,6 +111,7 @@ public struct StatusEvent: Codable, Sendable, Equatable {
         self.inputName = inputName
         self.inputSpatial = inputSpatial
         self.outputDirectory = outputDirectory
+        self.capture = capture
     }
 }
 

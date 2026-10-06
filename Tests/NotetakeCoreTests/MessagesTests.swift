@@ -119,3 +119,18 @@ import Testing
         try Event.decode(line: "{\"ev\":\"nope\"}")
     }
 }
+
+@Test func statusEventCarriesCaptureStatesOnlyWhenPresent() throws {
+    let recording = StatusEvent(
+        recording: true, prefix: "2026-10-03_100000", sources: [.mic, .system], outputDirectory: "/tmp",
+        capture: [
+            CaptureStatus(source: .mic, state: .recording),
+            CaptureStatus(source: .system, state: .retrying, reason: "The stream was stopped by the system"),
+        ])
+    let line = try Event.status(recording).encodedLine()
+    #expect(line.contains("\"capture\":[{"))
+    #expect(try Event.decode(line: line) == .status(recording))
+
+    let stopped = try Event.status(StatusEvent(recording: false, sources: [], outputDirectory: "/tmp")).encodedLine()
+    #expect(!stopped.contains("capture"))
+}
