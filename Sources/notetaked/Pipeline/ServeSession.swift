@@ -626,17 +626,19 @@ actor ServeSession {
     private func dispatchSignals() async {
         let nowMS = Self.ms(Date())
         if let inFlight = signalInFlight, nowMS - inFlight.sentAtMS > Self.signalResponseTimeoutMS {
-            await control.send(.log("signal: 要求\(inFlight.id)の応答が無いため、次の機会に送り直します"))
             signalInFlight = nil
+            await control.send(.log("signal: 要求\(inFlight.id)の応答が無いため、次の機会に送り直します"))
         }
         let state: SignalRequestState
         do {
             let expired = SignalDispatch.expire(try signalStore.load(), nowMS: nowMS)
-            for request in expired.expired {
-                await control.send(.log("signal: \(request.prefix)の要求は7日たったため放棄しました"))
-            }
+            // actorはawaitで再入される。logのawaitを挟むと、その間に他の入口が保存した要求を、
+            // ここで読んだ古い状態で上書きして失うため、先に保存してからlogを出す
             if !expired.expired.isEmpty {
                 try signalStore.save(expired.state)
+            }
+            for request in expired.expired {
+                await control.send(.log("signal: \(request.prefix)の要求は7日たったため放棄しました"))
             }
             state = expired.state
         } catch {
@@ -672,11 +674,12 @@ actor ServeSession {
             await control.send(.log("signal: 待っていない応答\(response.id)を捨てました"))
             return
         }
-        signalInFlight = nil
         let nowMS = Self.ms(Date())
+        // mergeSignalsのawaitで他の入口（見張り・hello・収録の終了）が割り込む。signalInFlightを
+        // 保存し終えるまで残すのは、まだ要求がstateに残りdueのままなので、外すと同じ要求を二重に送るため
         do {
-            var state = try signalStore.load()
-            guard let request = state.requests.first(where: { $0.id == response.id }) else {
+            guard let request = try signalStore.load().requests.first(where: { $0.id == response.id }) else {
+                signalInFlight = nil
                 await control.send(.log("signal: 要求の無い応答\(response.id)を捨てました"))
                 return
             }
@@ -684,17 +687,20 @@ actor ServeSession {
                 SignalResponseHandling.document(request: request, response: response, nowMS: nowMS),
                 in: URL(fileURLWithPath: request.outputDirectory))
             let outcome = SignalResponseHandling.outcome(request: request, response: response, nowMS: nowMS)
+            // await後に読み直す。await前のstateで保存すると、割り込みが保存した要求やpinを上書きして失う
+            let state = SignalResponseHandling.apply(outcome, to: try signalStore.load(), requestID: request.id)
+            try signalStore.save(state)
+            signalInFlight = nil
             if outcome == .gaveUp {
                 await control.send(.log("signal: \(request.prefix)のヘルスケアの読み取りを諦めました"))
             }
-            state = SignalResponseHandling.apply(outcome, to: state, requestID: request.id)
-            try signalStore.save(state)
             await control.send(
                 .signalState(
                     SignalStateEvent(
                         prefix: request.prefix,
                         notices: SignalNotices.notices(merged: merged, sources: response.sources, round: request.round))))
         } catch {
+            signalInFlight = nil
             await control.send(.error("failed to store signals: \(error)"))
         }
         await dispatchSignals()
