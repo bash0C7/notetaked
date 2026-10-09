@@ -103,6 +103,31 @@ public actor SessionArchive {
         try TimedFile.append([.segment(segment)], to: directory.appendingPathComponent("orphans.jsonl"))
     }
 
+    // MARK: - 体の状態と地点
+
+    /// 新しい結果を`signals.jsonl`へバケットごとに重ねてアトミックに置き換え、`context.md`を作り直す。
+    /// 重ねた後の中身を返す。読む・重ねる・書くを待ち合わせなしで行い、他の書き込みと入れ違わない
+    public func mergeSignals(_ incoming: SignalsDocument, in directory: URL) throws -> SignalsDocument {
+        let url = SignalsFile.url(prefix: incoming.header.prefix, directory: directory)
+        var merged = incoming
+        if FileManager.default.fileExists(atPath: url.path) {
+            let existing = try SignalsFile.decode(String(decoding: try Data(contentsOf: url), as: UTF8.self))
+            merged.buckets = SignalBucketing.overlay(existing: existing.buckets, incoming: incoming.buckets)
+        }
+        try AtomicFile.write(Data(try SignalsFile.encode(merged).utf8), to: url)
+        try renderContext(prefix: incoming.header.prefix, in: directory)
+        return merged
+    }
+
+    /// `signals.jsonl`だけから`context.md`を作り直す。`context.md`を作る唯一の関数
+    public func renderContext(prefix: String, in directory: URL) throws {
+        let url = SignalsFile.url(prefix: prefix, directory: directory)
+        let document = try SignalsFile.decode(String(decoding: try Data(contentsOf: url), as: UTF8.self))
+        try AtomicFile.write(
+            Data(ContextRenderer.markdown(document, timeZone: timeZone).utf8),
+            to: ContextRenderer.url(prefix: prefix, directory: directory))
+    }
+
     // MARK: - 確定処理
 
     /// 確定処理の結果を取り込む。何度行っても同じ結果になる。
