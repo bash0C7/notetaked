@@ -75,3 +75,46 @@ private func makeSegmentFixture() -> Segment {
         try PeerMessage.decode(line: "{\"t\":\"bogus\"}")
     }
 }
+
+@Test func peerMessageSignalRequestExactString() throws {
+    let message = PeerMessage.signalRequest(
+        SignalRequestMessage(id: "r1", prefix: "p", startMS: 0, endMS: 600_000, bucketMS: 600_000, pending: 2))
+    #expect(
+        try message.encodedLine()
+            == "{\"bucket_ms\":600000,\"end_ms\":600000,\"id\":\"r1\",\"pending\":2,\"prefix\":\"p\",\"start_ms\":0,\"t\":\"signal_request\"}")
+    #expect(try PeerMessage.decode(line: try message.encodedLine()) == message)
+}
+
+@Test func peerMessageSignalResponseExactString() throws {
+    let message = PeerMessage.signalResponse(
+        SignalResponseMessage(
+            id: "r1", prefix: "p", sources: SignalSources(hr: .ok, hrv: .empty, place: .always),
+            buckets: [SignalBucket(start: 0, end: 600_000, hr: HeartRateSummary(mean: 72, min: nil, max: nil, n: 1))]))
+    #expect(
+        try message.encodedLine()
+            == "{\"buckets\":[{\"end\":600000,\"hr\":{\"mean\":72,\"n\":1},\"hrv\":null,\"start\":0}],\"id\":\"r1\",\"prefix\":\"p\",\"sources\":{\"hr\":\"ok\",\"hrv\":\"empty\",\"place\":\"always\"},\"t\":\"signal_response\"}")
+    #expect(try PeerMessage.decode(line: try message.encodedLine()) == message)
+}
+
+@Test func peerMessageSignalResponseWithUnknownStatusIsRejected() {
+    let line = "{\"buckets\":[],\"id\":\"r1\",\"prefix\":\"p\",\"sources\":{\"hr\":\"stressed\",\"hrv\":\"ok\",\"place\":\"always\"},\"t\":\"signal_response\"}"
+    #expect(throws: (any Error).self) { try PeerMessage.decode(line: line) }
+}
+
+@Test func helloWithCapabilitiesAnnouncesSignalAndOldHelloDoesNot() throws {
+    let hello = HelloMessage(
+        device: "iphone-1", deviceName: "bash iPhone", owner: "bash", platform: .ios,
+        capabilities: [HelloMessage.signalCapability])
+    #expect(
+        try PeerMessage.hello(hello).encodedLine()
+            == "{\"capabilities\":[\"signal\"],\"device\":\"iphone-1\",\"device_name\":\"bash iPhone\",\"owner\":\"bash\",\"platform\":\"ios\",\"protocol_version\":1,\"t\":\"hello\"}")
+    #expect(hello.supportsSignal)
+    let old = try PeerMessage.decode(
+        line: "{\"device\":\"iphone-1\",\"device_name\":\"bash iPhone\",\"owner\":\"bash\",\"platform\":\"ios\",\"protocol_version\":1,\"t\":\"hello\"}")
+    guard case .hello(let decoded) = old else {
+        Issue.record("helloとして読めない")
+        return
+    }
+    #expect(decoded.capabilities == nil)
+    #expect(!decoded.supportsSignal)
+}

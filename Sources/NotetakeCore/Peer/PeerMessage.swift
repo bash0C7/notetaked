@@ -6,12 +6,16 @@ public enum PeerError: Error, Equatable {
 
 public struct HelloMessage: Codable, Sendable, Equatable {
     public static let currentProtocolVersion = 1
+    /// 体の状態と地点の要求に答えられる
+    public static let signalCapability = "signal"
 
     public var device: String
     public var deviceName: String
     public var owner: String
     public var platform: Platform
     public var protocolVersion: Int
+    /// 任意。protocol versionを上げると新旧の組み合わせでsegまで拒否されるため、機能の有無はここで伝える
+    public var capabilities: [String]?
 
     enum CodingKeys: String, CodingKey {
         case device
@@ -19,6 +23,7 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         case owner
         case platform
         case protocolVersion = "protocol_version"
+        case capabilities
     }
 
     public init(
@@ -26,13 +31,19 @@ public struct HelloMessage: Codable, Sendable, Equatable {
         deviceName: String,
         owner: String,
         platform: Platform,
-        protocolVersion: Int = HelloMessage.currentProtocolVersion
+        protocolVersion: Int = HelloMessage.currentProtocolVersion,
+        capabilities: [String]? = nil
     ) {
         self.device = device
         self.deviceName = deviceName
         self.owner = owner
         self.platform = platform
         self.protocolVersion = protocolVersion
+        self.capabilities = capabilities
+    }
+
+    public var supportsSignal: Bool {
+        capabilities?.contains(Self.signalCapability) ?? false
     }
 }
 
@@ -65,6 +76,10 @@ public enum PeerMessage: Codable, Sendable, Equatable {
     /// Segmentのキーをそのまま（Record.segmentと同じ形、tだけ違う）
     case seg(Segment)
     case ack(seq: Int)
+    /// Macが送る。収録の区間の体の状態と地点を求める
+    case signalRequest(SignalRequestMessage)
+    /// iPhoneが返す
+    case signalResponse(SignalResponseMessage)
 
     enum CodingKeys: String, CodingKey {
         case t
@@ -98,6 +113,10 @@ public enum PeerMessage: Codable, Sendable, Equatable {
         case "ack":
             let seq = try container.decode(Int.self, forKey: .seq)
             self = .ack(seq: seq)
+        case "signal_request":
+            self = .signalRequest(try SignalRequestMessage(from: decoder))
+        case "signal_response":
+            self = .signalResponse(try SignalResponseMessage(from: decoder))
         default:
             throw PeerError.unknownType(type)
         }
@@ -128,6 +147,12 @@ public enum PeerMessage: Codable, Sendable, Equatable {
         case .ack(let seq):
             try container.encode("ack", forKey: .t)
             try container.encode(seq, forKey: .seq)
+        case .signalRequest(let payload):
+            try container.encode("signal_request", forKey: .t)
+            try payload.encode(to: encoder)
+        case .signalResponse(let payload):
+            try container.encode("signal_response", forKey: .t)
+            try payload.encode(to: encoder)
         }
     }
 
