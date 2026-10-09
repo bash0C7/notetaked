@@ -18,13 +18,13 @@
   - iPhoneのappを閉じたまま収録を終え、後で開くと答える
   - 背面の収録中（Debug buildの起動引数`-NotetakeRecordSeconds`、設定appを前面にして背面へ）も1分ごとに滞在が延び、収録の停止で位置の記録が止まる（iPhoneのconsoleのlogで確認）
   - 実機で見つけて直した: appの再起動直後の古いキャッシュ位置で、止まっていた間を地点にいたことにしていた（`a2f96ec`）
-- **確かめていないこと**: 心拍が実際に入ったバケット（試した収録が1〜2分と短く、心拍のサンプルが無かった）、青い位置表示（目視していない）、背面で移動した時の新しい位置の到着、最終reviewの修正（`a8ae669`）の実機での動作（Mac・iPhoneへの入れ直しはこの節を書いた後に行う）
+- **確かめていないこと**: 心拍が実際に入ったバケット（試した収録が1〜2分と短く、心拍のサンプルが無かった）、青い位置表示（目視していない）、背面で移動した時の新しい位置の到着、最終reviewの修正（`a8ae669`）の実機での動作（Mac・iPhoneへ入れ直し、接続までは確かめた）
 - **実機の注意**:
   - Macのappを入れ直して署名が変わると、macOSの「ローカルネットワーク」の許可が外れ、Bonjourの告知が出ずiPhoneが「検索中」のままになる。「システム設定→プライバシーとセキュリティ→ローカルネットワーク」でNotetakeをonにしてappを再起動する（`dns-sd -B _notetake._tcp`に自分のMacが出るかで分かる）
   - iPhoneの画面は`idevicescreenshot`では撮れなかった（端末が見えない）。実機の確認は`Diag.log`をconsole（`launch.sh iphone --console`）で読む。起動引数は`devicectl device process launch ... <bundle id> -- -NotetakeRecordSeconds 240`のように`--`の後に置く
   - 作業用のsubagentが止まった後に動き出し、Macで意図しない収録を始めたことがある（`2026-10-10_002331`）。Macの操作をsubagentに任せる時は、待ちの間に戻ってこないようにする
 - **既知の制限（後回し）**: iOSは`UIDevice.current.name`を一律に「iPhone」と返すので、appを入れ直した時の取得先の付け替え（同じ名前なら移す）は、iPhoneを2台使うと行き来する（要求は失われない）。他の後回しのMinorはledgerの末尾
-- **次の手順**: 最終reviewの修正をMacとiPhoneへ入れ直し、20分以上の収録で心拍が入るかを見る。Watchの常時録音spike（spec 2の前提）は独立にいつでもできる
+- **次の手順**: 20分以上の収録で心拍が入るかを見る。Watchの常時録音spike（spec 2の前提）は独立にいつでもできる
 - **進め方（このbranchで決めた運用）**: 実装はSonnetのsubagent（`swift test --filter`まで、commitしない）→`make verify`はHaikuのsubagent（verify skill）→controllerがcommit→task reviewはSonnet、小さなfixの再reviewはHaiku、最終reviewはFable。subagentへの共通の指示はledgerと同じディレクトリの`implementer-instructions.md` / `reviewer-instructions.md`。commit messageは`Co-Authored-By`のみ（session IDが取れないためsession trailerは付けていない）
 - **既知のflaky test**: `Tests/notetakedTests/FinalizeQueueTests.swift`の`queueFinalizesAnEndedSessionAndPublishesStatesAndTheFinalizedEvent`（:168、状態の列の比較）が、`make verify`で全テストを並行で回した時に1度落ちた。単独10回・suite3回は全て通過、再実行で通過。mainからある問題で、このbranchでは直していない
 
