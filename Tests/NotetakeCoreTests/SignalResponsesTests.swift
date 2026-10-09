@@ -75,19 +75,13 @@ private func merged(_ buckets: [SignalBucket]) -> SignalsDocument {
     #expect(SignalNotices.notices(merged: filled, sources: response(hr: .empty, hrv: .empty).sources, round: 2).isEmpty)
 }
 
-@Test func signalNoticesStayQuietForRecordingsShorterThanTwentyMinutesExceptWhenNotRequested() {
+@Test func signalNoticesApplyToShortRecordingsToo() {
     let short = SignalsDocument(
-        header: SignalsHeader(prefix: "p", start: 0, end: 19 * minute, bucketMS: 600_000, requestedAt: 0),
-        buckets: [SignalBucket(start: 0, end: 10 * minute)])
-    let long = SignalsDocument(
-        header: SignalsHeader(prefix: "p", start: 0, end: 20 * minute, bucketMS: 600_000, requestedAt: 0),
-        buckets: [SignalBucket(start: 0, end: 10 * minute)])
+        header: SignalsHeader(prefix: "p", start: 0, end: 2 * minute, bucketMS: 600_000, requestedAt: 0),
+        buckets: [SignalBucket(start: 0, end: 2 * minute)])
     let empty = response(hr: .empty, hrv: .empty).sources
-    #expect(SignalNotices.notices(merged: short, sources: empty, round: 1).isEmpty)
-    #expect(SignalNotices.notices(merged: short, sources: empty, round: 2).isEmpty)
-    #expect(SignalNotices.notices(merged: long, sources: empty, round: 1) == [.waiting])
-    #expect(SignalNotices.notices(merged: long, sources: empty, round: 2) == [.noHeartRate])
-    #expect(SignalNotices.notices(merged: short, sources: response(hr: .notRequested, hrv: .notRequested).sources, round: 1) == [.noHeartRate])
+    #expect(SignalNotices.notices(merged: short, sources: empty, round: 1) == [.waiting])
+    #expect(SignalNotices.notices(merged: short, sources: empty, round: 2) == [.noHeartRate])
 }
 
 @Test func signalNoticesDoNotAskForLocationPermissionWhenNoPlaceIsRegistered() {

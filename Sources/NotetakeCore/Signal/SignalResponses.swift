@@ -74,17 +74,12 @@ public struct SignalStateEvent: Codable, Sendable, Equatable {
 }
 
 public enum SignalNotices {
-    /// 10分未満の収録ではWatchが正常でも心拍が0件なのが普通なので、案内を常態化させない
-    public static let shortRecordingMS: Int64 = 20 * 60_000
-
     /// `merged`は重ねた後のファイルの中身。1回目で取れていれば、2回目が空でも案内しない
     public static func notices(merged: SignalsDocument, sources: SignalSources, round: Int) -> [SignalNotice] {
         var result: [SignalNotice] = []
         if sources.hr == .notRequested || sources.hrv == .notRequested {
             result.append(.noHeartRate)
-        } else if !merged.buckets.contains(where: { $0.hr != nil || $0.hrv != nil }),
-            merged.header.end - merged.header.start >= shortRecordingMS
-        {
+        } else if !merged.buckets.contains(where: { $0.hr != nil || $0.hrv != nil }) {
             result.append(round >= 2 ? .noHeartRate : .waiting)
         }
         if sources.place == .denied || sources.place == .notDetermined {
