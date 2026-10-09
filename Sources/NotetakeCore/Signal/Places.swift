@@ -75,8 +75,10 @@ public enum PlaceTracking {
     /// 更新を回している間は1分ごとに延ばすので、これより空いたらappが止まっていたとみなす
     public static let maxGapMS: Int64 = 5 * 60_000
 
-    /// 位置が1件届いた時の今の滞在
-    public static func observe(_ current: PlaceStay?, label: String, atMS: Int64) -> PlaceStay {
+    /// 位置が1件届いた時の今の滞在。追跡を始める前の時刻の位置は、追跡を始めた時刻に得たものとして扱う
+    /// （iOSは前のsessionの位置を持っていて、更新の開始直後に最初の1件として返す。捨てると、動かない間は新しい位置が届かず、滞在が始まらない）
+    public static func observe(_ current: PlaceStay?, label: String, atMS: Int64, trackingSinceMS: Int64) -> PlaceStay {
+        let atMS = max(atMS, trackingSinceMS)
         if let current, current.label == label {
             let end = current.end ?? current.start
             if atMS <= end {

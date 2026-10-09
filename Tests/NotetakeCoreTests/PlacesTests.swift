@@ -53,27 +53,38 @@ private let office = RegisteredPlace(id: UUID(), name: "オフィス", latitude:
 
 @Test func placeTrackingExtendsTheSameLabelWithinTheGap() {
     let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
-    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 6 * minute) == PlaceStay(start: 0, end: 6 * minute, label: "自宅"))
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 6 * minute, trackingSinceMS: 0) == PlaceStay(start: 0, end: 6 * minute, label: "自宅"))
 }
 
 @Test func placeTrackingStartsANewStayWhenTheLabelChanges() {
     let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
-    #expect(PlaceTracking.observe(current, label: "不明", atMS: 3 * minute) == PlaceStay(start: 3 * minute, end: 3 * minute, label: "不明"))
+    #expect(PlaceTracking.observe(current, label: "不明", atMS: 3 * minute, trackingSinceMS: 0) == PlaceStay(start: 3 * minute, end: 3 * minute, label: "不明"))
 }
 
 @Test func placeTrackingStartsANewStayAfterAGapLongerThanFiveMinutes() {
     // appが止まっていた時間を、いたことにしない
     let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
-    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 8 * minute) == PlaceStay(start: 8 * minute, end: 8 * minute, label: "自宅"))
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 8 * minute, trackingSinceMS: 0) == PlaceStay(start: 8 * minute, end: 8 * minute, label: "自宅"))
 }
 
 @Test func placeTrackingStartsTheFirstStayWithoutACurrentOne() {
-    #expect(PlaceTracking.observe(nil, label: "自宅", atMS: minute) == PlaceStay(start: minute, end: minute, label: "自宅"))
+    #expect(PlaceTracking.observe(nil, label: "自宅", atMS: minute, trackingSinceMS: 0) == PlaceStay(start: minute, end: minute, label: "自宅"))
 }
 
 @Test func placeTrackingDoesNotShrinkTheStayForAnEarlierFix() {
     let current = PlaceStay(start: 0, end: 4 * minute, label: "自宅")
-    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 3 * minute) == current)
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 3 * minute, trackingSinceMS: 0) == current)
+}
+
+@Test func placeTrackingDoesNotStartAStayBeforeTrackingBegan() {
+    // iOSが前のsessionから持っている古い位置を、追跡の開始より前にいたことにしない
+    #expect(
+        PlaceTracking.observe(nil, label: "自宅", atMS: 2 * minute, trackingSinceMS: 5 * minute)
+            == PlaceStay(start: 5 * minute, end: 5 * minute, label: "自宅"))
+    let previousSession = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
+    #expect(
+        PlaceTracking.observe(previousSession, label: "自宅", atMS: 2 * minute + 30_000, trackingSinceMS: 9 * minute)
+            == PlaceStay(start: 9 * minute, end: 9 * minute, label: "自宅"))
 }
 
 @Test func placeTrackingExtendsWithoutAFixOnlyWithinTheGap() {

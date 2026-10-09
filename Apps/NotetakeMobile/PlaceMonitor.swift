@@ -17,6 +17,7 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored private var trackingWanted = false
     @ObservationIgnored private var current: PlaceStay?
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
+    @ObservationIgnored private var trackingSinceMS: Int64 = 0
 
     private(set) var places: [RegisteredPlace] = []
     private(set) var status: PlaceSourceStatus = .notDetermined
@@ -114,6 +115,7 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
         if next {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
+            trackingSinceMS = Self.ms(Date())
             manager.startUpdatingLocation()
             heartbeat = Task { [weak self] in
                 while !Task.isCancelled {
@@ -140,7 +142,9 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
         }
         let label = PlaceMatcher.label(
             latitude: location.coordinate.latitude, longitude: location.coordinate.longitude, places: places)
-        write(PlaceTracking.observe(current, label: label, atMS: Self.ms(location.timestamp)))
+        write(
+            PlaceTracking.observe(
+                current, label: label, atMS: Self.ms(location.timestamp), trackingSinceMS: trackingSinceMS))
     }
 
     private func extendCurrent() {
