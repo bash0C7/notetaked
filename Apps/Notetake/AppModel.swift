@@ -68,6 +68,8 @@ final class AppModel {
     var lastLog: String?
     /// 収録ごとの確定の状態。serveが伝えた収録だけが入る
     var finalizeStates: [String: FinalizeStateEvent] = [:]
+    /// 体の状態と地点の取り込みの案内。収録ごとに最新の1件
+    var signalStates: [String: SignalStateEvent] = [:]
     /// 「収録の話者」windowが一覧を読み直す合図
     var speakersRevision = 0
     /// 直前に完了した収録（停止、または区切りで置き換えられた収録）のprefix。「整形」の対象。
@@ -556,9 +558,8 @@ final class AppModel {
             finalizeStates[state.prefix] = state
         case .finalized:
             speakersRevision += 1
-        case .signalState:
-            // メニューの案内はTask 8で足す
-            break
+        case .signalState(let state):
+            signalStates[state.prefix] = state
         }
     }
 }
