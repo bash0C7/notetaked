@@ -41,6 +41,10 @@ struct MenuContent: View {
             Text(line)
                 .foregroundStyle(.secondary)
         }
+        ForEach(SignalStatusLabel.menuLines(states: appModel.signalStates), id: \.self) { line in
+            Text(line)
+                .foregroundStyle(.secondary)
+        }
         Divider()
         Button("収録開始") { appModel.startRecording() }
             .disabled(!appModel.recordingControls.canStart)

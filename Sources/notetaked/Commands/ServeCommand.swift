@@ -101,6 +101,7 @@ struct Serve: AsyncParsableCommand {
 
         await session.resumeIfRecording()
         await session.recoverFinalizations()
+        await session.startSignalDispatch()
 
         if let pairCode {
             await session.handle(.pairCode(pairCode))

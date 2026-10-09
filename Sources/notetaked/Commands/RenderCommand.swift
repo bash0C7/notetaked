@@ -5,7 +5,7 @@ import NotetakeCore
 struct Render: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "render",
-        abstract: "Regenerate <prefix>.final.md from a <prefix>.timed.jsonl file"
+        abstract: "Regenerate <prefix>.final.md (and <prefix>.context.md if signals exist) from a <prefix>.timed.jsonl file"
     )
 
     @Argument(help: "Path to <prefix>.timed.jsonl")
@@ -20,8 +20,12 @@ struct Render: AsyncParsableCommand {
         let prefix = String(filename.dropLast(".timed.jsonl".count))
 
         let directory = timedURL.deletingLastPathComponent()
-        try await SessionArchive().renderFinal(prefix: prefix, in: directory)
-        let finalURL = SessionFiles.finalURL(prefix: prefix, directory: directory)
-        print(finalURL.path)
+        let archive = SessionArchive()
+        try await archive.renderFinal(prefix: prefix, in: directory)
+        print(SessionFiles.finalURL(prefix: prefix, directory: directory).path)
+        if FileManager.default.fileExists(atPath: SignalsFile.url(prefix: prefix, directory: directory).path) {
+            try await archive.renderContext(prefix: prefix, in: directory)
+            print(ContextRenderer.url(prefix: prefix, directory: directory).path)
+        }
     }
 }

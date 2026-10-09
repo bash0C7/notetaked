@@ -245,3 +245,34 @@ private func text(_ url: URL) throws -> String {
     #expect(spans.map(\.prefix) == ["old", prefix])
     #expect(spans.first?.endMS == 1_200)
 }
+
+private func signalsDocument(_ buckets: [SignalBucket]) -> SignalsDocument {
+    SignalsDocument(
+        header: SignalsHeader(prefix: "p", start: 0, end: 1_200_000, bucketMS: 600_000, requestedAt: 0),
+        buckets: buckets)
+}
+
+@Test func sessionArchiveMergeSignalsKeepsEarlierHeartRateWhenALaterResponseIsEmpty() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let archive = SessionArchive(timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+    let first = signalsDocument([SignalBucket(start: 0, end: 600_000, hr: HeartRateSummary(mean: 72, min: nil, max: nil, n: 1))])
+    _ = try await archive.mergeSignals(first, in: directory)
+    let merged = try await archive.mergeSignals(signalsDocument([SignalBucket(start: 0, end: 600_000)]), in: directory)
+    #expect(merged.buckets == first.buckets)
+    let onDisk = try SignalsFile.decode(
+        String(contentsOf: SignalsFile.url(prefix: "p", directory: directory), encoding: .utf8))
+    #expect(onDisk == merged)
+}
+
+@Test func sessionArchiveMergeSignalsRendersContextFromTheSignalsFileAlone() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let archive = SessionArchive(timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+    _ = try await archive.mergeSignals(
+        signalsDocument([SignalBucket(start: 0, end: 600_000, place: "自宅")]), in: directory)
+    let context = try String(contentsOf: ContextRenderer.url(prefix: "p", directory: directory), encoding: .utf8)
+    #expect(context.contains("- 09:00〜09:10　地点: 自宅　心拍: データなし\n"))
+    #expect(!FileManager.default.fileExists(atPath: SessionFiles.timedURL(prefix: "p", directory: directory).path))
+    try FileManager.default.removeItem(at: ContextRenderer.url(prefix: "p", directory: directory))
+    try await archive.renderContext(prefix: "p", in: directory)
+    #expect(try String(contentsOf: ContextRenderer.url(prefix: "p", directory: directory), encoding: .utf8) == context)
+}

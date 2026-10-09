@@ -85,6 +85,15 @@ actor ServeSession {
     /// 進行中の収録で既にDeviceRecordを書いたdevice id集合。新しいprefixで開始するたびリセットする
     private var recordedPeerDevices: Set<String> = []
 
+    // MARK: - signal（体の状態と地点）
+
+    private let signalStore = SignalRequestStore.default()
+    /// 送信中の要求。応答・切断・期限のどれかで外す
+    private var signalInFlight: (id: String, connectionID: PeerConnectionID, sentAtMS: Int64)?
+    private var signalTask: Task<Void, Never>?
+    /// iPhoneがバックグラウンドで中断されるとTCPの切断が届かないことがあるため、応答を待つ上限を置く
+    private static let signalResponseTimeoutMS: Int64 = 120_000
+
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
         control: StdioControl, device: DeviceIdentity, archive: SessionArchive, finalizer: FinalizeQueue,
@@ -491,13 +500,20 @@ actor ServeSession {
             await stream.consumer.value
         }
         live = []
+        var ended = false
         do {
             try await archive.endCurrent(endedMS: Self.ms(Date()))
+            ended = true
         } catch {
             await control.send(.error("failed to write final: \(error)"))
         }
         currentPrefix = nil
         recording = false
+        // 要求の作成はawaitを挟むので、recordingを下ろす前に呼ぶと、その間に届いたiPhoneのsegが
+        // appendLiveで失敗したままackされて消える
+        if ended {
+            await enqueueSignalRequests(prefix: prefix)
+        }
         return prefix
     }
 
@@ -526,6 +542,7 @@ actor ServeSession {
 
     private func quit() async {
         captureWatchTask?.cancel()
+        signalTask?.cancel()
         if recording {
             await stop()
         }
@@ -577,6 +594,131 @@ actor ServeSession {
         }
     }
 
+    // MARK: - signal
+
+    /// 60秒ごとに、期限の来た要求を送る。2回目（30分後）の要求とMacのスリープ明けをこれで拾う
+    func startSignalDispatch() {
+        guard signalTask == nil else { return }
+        signalTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.dispatchSignals()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+    }
+
+    /// 閉じた収録の要求を作って保存する。`finishRecording`の後に呼ぶ
+    private func enqueueSignalRequests(prefix: String) async {
+        guard let span = await archive.sessions(in: outputDirectory).first(where: { $0.prefix == prefix }),
+            let endMS = span.endMS
+        else {
+            await control.send(.log("signal: \(prefix)の区間が読めないため、体の状態と地点を要求しません"))
+            return
+        }
+        do {
+            let state = SignalPlanner.adding(
+                SignalPlanner.requests(
+                    prefix: prefix, outputDirectory: outputDirectory.path, startMS: span.startMS, endMS: endMS,
+                    nowMS: Self.ms(Date())),
+                to: try signalStore.load())
+            try signalStore.save(state)
+        } catch {
+            await control.send(.error("failed to save signal requests: \(error)"))
+            return
+        }
+        await dispatchSignals()
+    }
+
+    private func dispatchSignals() async {
+        let nowMS = Self.ms(Date())
+        if let inFlight = signalInFlight, nowMS - inFlight.sentAtMS > Self.signalResponseTimeoutMS {
+            signalInFlight = nil
+            await control.send(.log("signal: 要求\(inFlight.id)の応答が無いため、次の機会に送り直します"))
+        }
+        let state: SignalRequestState
+        do {
+            let expired = SignalDispatch.expire(try signalStore.load(), nowMS: nowMS)
+            // actorはawaitで再入される。logのawaitを挟むと、その間に他の入口が保存した要求を、
+            // ここで読んだ古い状態で上書きして失うため、先に保存してからlogを出す
+            if !expired.expired.isEmpty {
+                try signalStore.save(expired.state)
+            }
+            for request in expired.expired {
+                await control.send(.log("signal: \(request.prefix)の要求は7日たったため放棄しました"))
+            }
+            state = expired.state
+        } catch {
+            await control.send(.error("failed to read signal requests: \(error)"))
+            return
+        }
+        let connected = peerStates.compactMap { id, peer -> (id: PeerConnectionID, hello: HelloMessage)? in
+            guard let hello = peer.hello, hello.protocolVersion == HelloMessage.currentProtocolVersion else {
+                return nil
+            }
+            return (id, hello)
+        }
+        guard
+            let request = SignalDispatch.decide(
+                state: state,
+                peers: connected.map { SignalPeer(device: $0.hello.device, supportsSignal: $0.hello.supportsSignal) },
+                inFlight: signalInFlight != nil, nowMS: nowMS),
+            let target = connected.first(where: { $0.hello.device == state.pinnedDevice }),
+            let peerListener
+        else { return }
+        signalInFlight = (request.id, target.id, nowMS)
+        await peerListener.send(
+            .signalRequest(
+                SignalRequestMessage(
+                    id: request.id, prefix: request.prefix, startMS: request.startMS, endMS: request.endMS,
+                    bucketMS: SignalBucketing.bucketMS,
+                    pending: state.requests.filter { $0.dueAtMS <= nowMS }.count)),
+            to: target.id)
+    }
+
+    private func handleSignalResponse(_ response: SignalResponseMessage, from connectionID: PeerConnectionID) async {
+        guard let inFlight = signalInFlight, inFlight.id == response.id, inFlight.connectionID == connectionID else {
+            await control.send(.log("signal: 待っていない応答\(response.id)を捨てました"))
+            return
+        }
+        let nowMS = Self.ms(Date())
+        // mergeSignalsのawaitで他の入口（見張り・hello・収録の終了）が割り込む。signalInFlightを
+        // 保存し終えるまで残すのは、まだ要求がstateに残りdueのままなので、外すと同じ要求を二重に送るため
+        do {
+            guard let request = try signalStore.load().requests.first(where: { $0.id == response.id }) else {
+                signalInFlight = nil
+                await control.send(.log("signal: 要求の無い応答\(response.id)を捨てました"))
+                return
+            }
+            let merged = try await archive.mergeSignals(
+                SignalResponseHandling.document(request: request, response: response, nowMS: nowMS),
+                in: URL(fileURLWithPath: request.outputDirectory))
+            let outcome = SignalResponseHandling.outcome(request: request, response: response, nowMS: nowMS)
+            // await後に読み直す。await前のstateで保存すると、割り込みが保存した要求やpinを上書きして失う
+            let state = SignalResponseHandling.apply(outcome, to: try signalStore.load(), requestID: request.id)
+            try signalStore.save(state)
+            signalInFlight = nil
+            await control.send(
+                .signalState(
+                    SignalStateEvent(
+                        prefix: request.prefix,
+                        notices: SignalNotices.notices(merged: merged, sources: response.sources, round: request.round))))
+        } catch {
+            signalInFlight = nil
+            // 保存が毎回失敗する（signals.jsonlの手編集、出力先に書けない）と、dispatchSignalsで同じ要求を
+            // 遅延なしに送り直し続ける。要求を後ろへ送ってから返り、次の機会を10分後にする
+            do {
+                let state = SignalResponseHandling.postpone(
+                    try signalStore.load(), requestID: response.id, nowMS: nowMS)
+                try signalStore.save(state)
+            } catch {
+                await control.send(.error("failed to postpone signal request: \(error)"))
+            }
+            await control.send(.error("failed to store signals: \(error)"))
+            return
+        }
+        await dispatchSignals()
+    }
+
     // MARK: - peer: message handling
 
     private func handlePeer(_ message: PeerMessage, from connectionID: PeerConnectionID) async {
@@ -587,7 +729,9 @@ actor ServeSession {
             await handlePong(pingID: pingID, t0: t0, t1: t1, t2: t2, from: connectionID)
         case .seg(let segment):
             await handleSeg(segment, from: connectionID)
-        case .helloAck, .ping, .ack:
+        case .signalResponse(let response):
+            await handleSignalResponse(response, from: connectionID)
+        case .helloAck, .ping, .ack, .signalRequest:
             // Macはserver側でこれらは送るだけなので、届いても無視する
             break
         }
@@ -597,6 +741,9 @@ actor ServeSession {
         guard let state = peerStates[connectionID] else { return }
         state.pingTask?.cancel()
         peerStates[connectionID] = nil
+        if signalInFlight?.connectionID == connectionID {
+            signalInFlight = nil
+        }
         if let hello = state.hello {
             await control.send(
                 .peer(device: hello.device, deviceName: hello.deviceName, connected: false))
@@ -608,6 +755,17 @@ actor ServeSession {
         // 既存stateがあれば先にcancelしてから作り直す
         peerStates[connectionID]?.pingTask?.cancel()
         peerStates[connectionID] = PeerState(hello: hello)
+
+        // TCPの切断を出さずに死んだ接続を、応答待ちのまま残すと、同じiPhoneが開き直しても最大3分は要求が届かない。
+        // 古い接続のstateも外すのは、残すとdispatchSignalsが同じdeviceの死んだ接続を選びうるため
+        if let inFlight = signalInFlight, inFlight.connectionID != connectionID,
+            let stale = peerStates[inFlight.connectionID], stale.hello?.device == hello.device
+        {
+            stale.pingTask?.cancel()
+            peerStates[inFlight.connectionID] = nil
+            signalInFlight = nil
+            await control.send(.log("signal: 同じiPhoneが接続し直したため、古い接続の応答待ちを外しました"))
+        }
 
         let now = Int64((Date().timeIntervalSince1970 * 1000).rounded())
         let accepted = hello.protocolVersion == HelloMessage.currentProtocolVersion
@@ -640,6 +798,23 @@ actor ServeSession {
         } else {
             task.cancel()
         }
+
+        do {
+            let state = try signalStore.load()
+            let pinned = SignalDispatch.pin(state, hello: hello)
+            if pinned != state {
+                try signalStore.save(pinned)
+                if state.pinnedDevice == nil {
+                    await control.send(.log("signal: \(hello.deviceName)を体の状態と地点の取得先にしました"))
+                } else if pinned.pinnedDevice != state.pinnedDevice {
+                    await control.send(
+                        .log("signal: \(hello.deviceName)を入れ直したとみなし、取得先を新しいidへ移しました"))
+                }
+            }
+        } catch {
+            await control.send(.error("failed to pin signal device: \(error)"))
+        }
+        await dispatchSignals()
     }
 
     private func sendNextPing(to connectionID: PeerConnectionID) async {
