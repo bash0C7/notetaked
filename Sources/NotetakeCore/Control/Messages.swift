@@ -153,6 +153,8 @@ public enum Event: Codable, Sendable, Equatable {
     case inputReset
     case finalizeState(FinalizeStateEvent)
     case finalized(FinalizedEvent)
+    /// 体の状態と地点の取り込みの案内
+    case signalState(SignalStateEvent)
 
     enum CodingKeys: String, CodingKey {
         case ev
@@ -193,6 +195,8 @@ public enum Event: Codable, Sendable, Equatable {
             self = .finalizeState(try FinalizeStateEvent(from: decoder))
         case "finalized":
             self = .finalized(try FinalizedEvent(from: decoder))
+        case "signal_state":
+            self = .signalState(try SignalStateEvent(from: decoder))
         default:
             throw ControlError.unknownEvent(ev)
         }
@@ -229,6 +233,9 @@ public enum Event: Codable, Sendable, Equatable {
             try payload.encode(to: encoder)
         case .finalized(let payload):
             try container.encode("finalized", forKey: .ev)
+            try payload.encode(to: encoder)
+        case .signalState(let payload):
+            try container.encode("signal_state", forKey: .ev)
             try payload.encode(to: encoder)
         }
     }

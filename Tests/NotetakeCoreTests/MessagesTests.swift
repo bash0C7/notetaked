@@ -181,3 +181,9 @@ import Testing
         #expect(try event.encodedLine(atMS: 5).contains("\"t\":5"))
     }
 }
+
+@Test func eventSignalStateExactString() throws {
+    let event = Event.signalState(SignalStateEvent(prefix: "p", notices: [.waiting]))
+    #expect(try event.encodedLine() == "{\"ev\":\"signal_state\",\"notices\":[\"waiting\"],\"prefix\":\"p\"}")
+    #expect(try Event.decode(line: try event.encodedLine()) == event)
+}

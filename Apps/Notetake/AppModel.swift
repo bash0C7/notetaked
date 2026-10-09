@@ -556,6 +556,9 @@ final class AppModel {
             finalizeStates[state.prefix] = state
         case .finalized:
             speakersRevision += 1
+        case .signalState:
+            // メニューの案内はTask 8で足す
+            break
         }
     }
 }
