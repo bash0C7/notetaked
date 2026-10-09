@@ -4,6 +4,7 @@ struct ContentView: View {
     @Bindable var model: MobileModel
 
     @State private var showPairingSheet = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -11,6 +12,7 @@ struct ContentView: View {
                 Section("状態") {
                     LabeledContent("Mac", value: peerStatusText)
                     LabeledContent("未送信", value: "\(model.pendingCount)件")
+                    LabeledContent("未回答の要求", value: "\(model.macPendingSignals)件")
                     LabeledContent("Watch", value: "\(model.watchStreams) stream")
                 }
 
@@ -30,6 +32,18 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
+                }
+
+                Section("体の状態と地点") {
+                    Button("ヘルスケアの読み取りを許可") {
+                        Task { await model.requestHealthAuthorization() }
+                    }
+                    NavigationLink("地点") {
+                        PlacesView(monitor: model.placeMonitor)
+                    }
+                    Text("収録の後にこのappを開くと、Macへ心拍と地点をまとめて答えます。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("自分の名前") {
@@ -57,6 +71,9 @@ struct ContentView: View {
             .sheet(isPresented: $showPairingSheet) {
                 PairingSheet(model: model)
             }
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            model.setForeground(phase != .background)
         }
     }
 

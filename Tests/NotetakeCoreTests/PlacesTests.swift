@@ -50,3 +50,36 @@ private let office = RegisteredPlace(id: UUID(), name: "オフィス", latitude:
     try log.record(PlaceStay(start: 0, end: 10 * minute, label: "自宅"), nowMS: 11 * minute)
     #expect(try PlaceStayLog(url: url).stays(startMS: 0, endMS: 5 * minute) == [PlaceStay(start: 0, end: 10 * minute, label: "自宅")])
 }
+
+@Test func placeTrackingExtendsTheSameLabelWithinTheGap() {
+    let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 6 * minute) == PlaceStay(start: 0, end: 6 * minute, label: "自宅"))
+}
+
+@Test func placeTrackingStartsANewStayWhenTheLabelChanges() {
+    let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
+    #expect(PlaceTracking.observe(current, label: "不明", atMS: 3 * minute) == PlaceStay(start: 3 * minute, end: 3 * minute, label: "不明"))
+}
+
+@Test func placeTrackingStartsANewStayAfterAGapLongerThanFiveMinutes() {
+    // appが止まっていた時間を、いたことにしない
+    let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 8 * minute) == PlaceStay(start: 8 * minute, end: 8 * minute, label: "自宅"))
+}
+
+@Test func placeTrackingStartsTheFirstStayWithoutACurrentOne() {
+    #expect(PlaceTracking.observe(nil, label: "自宅", atMS: minute) == PlaceStay(start: minute, end: minute, label: "自宅"))
+}
+
+@Test func placeTrackingDoesNotShrinkTheStayForAnEarlierFix() {
+    let current = PlaceStay(start: 0, end: 4 * minute, label: "自宅")
+    #expect(PlaceTracking.observe(current, label: "自宅", atMS: 3 * minute) == current)
+}
+
+@Test func placeTrackingExtendsWithoutAFixOnlyWithinTheGap() {
+    let current = PlaceStay(start: 0, end: 2 * minute, label: "自宅")
+    #expect(PlaceTracking.extend(current, toMS: 3 * minute) == PlaceStay(start: 0, end: 3 * minute, label: "自宅"))
+    #expect(PlaceTracking.extend(current, toMS: 8 * minute) == nil)
+    #expect(PlaceTracking.extend(current, toMS: minute) == nil)
+    #expect(PlaceTracking.extend(nil, toMS: minute) == nil)
+}

@@ -19,6 +19,7 @@ actor PeerClient {
     private let pairingCode: String
     private let outbox: Outbox
     private let onState: @Sendable (PeerClientState) -> Void
+    private let onSignalRequest: @Sendable (SignalRequestMessage) async -> SignalResponseMessage?
     private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.peer")
 
     private var browser: NWBrowser?
@@ -54,12 +55,14 @@ actor PeerClient {
         hello: HelloMessage,
         pairingCode: String,
         outbox: Outbox,
-        onState: @escaping @Sendable (PeerClientState) -> Void
+        onState: @escaping @Sendable (PeerClientState) -> Void,
+        onSignalRequest: @escaping @Sendable (SignalRequestMessage) async -> SignalResponseMessage?
     ) {
         self.hello = hello
         self.pairingCode = pairingCode
         self.outbox = outbox
         self.onState = onState
+        self.onSignalRequest = onSignalRequest
     }
 
     /// browsingを開始する。既に動いていれば何もしない
@@ -320,6 +323,12 @@ actor PeerClient {
             send(.pong(id: id, t0: t0, t1: t1, t2: Self.nowMS()))
         case .ack(let seq):
             try? await outbox.acknowledge(upTo: seq)
+        case .signalRequest(let request):
+            // HealthKitの読み取りは秒単位かかりうる。受信の処理を止めるとpingへの応答が遅れ、時計のずれの推定が崩れる
+            Task {
+                guard let response = await onSignalRequest(request) else { return }
+                send(.signalResponse(response))
+            }
         default:
             break
         }

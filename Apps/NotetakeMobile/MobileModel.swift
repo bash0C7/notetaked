@@ -26,6 +26,11 @@ final class MobileModel {
     /// WatchRelayが現在扱っているWatch session（=収録）の数。ContentViewに「Watch: N stream」で出す
     private(set) var watchStreams = 0
     var lastError: String?
+    /// Macが最後に伝えてきた、まだ答えていない要求の数
+    private(set) var macPendingSignals = 0
+    let placeMonitor: PlaceMonitor
+    private let healthReader = HealthKitSampleReader()
+    private var isForeground = false
 
     private let outbox: Outbox
     private let recorder = Recorder()
@@ -36,6 +41,7 @@ final class MobileModel {
 
     init() {
         outbox = Outbox(directory: Self.applicationSupportDirectory())
+        placeMonitor = PlaceMonitor(directory: Self.applicationSupportDirectory())
         // ペアリングコード未設定でもPeerClientは作っておく（`enqueue`がoutboxへのappendを
         // 兼ねるため、録音がペアリング前でも蓄積転送できるようにする）。browsingはコードが
         // あるときだけ始める
@@ -59,7 +65,8 @@ final class MobileModel {
             device: settings.deviceID,
             deviceName: settings.deviceName,
             owner: settings.ownerName,
-            platform: .ios
+            platform: .ios,
+            capabilities: [HelloMessage.signalCapability]
         )
         let box = WeakBox(self)
         let client = PeerClient(
@@ -72,6 +79,13 @@ final class MobileModel {
                     model.peerState = state
                     await model.refreshPendingCount()
                 }
+            },
+            onSignalRequest: { request in
+                let task = Task { @MainActor () -> SignalResponseMessage? in
+                    guard let model = box.value else { return nil }
+                    return await model.answer(request)
+                }
+                return await task.value
             }
         )
         peerClient = client
@@ -88,6 +102,40 @@ final class MobileModel {
         peerState = .idle
         Task { await previous?.stop() }
         connectPeer()
+    }
+
+    // MARK: - 体の状態と地点
+
+    /// 画面に出ているか（scene phaseが`background`でない）。`ContentView`が伝える
+    func setForeground(_ isForeground: Bool) {
+        self.isForeground = isForeground
+        updatePlaceTracking()
+    }
+
+    /// 地点はappが動いている間（画面に出ている間と、収録している間）だけ記録する
+    private func updatePlaceTracking() {
+        placeMonitor.setTracking(isForeground || isRecording)
+    }
+
+    func answer(_ request: SignalRequestMessage) async -> SignalResponseMessage {
+        macPendingSignals = Swift.max((request.pending ?? 1) - 1, 0)
+        let stays: [PlaceStay]
+        do {
+            stays = try placeMonitor.stays(startMS: request.startMS, endMS: request.endMS)
+        } catch {
+            Diag.log("place: 滞在を読めません: \(error)")
+            stays = []
+        }
+        return await SignalResponder.respond(
+            to: request, health: healthReader, stays: stays, placeStatus: placeMonitor.status)
+    }
+
+    func requestHealthAuthorization() async {
+        do {
+            try await healthReader.requestAuthorization()
+        } catch {
+            lastError = "ヘルスケアの許可を求められませんでした: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Watch relay
@@ -149,6 +197,7 @@ final class MobileModel {
         guard !isRecording else { return }
         lastError = nil
         isRecording = true
+        updatePlaceTracking()
         Task {
             do {
                 try await Transcriber.ensureAssets(locale: Self.locale)
@@ -162,6 +211,7 @@ final class MobileModel {
                 }
             } catch {
                 self.isRecording = false
+                self.updatePlaceTracking()
                 self.lastError = "録音の開始に失敗しました: \(error.localizedDescription)"
             }
         }
@@ -170,6 +220,7 @@ final class MobileModel {
     func stopRecording() {
         guard isRecording else { return }
         isRecording = false
+        updatePlaceTracking()
         Task {
             do {
                 try await self.recorder.stop()

@@ -62,7 +62,14 @@ targets:
         NSCameraUsageDescription: Macとペアリングする際にQRコードを読み取るためにカメラを使います。
         NSLocalNetworkUsageDescription: 同じネットワーク上のMacへ文字起こし結果を送るために使います。
         NSBonjourServices: [_notetake._tcp]
-        UIBackgroundModes: [audio]
+        NSHealthShareUsageDescription: Apple Watchが計測した心拍とHRVを、収録の時間帯ごとにまとめるために読みます。
+        NSLocationWhenInUseUsageDescription: Notetakeを開いている間と収録している間に、登録した地点（自宅やオフィスなど）にいたかを記録します。座標はiPhoneの外へ出しません。
+        UIBackgroundModes: [audio, location]
+    entitlements:
+      path: NotetakeMobile/NotetakeMobile.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.bash0c7.notetake.ios

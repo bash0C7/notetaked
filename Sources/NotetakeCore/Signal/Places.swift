@@ -26,7 +26,7 @@ public struct RegisteredPlace: Codable, Sendable, Equatable, Identifiable {
 }
 
 public enum PlaceMatcher {
-    /// visitはあるが、どの登録地点にも入らない
+    /// 位置はあるが、どの登録地点にも入らない
     public static let unknownLabel = "不明"
 
     /// 半径に入る登録地点のうち最も近い地点の名前
@@ -55,7 +55,7 @@ public enum PlaceStays {
     /// 30日より古い滞在は捨てる。要求は作成から7日で放棄されるので、それより長く持つ理由がない
     public static let retentionMS: Int64 = 30 * 24 * 3_600_000
 
-    /// 到着だけのvisitの後に、出発を含むvisitが同じ到着時刻で届くので、到着時刻が同じ滞在は置き換える
+    /// 滞在を延ばすたびに同じ開始時刻で書き直すので、開始時刻が同じ滞在は置き換える
     public static func upsert(_ stays: [PlaceStay], _ stay: PlaceStay, nowMS: Int64) -> [PlaceStay] {
         var result = stays.filter { $0.start != stay.start }
         result.append(stay)
@@ -64,9 +64,37 @@ public enum PlaceStays {
             .sorted { $0.start < $1.start }
     }
 
-    /// `[startMS, endMS)`と重なる滞在。出発していない滞在は今も続いているとみなす
+    /// `[startMS, endMS)`と重なる滞在。終わりの無い滞在は今も続いているとみなす
     public static func overlapping(_ stays: [PlaceStay], startMS: Int64, endMS: Int64) -> [PlaceStay] {
         stays.filter { $0.start < endMS && ($0.end ?? Int64.max) > startMS }
+    }
+}
+
+/// appが動いている間に届く位置から、滞在を作って延ばす
+public enum PlaceTracking {
+    /// 更新を回している間は1分ごとに延ばすので、これより空いたらappが止まっていたとみなす
+    public static let maxGapMS: Int64 = 5 * 60_000
+
+    /// 位置が1件届いた時の今の滞在
+    public static func observe(_ current: PlaceStay?, label: String, atMS: Int64) -> PlaceStay {
+        if let current, current.label == label {
+            let end = current.end ?? current.start
+            if atMS <= end {
+                return current
+            }
+            if atMS - end <= maxGapMS {
+                return PlaceStay(start: current.start, end: atMS, label: label)
+            }
+        }
+        return PlaceStay(start: atMS, end: atMS, label: label)
+    }
+
+    /// 動かず位置が届かない間に、今の滞在の終わりを延ばす。空きが長い時は延ばさない（止まっていた時間をいたことにしない）
+    public static func extend(_ current: PlaceStay?, toMS: Int64) -> PlaceStay? {
+        guard let current else { return nil }
+        let end = current.end ?? current.start
+        guard toMS > end, toMS - end <= maxGapMS else { return nil }
+        return PlaceStay(start: current.start, end: toMS, label: current.label)
     }
 }
 
