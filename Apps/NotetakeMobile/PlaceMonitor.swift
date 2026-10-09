@@ -112,6 +112,7 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
         let next = trackingWanted && allowed && !places.isEmpty
         guard next != isTracking else { return }
         isTracking = next
+        Diag.log(next ? "place: 位置の記録を開始" : "place: 位置の記録を停止")
         if next {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
@@ -138,6 +139,9 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
 
     private func observe(_ location: CLLocation) {
         guard isTracking, location.horizontalAccuracy >= 0, location.horizontalAccuracy <= Self.maxAccuracyM else {
+            if isTracking, location.horizontalAccuracy >= 0 {
+                Diag.log("place: 精度\(Int(location.horizontalAccuracy))mの位置を使わない")
+            }
             return
         }
         let label = PlaceMatcher.label(
@@ -156,6 +160,7 @@ final class PlaceMonitor: NSObject, CLLocationManagerDelegate {
         current = stay
         do {
             try log.record(stay, nowMS: Self.ms(Date()))
+            Diag.log("place: 滞在 \(stay.label) \(stay.start)〜\(stay.end.map(String.init) ?? "nil")")
         } catch {
             Diag.log("place: 滞在を記録できません: \(error)")
         }

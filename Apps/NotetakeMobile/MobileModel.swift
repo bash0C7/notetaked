@@ -48,7 +48,32 @@ final class MobileModel {
         connectPeer()
         connectWatch()
         Task { await self.refreshPendingCount() }
+        #if DEBUG
+        // 実機で画面に触れずに背面の収録を確かめるため（Debug buildだけ）
+        if let seconds = Self.recordSecondsLaunchArgument() {
+            Diag.log("debug: 起動引数で\(seconds)秒収録する")
+            startRecording()
+            Task {
+                do {
+                    try await Task.sleep(for: .seconds(seconds))
+                } catch {
+                    return
+                }
+                self.stopRecording()
+            }
+        }
+        #endif
     }
+
+    #if DEBUG
+    private static func recordSecondsLaunchArgument() -> Int? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-NotetakeRecordSeconds"), index + 1 < arguments.count else {
+            return nil
+        }
+        return Int(arguments[index + 1])
+    }
+    #endif
 
     private static func applicationSupportDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -195,6 +220,7 @@ final class MobileModel {
 
     func startRecording() {
         guard !isRecording else { return }
+        Diag.log("recorder: 収録を開始")
         lastError = nil
         isRecording = true
         updatePlaceTracking()
@@ -219,6 +245,7 @@ final class MobileModel {
 
     func stopRecording() {
         guard isRecording else { return }
+        Diag.log("recorder: 収録を停止")
         isRecording = false
         updatePlaceTracking()
         Task {
