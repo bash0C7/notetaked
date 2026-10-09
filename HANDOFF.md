@@ -1,5 +1,24 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-10-09）体の状態と地点の記録（signal層）
+
+- **branch** `signal-layer`（mainの`2609eff`から、push済み）。Auday（Apple Watchの常時AIレコーダー）相当をWatch / iPhoneのfeatureとして作る構想のうち、spec 1（signal層）を実装中。振り返りUIとAIチャットは作らない（user決定）
+- **spec / plan / spikeの手順はgit管理外**（userのグローバルgit ignoreが`docs/superpowers/`を無視。commitしない、とuser決定）。ローカルにだけある:
+  - spec: `docs/superpowers/specs/2026-10-09-signal-layer-design.md`（Fableの敵対的レビュー2回を反映、user承認済み）
+  - plan: `docs/superpowers/plans/2026-10-09-signal-layer.md`（Task 0〜11、user承認済み）
+  - Watchの常時録音spike: `docs/superpowers/specs/2026-10-09-watch-all-day-recording-spike.md`（spec 2の前提。「前面で録音を始め、手首を下ろして画面が消えても止まらないか」だけを見る。電池・長時間は見ない、user決定）
+  - SDDのledger: `.superpowers/sdd/2026-10-09-signal-layer/progress.md`（決定（Ruling）と、後回しにしたMinorの一覧。最終reviewで使う）
+- **設計の要点**: Macが収録の終了時に時間範囲を指定してiPhoneへ要求し（pull型）、iPhoneがHealthKitの心拍・HRVと登録地点（`CLVisit`）から10分ごとに集計して返す。出力は`<prefix>.signals.jsonl`と`<prefix>.context.md`。`final.md` / `timed.jsonl`は無変更。protocol versionは1のまま（`hello`の`capabilities`で伝える）。要求は2回（終了直後と3時間後）、7日で放棄。「ストレス」と逆ジオコーディングは外した。iPhoneはNotetakeを開いた時にまとめて答える
+- **実装済み（Task 1〜8、各taskで`make verify`通過・task review通過）**: Coreの集計・ファイル形式・peerのメッセージ・要求の管理・応答の扱い（`d80e384`〜`e08eb0a`）、`SessionArchive.mergeSignals` / `renderContext`と`render`（`97777c3`）、`serve`への組み込み（`37d3f90`、再入の修正`1bbdc0e`）、Macのメニューの案内（`6091dac`）。最後の`make verify`は322テスト
+  - 確かめたのは`make verify`と単体テストだけ。iPhoneとの実際のやり取り、`signals.jsonl`が実際に書かれることは**未確認**（iPhone側が未実装）
+- **次の手順**:
+  1. **Task 0（実機spike、userが画面の前にいる時）**: 使い捨てbranch `spike/signal-permissions`で、HealthKitの許可と心拍1件の読み出し、位置の許可を「使用中のみ」から「常に」へ昇格、1日持ち歩いた後の`CLVisit`を確かめる。手順はplanのTask 0。結果はspecの末尾へ追記し、branchは捨てる
+  2. Task 0が通れば、Task 9（iPhoneが使うCore: 地点の判定・滞在のログ・応答の組み立て）とTask 10（iPhone app: HealthKit、`CLVisit`、画面、権限）。通らなければspecへ戻る
+  3. Task 11（段階4の実機検証、README）→ 最終whole-branch review（ledgerの後回しMinorも見せる）
+  4. Watchの常時録音spike（spec 2の前提）は、上と独立にいつでもできる
+- **進め方（このbranchで決めた運用）**: 実装はSonnetのsubagent（`swift test --filter`まで、commitしない）→`make verify`はHaikuのsubagent（verify skill）→controllerがcommit→task reviewはSonnet、小さなfixの再reviewはHaiku。subagentへの共通の指示はledgerと同じディレクトリの`implementer-instructions.md` / `reviewer-instructions.md`。commit messageは`Co-Authored-By`のみ（session IDが取れないためsession trailerは付けていない）
+- **既知のflaky test**: `Tests/notetakedTests/FinalizeQueueTests.swift`の`queueFinalizesAnEndedSessionAndPublishesStatesAndTheFinalizedEvent`（:168、状態の列の比較）が、`make verify`で全テストを並行で回した時に1度落ちた。単独10回・suite3回は全て通過、再実行で通過。状態が`finalized`になるのを待ってからイベントの列を比べるため、記録の順序が負荷で入れ替わりうる。mainからある問題で、このbranchでは直していない
+
 ## 状態（2026-10-06）
 
 - **branch** `batch-finalize-redesign`。mainより24 commit先、未push。spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`
