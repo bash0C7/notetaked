@@ -3,21 +3,30 @@ import Foundation
 public enum SignalResponseOutcome: Sendable, Equatable {
     case completed
     case retry(SignalRequest)
-    case gaveUp
 }
 
 public enum SignalResponseHandling {
-    /// HealthKitの読み取りに失敗した応答だけ再試行する。間隔と回数は確定処理の自動再試行と同じ。
-    /// 空の応答は完了にする（2回目の要求が遅れて同期された分を拾う）
+    /// ロック中のiPhoneはHealthKitが読めず`unavailable`になるのが普通なので、回数で諦めず、
+    /// 要求の7日の期限まで10分おきに再試行する。空の応答は完了にする（2回目の要求が遅れて同期された分を拾う）
+    public static let retryDelayMS: Int64 = 10 * 60_000
+
     public static func outcome(request: SignalRequest, response: SignalResponseMessage, nowMS: Int64)
         -> SignalResponseOutcome
     {
         guard response.sources.hr == .unavailable || response.sources.hrv == .unavailable else { return .completed }
         var next = request
         next.failureCount += 1
-        guard let delay = FinalizeRetryPolicy.delay(afterFailureCount: next.failureCount) else { return .gaveUp }
-        next.dueAtMS = nowMS + Int64(delay * 1000)
+        next.dueAtMS = nowMS + retryDelayMS
         return .retry(next)
+    }
+
+    /// 応答を保存できなかった要求を、同じ間隔で後ろへ送る。毎回失う保存で、同じ要求を遅延なしに送り直さないため
+    public static func postpone(_ state: SignalRequestState, requestID: String, nowMS: Int64) -> SignalRequestState {
+        var result = state
+        guard let index = result.requests.firstIndex(where: { $0.id == requestID }) else { return state }
+        result.requests[index].failureCount += 1
+        result.requests[index].dueAtMS = nowMS + retryDelayMS
+        return result
     }
 
     public static func apply(_ outcome: SignalResponseOutcome, to state: SignalRequestState, requestID: String)
@@ -25,7 +34,7 @@ public enum SignalResponseHandling {
     {
         var result = state
         switch outcome {
-        case .completed, .gaveUp:
+        case .completed:
             result.requests.removeAll { $0.id == requestID }
         case .retry(let next):
             if let index = result.requests.firstIndex(where: { $0.id == requestID }) {
@@ -65,12 +74,17 @@ public struct SignalStateEvent: Codable, Sendable, Equatable {
 }
 
 public enum SignalNotices {
+    /// 10分未満の収録ではWatchが正常でも心拍が0件なのが普通なので、案内を常態化させない
+    public static let shortRecordingMS: Int64 = 20 * 60_000
+
     /// `merged`は重ねた後のファイルの中身。1回目で取れていれば、2回目が空でも案内しない
     public static func notices(merged: SignalsDocument, sources: SignalSources, round: Int) -> [SignalNotice] {
         var result: [SignalNotice] = []
         if sources.hr == .notRequested || sources.hrv == .notRequested {
             result.append(.noHeartRate)
-        } else if !merged.buckets.contains(where: { $0.hr != nil || $0.hrv != nil }) {
+        } else if !merged.buckets.contains(where: { $0.hr != nil || $0.hrv != nil }),
+            merged.header.end - merged.header.start >= shortRecordingMS
+        {
             result.append(round >= 2 ? .noHeartRate : .waiting)
         }
         if sources.place == .denied || sources.place == .notDetermined {

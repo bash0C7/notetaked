@@ -96,9 +96,21 @@ private func makeSegmentFixture() -> Segment {
     #expect(try PeerMessage.decode(line: try message.encodedLine()) == message)
 }
 
-@Test func peerMessageSignalResponseWithUnknownStatusIsRejected() {
-    let line = "{\"buckets\":[],\"id\":\"r1\",\"prefix\":\"p\",\"sources\":{\"hr\":\"stressed\",\"hrv\":\"ok\",\"place\":\"always\"},\"t\":\"signal_response\"}"
-    #expect(throws: (any Error).self) { try PeerMessage.decode(line: line) }
+@Test func peerMessageSignalResponseReadsUnknownStatusesAsEmptyAndNotConfigured() throws {
+    let line = "{\"buckets\":[],\"id\":\"r1\",\"prefix\":\"p\",\"sources\":{\"hr\":\"stressed\",\"hrv\":\"ok\",\"place\":\"somewhere_new\"},\"t\":\"signal_response\"}"
+    guard case .signalResponse(let response) = try PeerMessage.decode(line: line) else {
+        Issue.record("signal_responseとして読めない")
+        return
+    }
+    #expect(response.sources == SignalSources(hr: .empty, hrv: .ok, place: .notConfigured))
+}
+
+@Test func peerMessageSignalResponseEncodesNotConfiguredPlace() throws {
+    let message = PeerMessage.signalResponse(
+        SignalResponseMessage(
+            id: "r1", prefix: "p", sources: SignalSources(hr: .ok, hrv: .ok, place: .notConfigured), buckets: []))
+    #expect(try message.encodedLine().contains("\"place\":\"not_configured\""))
+    #expect(try PeerMessage.decode(line: try message.encodedLine()) == message)
 }
 
 @Test func helloWithCapabilitiesAnnouncesSignalAndOldHelloDoesNot() throws {

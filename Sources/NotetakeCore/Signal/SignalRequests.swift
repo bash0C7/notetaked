@@ -55,15 +55,19 @@ public struct SignalRequestState: Codable, Sendable, Equatable {
     public var requests: [SignalRequest]
     /// 要求を送るiPhone。最初に`signal`を名乗った1台に固定する
     public var pinnedDevice: String?
+    /// 固定した時のiPhoneの名前。appの入れ直しでdevice idが変わった時に、同じiPhoneと見分ける
+    public var pinnedDeviceName: String?
 
     enum CodingKeys: String, CodingKey {
         case requests
         case pinnedDevice = "pinned_device"
+        case pinnedDeviceName = "pinned_device_name"
     }
 
-    public init(requests: [SignalRequest] = [], pinnedDevice: String? = nil) {
+    public init(requests: [SignalRequest] = [], pinnedDevice: String? = nil, pinnedDeviceName: String? = nil) {
         self.requests = requests
         self.pinnedDevice = pinnedDevice
+        self.pinnedDeviceName = pinnedDeviceName
     }
 }
 
@@ -145,11 +149,23 @@ public struct SignalPeer: Sendable, Equatable {
 
 /// いつ・どの要求を・どのiPhoneへ送るか
 public enum SignalDispatch {
-    /// 最初に`signal`を名乗ったiPhoneへ固定する。固定済みなら変えない
+    /// 最初に`signal`を名乗ったiPhoneへ固定する。固定先と別のidでも、記録した名前が同じなら、
+    /// appの入れ直しでdevice idだけ変わった同じiPhoneとみなして移す（別の名前のiPhoneは変えない）
     public static func pin(_ state: SignalRequestState, hello: HelloMessage) -> SignalRequestState {
-        guard state.pinnedDevice == nil, hello.supportsSignal else { return state }
+        guard hello.supportsSignal else { return state }
         var result = state
-        result.pinnedDevice = hello.device
+        if let pinned = state.pinnedDevice {
+            if pinned == hello.device {
+                if state.pinnedDeviceName != hello.deviceName {
+                    result.pinnedDeviceName = hello.deviceName
+                }
+            } else if state.pinnedDeviceName == hello.deviceName {
+                result.pinnedDevice = hello.device
+            }
+        } else {
+            result.pinnedDevice = hello.device
+            result.pinnedDeviceName = hello.deviceName
+        }
         return result
     }
 

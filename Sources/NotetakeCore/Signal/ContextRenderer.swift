@@ -12,7 +12,7 @@ public enum ContextRenderer {
         var lines = [
             "# \(dayTime.string(from: date(document.header.start)))〜\(dayTime.string(from: date(document.header.end)))の体の状態と地点",
             "",
-            "心拍はWatchのパッシブ計測で、数分〜数十分おきの粒度。HRVは数時間に1回程度。",
+            "心拍はヘルスケアに記録された値（主にWatchのパッシブ計測）で、数分〜数十分おきの粒度。HRVは数時間に1回程度。",
             "",
         ]
         for bucket in document.buckets {

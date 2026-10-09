@@ -22,7 +22,7 @@ struct PlacesView: View {
                             UIApplication.shared.open(url)
                         }
                     }
-                case .whenInUse, .always:
+                case .whenInUse, .always, .notConfigured:
                     EmptyView()
                 }
                 Text("Notetakeを開いている間と、iPhoneで収録している間だけ、どの地点にいたかを記録します。")
@@ -69,6 +69,7 @@ struct PlacesView: View {
         case .denied: return "許可されていない"
         case .restricted: return "制限されている"
         case .notDetermined: return "未設定"
+        case .notConfigured: return "地点が未登録"
         }
     }
 }

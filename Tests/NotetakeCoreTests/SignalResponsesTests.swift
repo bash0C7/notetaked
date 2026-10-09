@@ -22,21 +22,37 @@ private func merged(_ buckets: [SignalBucket]) -> SignalsDocument {
     #expect(SignalResponseHandling.outcome(request: request(), response: response(hr: .empty, hrv: .empty), nowMS: 0) == .completed)
 }
 
-@Test func signalResponseRetriesUnavailableHealthKitLikeFinalize() {
+@Test func signalResponseRetriesUnavailableHealthKitEveryTenMinutes() {
     var expected = request()
     expected.failureCount = 1
-    expected.dueAtMS = 1_000 + 60_000
+    expected.dueAtMS = 1_000 + 10 * minute
     #expect(SignalResponseHandling.outcome(request: request(), response: response(hr: .unavailable), nowMS: 1_000) == .retry(expected))
-    #expect(SignalResponseHandling.outcome(request: request(failureCount: 3), response: response(hrv: .unavailable), nowMS: 0) == .gaveUp)
+}
+
+@Test func signalResponseKeepsRetryingUnavailableHealthKitWithoutALimitOnTheCount() {
+    var expected = request(failureCount: 3)
+    expected.failureCount = 4
+    expected.dueAtMS = 10 * minute
+    #expect(SignalResponseHandling.outcome(request: request(failureCount: 3), response: response(hrv: .unavailable), nowMS: 0) == .retry(expected))
 }
 
 @Test func signalResponseApplyRemovesFinishedRequestsAndUpdatesRetried() {
     let state = SignalRequestState(requests: [request()], pinnedDevice: "a")
     #expect(SignalResponseHandling.apply(.completed, to: state, requestID: "r1").requests.isEmpty)
-    #expect(SignalResponseHandling.apply(.gaveUp, to: state, requestID: "r1").requests.isEmpty)
     var retried = request()
     retried.failureCount = 1
     #expect(SignalResponseHandling.apply(.retry(retried), to: state, requestID: "r1").requests == [retried])
+}
+
+@Test func signalResponsePostponeDelaysOnlyTheNamedRequestAndCountsTheFailure() {
+    var other = request()
+    other.id = "r2"
+    let state = SignalRequestState(requests: [request(), other], pinnedDevice: "a")
+    var postponed = request()
+    postponed.dueAtMS = 5_000 + 10 * minute
+    postponed.failureCount = 1
+    #expect(SignalResponseHandling.postpone(state, requestID: "r1", nowMS: 5_000).requests == [postponed, other])
+    #expect(SignalResponseHandling.postpone(state, requestID: "none", nowMS: 5_000) == state)
 }
 
 @Test func signalResponseDocumentUsesRecordingSpanAndDropsBucketsOutsideTheSlice() {
@@ -57,6 +73,26 @@ private func merged(_ buckets: [SignalBucket]) -> SignalsDocument {
 @Test func signalNoticesStayQuietWhenEarlierRoundAlreadyBroughtHeartRate() {
     let filled = merged([SignalBucket(start: 0, end: 10 * minute, hr: HeartRateSummary(mean: 70, min: nil, max: nil, n: 1))])
     #expect(SignalNotices.notices(merged: filled, sources: response(hr: .empty, hrv: .empty).sources, round: 2).isEmpty)
+}
+
+@Test func signalNoticesStayQuietForRecordingsShorterThanTwentyMinutesExceptWhenNotRequested() {
+    let short = SignalsDocument(
+        header: SignalsHeader(prefix: "p", start: 0, end: 19 * minute, bucketMS: 600_000, requestedAt: 0),
+        buckets: [SignalBucket(start: 0, end: 10 * minute)])
+    let long = SignalsDocument(
+        header: SignalsHeader(prefix: "p", start: 0, end: 20 * minute, bucketMS: 600_000, requestedAt: 0),
+        buckets: [SignalBucket(start: 0, end: 10 * minute)])
+    let empty = response(hr: .empty, hrv: .empty).sources
+    #expect(SignalNotices.notices(merged: short, sources: empty, round: 1).isEmpty)
+    #expect(SignalNotices.notices(merged: short, sources: empty, round: 2).isEmpty)
+    #expect(SignalNotices.notices(merged: long, sources: empty, round: 1) == [.waiting])
+    #expect(SignalNotices.notices(merged: long, sources: empty, round: 2) == [.noHeartRate])
+    #expect(SignalNotices.notices(merged: short, sources: response(hr: .notRequested, hrv: .notRequested).sources, round: 1) == [.noHeartRate])
+}
+
+@Test func signalNoticesDoNotAskForLocationPermissionWhenNoPlaceIsRegistered() {
+    let filled = merged([SignalBucket(start: 0, end: 10 * minute, hr: HeartRateSummary(mean: 70, min: nil, max: nil, n: 1))])
+    #expect(SignalNotices.notices(merged: filled, sources: response(place: .notConfigured).sources, round: 1).isEmpty)
 }
 
 @Test func signalNoticesReportNotRequestedHealthAndLocationPermissionSeparately() {

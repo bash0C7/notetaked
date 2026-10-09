@@ -500,14 +500,20 @@ actor ServeSession {
             await stream.consumer.value
         }
         live = []
+        var ended = false
         do {
             try await archive.endCurrent(endedMS: Self.ms(Date()))
-            await enqueueSignalRequests(prefix: prefix)
+            ended = true
         } catch {
             await control.send(.error("failed to write final: \(error)"))
         }
         currentPrefix = nil
         recording = false
+        // 要求の作成はawaitを挟むので、recordingを下ろす前に呼ぶと、その間に届いたiPhoneのsegが
+        // appendLiveで失敗したままackされて消える
+        if ended {
+            await enqueueSignalRequests(prefix: prefix)
+        }
         return prefix
     }
 
@@ -691,9 +697,6 @@ actor ServeSession {
             let state = SignalResponseHandling.apply(outcome, to: try signalStore.load(), requestID: request.id)
             try signalStore.save(state)
             signalInFlight = nil
-            if outcome == .gaveUp {
-                await control.send(.log("signal: \(request.prefix)のヘルスケアの読み取りを諦めました"))
-            }
             await control.send(
                 .signalState(
                     SignalStateEvent(
@@ -701,7 +704,17 @@ actor ServeSession {
                         notices: SignalNotices.notices(merged: merged, sources: response.sources, round: request.round))))
         } catch {
             signalInFlight = nil
+            // 保存が毎回失敗する（signals.jsonlの手編集、出力先に書けない）と、dispatchSignalsで同じ要求を
+            // 遅延なしに送り直し続ける。要求を後ろへ送ってから返り、次の機会を10分後にする
+            do {
+                let state = SignalResponseHandling.postpone(
+                    try signalStore.load(), requestID: response.id, nowMS: nowMS)
+                try signalStore.save(state)
+            } catch {
+                await control.send(.error("failed to postpone signal request: \(error)"))
+            }
             await control.send(.error("failed to store signals: \(error)"))
+            return
         }
         await dispatchSignals()
     }
@@ -743,6 +756,17 @@ actor ServeSession {
         peerStates[connectionID]?.pingTask?.cancel()
         peerStates[connectionID] = PeerState(hello: hello)
 
+        // TCPの切断を出さずに死んだ接続を、応答待ちのまま残すと、同じiPhoneが開き直しても最大3分は要求が届かない。
+        // 古い接続のstateも外すのは、残すとdispatchSignalsが同じdeviceの死んだ接続を選びうるため
+        if let inFlight = signalInFlight, inFlight.connectionID != connectionID,
+            let stale = peerStates[inFlight.connectionID], stale.hello?.device == hello.device
+        {
+            stale.pingTask?.cancel()
+            peerStates[inFlight.connectionID] = nil
+            signalInFlight = nil
+            await control.send(.log("signal: 同じiPhoneが接続し直したため、古い接続の応答待ちを外しました"))
+        }
+
         let now = Int64((Date().timeIntervalSince1970 * 1000).rounded())
         let accepted = hello.protocolVersion == HelloMessage.currentProtocolVersion
         let reason: String? =
@@ -780,7 +804,12 @@ actor ServeSession {
             let pinned = SignalDispatch.pin(state, hello: hello)
             if pinned != state {
                 try signalStore.save(pinned)
-                await control.send(.log("signal: \(hello.deviceName)を体の状態と地点の取得先にしました"))
+                if state.pinnedDevice == nil {
+                    await control.send(.log("signal: \(hello.deviceName)を体の状態と地点の取得先にしました"))
+                } else if pinned.pinnedDevice != state.pinnedDevice {
+                    await control.send(
+                        .log("signal: \(hello.deviceName)を入れ直したとみなし、取得先を新しいidへ移しました"))
+                }
             }
         } catch {
             await control.send(.error("failed to pin signal device: \(error)"))

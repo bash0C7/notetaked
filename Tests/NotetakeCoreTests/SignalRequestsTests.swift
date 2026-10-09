@@ -72,6 +72,44 @@ private func request(
     #expect(SignalDispatch.pin(pinned, hello: other).pinnedDevice == "a")
 }
 
+@Test func signalDispatchRecordsThePinnedDeviceNameAndUpdatesItWhenItChanges() {
+    let signal = HelloMessage(device: "a", deviceName: "A", owner: "o", platform: .ios, capabilities: ["signal"])
+    let pinned = SignalDispatch.pin(SignalRequestState(), hello: signal)
+    #expect(pinned.pinnedDeviceName == "A")
+    let legacy = SignalRequestState(requests: [], pinnedDevice: "a")
+    #expect(SignalDispatch.pin(legacy, hello: signal).pinnedDeviceName == "A")
+    let renamed = HelloMessage(device: "a", deviceName: "A2", owner: "o", platform: .ios, capabilities: ["signal"])
+    #expect(SignalDispatch.pin(pinned, hello: renamed).pinnedDeviceName == "A2")
+    #expect(SignalDispatch.pin(pinned, hello: signal) == pinned)
+}
+
+@Test func signalDispatchMovesThePinToAnIPhoneWithTheSameNameAndAnotherID() {
+    let pinned = SignalDispatch.pin(
+        SignalRequestState(requests: [request()]),
+        hello: HelloMessage(device: "a", deviceName: "A", owner: "o", platform: .ios, capabilities: ["signal"]))
+    let reinstalled = HelloMessage(device: "a2", deviceName: "A", owner: "o", platform: .ios, capabilities: ["signal"])
+    let moved = SignalDispatch.pin(pinned, hello: reinstalled)
+    #expect(moved.pinnedDevice == "a2")
+    #expect(moved.pinnedDeviceName == "A")
+    #expect(moved.requests == pinned.requests)
+}
+
+@Test func signalDispatchKeepsThePinAgainstOtherNamesAndPeersWithoutSignal() {
+    let pinned = SignalDispatch.pin(
+        SignalRequestState(),
+        hello: HelloMessage(device: "a", deviceName: "A", owner: "o", platform: .ios, capabilities: ["signal"]))
+    let other = HelloMessage(device: "b", deviceName: "B", owner: "o", platform: .ios, capabilities: ["signal"])
+    let sameNameWithoutSignal = HelloMessage(device: "c", deviceName: "A", owner: "o", platform: .ios)
+    #expect(SignalDispatch.pin(pinned, hello: other) == pinned)
+    #expect(SignalDispatch.pin(pinned, hello: sameNameWithoutSignal) == pinned)
+}
+
+@Test func signalRequestStateReadsAFileWithoutThePinnedDeviceName() throws {
+    let json = "{\"pinned_device\":\"a\",\"requests\":[]}"
+    let state = try JSONDecoder().decode(SignalRequestState.self, from: Data(json.utf8))
+    #expect(state == SignalRequestState(requests: [], pinnedDevice: "a", pinnedDeviceName: nil))
+}
+
 @Test func signalDispatchExpiresRequestsOlderThanSevenDays() {
     let state = SignalRequestState(requests: [request(id: "old", createdAtMS: 0), request(id: "fresh", createdAtMS: 2 * hour)])
     let result = SignalDispatch.expire(state, nowMS: 7 * 24 * hour + 1)

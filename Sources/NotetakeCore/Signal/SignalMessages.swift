@@ -1,20 +1,33 @@
 import Foundation
 
-/// HealthKitの読み取りの状態。HealthKitは読み取りの拒否をappへ教えないので、拒否は`empty`に見える
+/// HealthKitの読み取りの状態。HealthKitは読み取りの拒否をappへ教えないので、拒否は`empty`に見える。
+/// 未知の値は`empty`として読む。新しいiPhoneの値で古いMacが応答を落とすと、同じ要求を送り続けるため
 public enum HealthSourceStatus: String, Codable, Sendable {
     case ok
     case empty
     case notRequested = "not_requested"
     case unavailable
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = HealthSourceStatus(rawValue: raw) ?? .empty
+    }
 }
 
-/// 位置の許可の状態。`CLLocationManager.authorizationStatus`から取る
+/// 位置の許可の状態。`CLLocationManager.authorizationStatus`から取る。未知の値は`notConfigured`として読む
 public enum PlaceSourceStatus: String, Codable, Sendable {
     case always
     case whenInUse = "when_in_use"
     case denied
     case notDetermined = "not_determined"
     case restricted
+    /// 登録地点が0件。許可の問題ではないので、案内は出さない
+    case notConfigured = "not_configured"
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PlaceSourceStatus(rawValue: raw) ?? .notConfigured
+    }
 }
 
 public struct SignalSources: Codable, Sendable, Equatable {

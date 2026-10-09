@@ -151,8 +151,10 @@ final class MobileModel {
             Diag.log("place: 滞在を読めません: \(error)")
             stays = []
         }
+        // 地点を登録していないuserに、位置の許可の案内がMacへ出ないよう、許可の状態より先に見る
         return await SignalResponder.respond(
-            to: request, health: healthReader, stays: stays, placeStatus: placeMonitor.status)
+            to: request, health: healthReader, stays: stays,
+            placeStatus: placeMonitor.places.isEmpty ? .notConfigured : placeMonitor.status)
     }
 
     func requestHealthAuthorization() async {
