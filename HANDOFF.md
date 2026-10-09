@@ -1,23 +1,32 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-10-09）体の状態と地点の記録（signal層）
+## 状態（2026-10-10）体の状態と地点の記録（signal層）
 
-- **branch** `signal-layer`（mainの`2609eff`から、push済み）。Auday（Apple Watchの常時AIレコーダー）相当をWatch / iPhoneのfeatureとして作る構想のうち、spec 1（signal層）を実装中。振り返りUIとAIチャットは作らない（user決定）
+- **branch** `signal-layer`（mainの`2609eff`から、push済み）。Auday（Apple Watchの常時AIレコーダー）相当をWatch / iPhoneのfeatureとして作る構想のうち、spec 1（signal層）。振り返りUIとAIチャットは作らない（user決定）。planのTask 0〜11と最終whole-branch review（Fable）まで終えた。mergeはuserが切り出すまで話題にしない
 - **spec / plan / spikeの手順はgit管理外**（userのグローバルgit ignoreが`docs/superpowers/`を無視。commitしない、とuser決定）。ローカルにだけある:
-  - spec: `docs/superpowers/specs/2026-10-09-signal-layer-design.md`（Fableの敵対的レビュー2回を反映、user承認済み）
-  - plan: `docs/superpowers/plans/2026-10-09-signal-layer.md`（Task 0〜11、user承認済み）
+  - spec: `docs/superpowers/specs/2026-10-09-signal-layer-design.md`（段階0の結果と、実機確認・最終reviewの後の変更を反映）
+  - plan: `docs/superpowers/plans/2026-10-09-signal-layer.md`（Task 10は段階0の後に書き直した）
   - Watchの常時録音spike: `docs/superpowers/specs/2026-10-09-watch-all-day-recording-spike.md`（spec 2の前提。「前面で録音を始め、手首を下ろして画面が消えても止まらないか」だけを見る。電池・長時間は見ない、user決定）
-  - SDDのledger: `.superpowers/sdd/2026-10-09-signal-layer/progress.md`（決定（Ruling）と、後回しにしたMinorの一覧。最終reviewで使う）
-- **設計の要点**: Macが収録の終了時に時間範囲を指定してiPhoneへ要求し（pull型）、iPhoneがHealthKitの心拍・HRVと登録地点（`CLVisit`）から10分ごとに集計して返す。出力は`<prefix>.signals.jsonl`と`<prefix>.context.md`。`final.md` / `timed.jsonl`は無変更。protocol versionは1のまま（`hello`の`capabilities`で伝える）。要求は2回（終了直後と3時間後）、7日で放棄。「ストレス」と逆ジオコーディングは外した。iPhoneはNotetakeを開いた時にまとめて答える
-- **実装済み（Task 1〜8、各taskで`make verify`通過・task review通過）**: Coreの集計・ファイル形式・peerのメッセージ・要求の管理・応答の扱い（`d80e384`〜`e08eb0a`）、`SessionArchive.mergeSignals` / `renderContext`と`render`（`97777c3`）、`serve`への組み込み（`37d3f90`、再入の修正`1bbdc0e`）、Macのメニューの案内（`6091dac`）。最後の`make verify`は322テスト
-  - 確かめたのは`make verify`と単体テストだけ。iPhoneとの実際のやり取り、`signals.jsonl`が実際に書かれることは**未確認**（iPhone側が未実装）
-- **次の手順**:
-  1. **Task 0（実機spike、userが画面の前にいる時）**: 使い捨てbranch `spike/signal-permissions`で、HealthKitの許可と心拍1件の読み出し、位置の許可を「使用中のみ」から「常に」へ昇格、1日持ち歩いた後の`CLVisit`を確かめる。手順はplanのTask 0。結果はspecの末尾へ追記し、branchは捨てる
-  2. Task 0が通れば、Task 9（iPhoneが使うCore: 地点の判定・滞在のログ・応答の組み立て）とTask 10（iPhone app: HealthKit、`CLVisit`、画面、権限）。通らなければspecへ戻る
-  3. Task 11（段階4の実機検証、README）→ 最終whole-branch review（ledgerの後回しMinorも見せる）
-  4. Watchの常時録音spike（spec 2の前提）は、上と独立にいつでもできる
-- **進め方（このbranchで決めた運用）**: 実装はSonnetのsubagent（`swift test --filter`まで、commitしない）→`make verify`はHaikuのsubagent（verify skill）→controllerがcommit→task reviewはSonnet、小さなfixの再reviewはHaiku。subagentへの共通の指示はledgerと同じディレクトリの`implementer-instructions.md` / `reviewer-instructions.md`。commit messageは`Co-Authored-By`のみ（session IDが取れないためsession trailerは付けていない）
-- **既知のflaky test**: `Tests/notetakedTests/FinalizeQueueTests.swift`の`queueFinalizesAnEndedSessionAndPublishesStatesAndTheFinalizedEvent`（:168、状態の列の比較）が、`make verify`で全テストを並行で回した時に1度落ちた。単独10回・suite3回は全て通過、再実行で通過。状態が`finalized`になるのを待ってからイベントの列を比べるため、記録の順序が負荷で入れ替わりうる。mainからある問題で、このbranchでは直していない
+  - SDDのledger: `.superpowers/sdd/2026-10-09-signal-layer/progress.md`（決定（Ruling）と後回しのMinor）、最終review: 同じディレクトリの`fable-branch-review.md`
+- **設計の要点**: Macが収録の終了時に時間範囲を指定してiPhoneへ要求し（pull型）、iPhoneがHealthKitの心拍・HRVと登録地点から10分ごとに集計して返す。出力は`<prefix>.signals.jsonl`と`<prefix>.context.md`。`final.md` / `timed.jsonl`は無変更。protocol versionは1のまま（`hello`の`capabilities`で伝える）。要求は2回（終了直後と**30分後**、user決定で3時間から変更）、`unavailable`（ロック中のiPhoneなど）は7日の期限まで10分おきに再試行。iPhoneはNotetakeを開いた時にまとめて答える
+  - 地点: 位置の許可は**「使用中のみ」だけ**（Alwaysは求めない、段階0の後のuser決定）。iPhoneのNotetakeが画面に出ている間と、iPhoneで収録している間（画面を消しても、`UIBackgroundModes`の`location`）だけ位置を取り、登録地点の滞在を記録する。5分を超えて空いたら滞在を分け、appの再起動直後の古いキャッシュ位置で止まっていた間を埋めない
+  - 地点を登録していなければ`place`は`not_configured`で、位置の案内を出さない。20分未満の収録では心拍の案内を出さない
+- **実装と検証**: 最後の`make verify`は347テスト・警告ゼロ（`a8ae669`）。実機（iPhone 16e、2026-10-10 0時台）で**確かめた**こと:
+  - HealthKitのentitlement付きの署名・許可dialog・心拍の読み出し、位置の「使用中のみ」（精度8〜9m）
+  - Macの収録の終了→要求の保存→iPhoneの接続→応答→`signals.jsonl` / `context.md`の作成。地点「自宅」が付く。座標・生の値は出力に無い
+  - 2回目の要求（`due_at_ms`を手で過去にした）で、1回目の結果が消えず、心拍が空なら「心拍が取れていません」の案内
+  - iPhoneのappを閉じたまま収録を終え、後で開くと答える
+  - 背面の収録中（Debug buildの起動引数`-NotetakeRecordSeconds`、設定appを前面にして背面へ）も1分ごとに滞在が延び、収録の停止で位置の記録が止まる（iPhoneのconsoleのlogで確認）
+  - 実機で見つけて直した: appの再起動直後の古いキャッシュ位置で、止まっていた間を地点にいたことにしていた（`a2f96ec`）
+- **確かめていないこと**: 心拍が実際に入ったバケット（試した収録が1〜2分と短く、心拍のサンプルが無かった）、青い位置表示（目視していない）、背面で移動した時の新しい位置の到着、最終reviewの修正（`a8ae669`）の実機での動作（Mac・iPhoneへの入れ直しはこの節を書いた後に行う）
+- **実機の注意**:
+  - Macのappを入れ直して署名が変わると、macOSの「ローカルネットワーク」の許可が外れ、Bonjourの告知が出ずiPhoneが「検索中」のままになる。「システム設定→プライバシーとセキュリティ→ローカルネットワーク」でNotetakeをonにしてappを再起動する（`dns-sd -B _notetake._tcp`に自分のMacが出るかで分かる）
+  - iPhoneの画面は`idevicescreenshot`では撮れなかった（端末が見えない）。実機の確認は`Diag.log`をconsole（`launch.sh iphone --console`）で読む。起動引数は`devicectl device process launch ... <bundle id> -- -NotetakeRecordSeconds 240`のように`--`の後に置く
+  - 作業用のsubagentが止まった後に動き出し、Macで意図しない収録を始めたことがある（`2026-10-10_002331`）。Macの操作をsubagentに任せる時は、待ちの間に戻ってこないようにする
+- **既知の制限（後回し）**: iOSは`UIDevice.current.name`を一律に「iPhone」と返すので、appを入れ直した時の取得先の付け替え（同じ名前なら移す）は、iPhoneを2台使うと行き来する（要求は失われない）。他の後回しのMinorはledgerの末尾
+- **次の手順**: 最終reviewの修正をMacとiPhoneへ入れ直し、20分以上の収録で心拍が入るかを見る。Watchの常時録音spike（spec 2の前提）は独立にいつでもできる
+- **進め方（このbranchで決めた運用）**: 実装はSonnetのsubagent（`swift test --filter`まで、commitしない）→`make verify`はHaikuのsubagent（verify skill）→controllerがcommit→task reviewはSonnet、小さなfixの再reviewはHaiku、最終reviewはFable。subagentへの共通の指示はledgerと同じディレクトリの`implementer-instructions.md` / `reviewer-instructions.md`。commit messageは`Co-Authored-By`のみ（session IDが取れないためsession trailerは付けていない）
+- **既知のflaky test**: `Tests/notetakedTests/FinalizeQueueTests.swift`の`queueFinalizesAnEndedSessionAndPublishesStatesAndTheFinalizedEvent`（:168、状態の列の比較）が、`make verify`で全テストを並行で回した時に1度落ちた。単独10回・suite3回は全て通過、再実行で通過。mainからある問題で、このbranchでは直していない
 
 ## 状態（2026-10-06）
 

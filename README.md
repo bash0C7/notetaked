@@ -14,7 +14,7 @@ Macのメニューバーappとdaemonで会議音声（マイク + システム�
 | NotetakeMobile | `Apps/NotetakeMobile` | iPhone app。Bonjour + TLS PSKでMacへ接続し、マイク（iPhone 16eは空間音声FOAで方位付き）の文字起こしをsegとして送る。Watchからの小片を中継する |
 | NotetakeWatch | `Apps/NotetakeWatch` | Watch app。20秒のAAC小片を`WCSession.transferFile`でiPhoneへ送る |
 
-出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。収録の停止または区切りの後に、その収録の生音声全体を一括で文字起こしと話者分離（確定）し、話者付きの`.final.md`と`<prefix>.speakers.json`（話者ごとの名前と発話秒数）を書く。話者の名前はメニューの「収録の話者」windowで付け、人数を指定して確定し直せる。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
+出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`、`.signals.jsonl`（収録の時間帯の心拍・HRV・地点を10分ごとに集計したもの。iPhoneでNotetakeを開いた時に届く）/ `.context.md`（それを時間帯ごとの要約にしたもの。`final.md`と並べて外部のAIへ渡せる）。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。収録の停止または区切りの後に、その収録の生音声全体を一括で文字起こしと話者分離（確定）し、話者付きの`.final.md`と`<prefix>.speakers.json`（話者ごとの名前と発話秒数）を書く。話者の名前はメニューの「収録の話者」windowで付け、人数を指定して確定し直せる。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
 
 ## 必要なもの
 
@@ -47,6 +47,7 @@ make clean    # .buildと生成済みXcodeプロジェクトを削除
 2. メニュー / ライブパネルの「収録開始」「収録停止」「区切る」（prefixを切り替える）「整形」（直前の収録を`polish`）。メニューにsourceごとの取り込みの状態（取り込み中 / 再開待ち / 停止）が出る。ディスプレイの消灯などでsystem音声が止まると、capture-daemonが5秒ごとに作り直す。
 3. iPhone: Notetakeにペアリングコードを入力→「接続: <Mac名>」→「開始」。segはMacの収録に時刻で割り当てられ、切断中の分は再接続後に送られて`final.md`が再生成される
 4. Watch: Notetakeで「開始」→iPhone経由でMacへ届く（`（Watch）`行）
+5. 体の状態と地点: iPhoneのNotetakeの「体の状態と地点」で、ヘルスケアの読み取りを許可し、「地点」で位置を「使用中のみ」で許可して地点（自宅など）を登録する。Macは収録の終了時と30分後にiPhoneへ問い合わせ、iPhoneでNotetakeを開くとまとめて答える。地点はiPhoneのNotetakeが画面に出ている間と、iPhoneで収録している間だけ記録する。座標と個々の測定値はiPhoneの外へ出さない。答えられない状態はMacのメニューに案内が出る
 
 CLI単体: `.build/release/notetaked capture-daemon`を起動しておき、`.build/release/notetaked serve --output <dir> --owner <名前> --source both [--pair-code 123456]`（stdinに`{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdoutに`status` / `utterance` / `volatile` / `peer` / `log` / `error` / `input_reset`イベント）。serveは`capture-desired.json`でcapture-daemonへ取り込みを指示する。
 
