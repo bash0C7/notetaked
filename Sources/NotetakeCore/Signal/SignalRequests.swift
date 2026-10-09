@@ -12,7 +12,7 @@ public struct SignalRequest: Codable, Sendable, Equatable {
     /// この要求で求める区間。24時間以内で、境目は10分の格子に揃える
     public var startMS: Int64
     public var endMS: Int64
-    /// 1は収録の終了直後、2はWatchの心拍が遅れて同期された分を拾う3時間後
+    /// 1は収録の終了直後、2はWatchの心拍が遅れて同期された分を拾う30分後
     public var round: Int
     public var createdAtMS: Int64
     /// 壁時計。再起動やMacのスリープをまたいでも、遅れた分は次の機会に送る
@@ -91,7 +91,7 @@ public struct SignalRequestStore: Sendable {
 
 /// 収録の終了で作る要求
 public enum SignalPlanner {
-    public static let secondRoundDelayMS: Int64 = 3 * 3_600_000
+    public static let secondRoundDelayMS: Int64 = 30 * 60_000
     public static let maxSliceMS: Int64 = 24 * 3_600_000
     public static let expiryMS: Int64 = 7 * 24 * 3_600_000
 

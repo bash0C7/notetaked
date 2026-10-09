@@ -28,7 +28,7 @@ private func request(
         prefix: "p", outputDirectory: "/out", startMS: 3 * minute, endMS: 25 * minute, nowMS: 26 * minute,
         makeID: ids())
     #expect(made.map(\.round) == [1, 2])
-    #expect(made.map(\.dueAtMS) == [26 * minute, 26 * minute + 3 * hour])
+    #expect(made.map(\.dueAtMS) == [26 * minute, 26 * minute + 30 * minute])
     #expect(made.allSatisfy { $0.startMS == 3 * minute && $0.endMS == 25 * minute })
     #expect(made.allSatisfy { $0.outputDirectory == "/out" && $0.recordingStartMS == 3 * minute && $0.recordingEndMS == 25 * minute })
 }

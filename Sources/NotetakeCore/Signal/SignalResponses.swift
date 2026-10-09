@@ -91,7 +91,7 @@ public enum SignalStatusLabel {
     static func line(prefix: String, notice: SignalNotice) -> String {
         switch notice {
         case .waiting:
-            return "\(prefix): 心拍はまだ届いていません。3時間後にもう一度取ります"
+            return "\(prefix): 心拍はまだ届いていません。30分後にもう一度取ります"
         case .noHeartRate:
             return "\(prefix): 心拍が取れていません。Watchを着けていたか、iPhoneのヘルスケアの許可を確認してください"
         case .locationNotAllowed:

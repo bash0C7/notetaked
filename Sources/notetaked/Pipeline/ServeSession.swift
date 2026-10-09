@@ -590,7 +590,7 @@ actor ServeSession {
 
     // MARK: - signal
 
-    /// 60秒ごとに、期限の来た要求を送る。2回目（3時間後）の要求とMacのスリープ明けをこれで拾う
+    /// 60秒ごとに、期限の来た要求を送る。2回目（30分後）の要求とMacのスリープ明けをこれで拾う
     func startSignalDispatch() {
         guard signalTask == nil else { return }
         signalTask = Task { [weak self] in

@@ -78,6 +78,6 @@ private func merged(_ buckets: [SignalBucket]) -> SignalsDocument {
         SignalStatusLabel.menuLines(states: states) == [
             "20261003_100000: 心拍が取れていません。Watchを着けていたか、iPhoneのヘルスケアの許可を確認してください",
             "20261003_100000: 地点が取れていません。iPhoneの位置情報の許可を確認してください",
-            "20261004_100000: 心拍はまだ届いていません。3時間後にもう一度取ります",
+            "20261004_100000: 心拍はまだ届いていません。30分後にもう一度取ります",
         ])
 }
