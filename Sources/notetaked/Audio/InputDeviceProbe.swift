@@ -44,6 +44,24 @@ enum InputDeviceProbe {
         return all().filter { !continuityUIDs.contains($0.uid) }
     }
 
+    /// 取り込む機器。固定した機器が接続中ならそれ、無ければ既定の入力（Continuityならば内蔵）。使える機器が無ければnil
+    static func captureTarget(pinnedUID: String?, pinnedUnusable: Bool) -> (id: AudioDeviceID, fellBackFromPinned: Bool)? {
+        if !pinnedUnusable,
+            let uid = InputDeviceResolution.resolvedUID(
+                pinnedUID: pinnedUID, availableUIDs: Set(all().map(\.uid))),
+            let id = audioDeviceID(forUID: uid)
+        {
+            return (id, false)
+        }
+        let osDefaultUID = defaultInputDeviceID().flatMap(deviceUID(of:))
+        guard
+            let uid = InputDeviceResolution.fallbackUID(
+                osDefaultUID: osDefaultUID, candidates: candidates()),
+            let id = audioDeviceID(forUID: uid)
+        else { return nil }
+        return (id, pinnedUID != nil)
+    }
+
     /// OSの既定の入力機器の`AudioDeviceID`。無ければnil
     static func defaultInputDeviceID() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(

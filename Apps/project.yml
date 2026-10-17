@@ -19,7 +19,11 @@ targets:
   Notetake:
     type: application
     platform: macOS
-    sources: [Notetake, ../Sources/notetaked/Audio/InputDeviceProbe.swift]
+    sources:
+      - Notetake
+      - ../Sources/notetaked/Audio/InputDeviceProbe.swift
+      - ../Sources/notetaked/Audio/AUHALInputCapture.swift
+      - ../Sources/notetaked/Capture/CaptureSink.swift
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore
