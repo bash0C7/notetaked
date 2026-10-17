@@ -160,12 +160,16 @@ final class MobileModel {
                 try await Transcriber.ensureAssets(locale: Self.locale)
                 let session = SessionStore.prefix(for: Date(), timeZone: .current)
                 let box = WeakBox(self)
-                try await self.recorder.start(locale: Self.locale) { piece, dbfs, direction in
-                    Task { @MainActor in
-                        guard let model = box.value else { return }
-                        await model.handleFinalPiece(piece, dbfs: dbfs, direction: direction, session: session)
-                    }
-                }
+                try await self.recorder.start(
+                    locale: Self.locale,
+                    onPiece: { piece, dbfs, direction in
+                        Task { @MainActor in
+                            guard let model = box.value else { return }
+                            await model.handleFinalPiece(piece, dbfs: dbfs, direction: direction, session: session)
+                        }
+                    },
+                    onLevel: { _, _ in }
+                )
             } catch {
                 self.isRecording = false
                 self.lastError = "録音の開始に失敗しました: \(error.localizedDescription)"
