@@ -124,4 +124,17 @@ struct IndicatorJudgeTests {
         #expect(IndicatorJudge.judgePeer(wasConnected: false, connected: false) == nil)
         #expect(IndicatorJudge.judgePeer(wasConnected: true, connected: true) == nil)
     }
+
+    @Test func lidClosedAndMicUnavailableIsInfo() {
+        let message = IndicatorJudge.lidClosedMessage(clamshellClosed: true, micUnavailable: true)
+        #expect(message == IndicatorMessage(severity: .info, text: "蓋が閉じているため内蔵マイクは使えません"))
+    }
+
+    @Test func lidClosedButMicWorkingIsNil() {
+        #expect(IndicatorJudge.lidClosedMessage(clamshellClosed: true, micUnavailable: false) == nil)
+    }
+
+    @Test func lidOpenAndMicUnavailableIsNil() {
+        #expect(IndicatorJudge.lidClosedMessage(clamshellClosed: false, micUnavailable: true) == nil)
+    }
 }

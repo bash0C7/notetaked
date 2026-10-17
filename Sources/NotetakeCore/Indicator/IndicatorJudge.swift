@@ -95,4 +95,10 @@ public enum IndicatorJudge {
         guard wasConnected, !connected else { return nil }
         return IndicatorMessage(severity: .caution, text: "iPhoneとの接続が切れました")
     }
+
+    /// 蓋が閉じていて内蔵マイクが使えないのは想定どおりなので、赤にせず情報として出す
+    public static func lidClosedMessage(clamshellClosed: Bool, micUnavailable: Bool) -> IndicatorMessage? {
+        guard clamshellClosed, micUnavailable else { return nil }
+        return IndicatorMessage(severity: .info, text: "蓋が閉じているため内蔵マイクは使えません")
+    }
 }
