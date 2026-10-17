@@ -72,6 +72,12 @@ final class MobileModel {
                     model.peerState = state
                     await model.refreshPendingCount()
                 }
+            },
+            onAck: {
+                Task { @MainActor in
+                    guard let model = box.value else { return }
+                    await model.refreshPendingCount()
+                }
             }
         )
         peerClient = client
