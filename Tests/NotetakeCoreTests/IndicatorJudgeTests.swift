@@ -20,7 +20,8 @@ struct IndicatorJudgeTests {
         recording: Bool = true,
         recordingStartedAtMS: Int64? = 0,
         lastTextAtMS: Int64? = nil,
-        nowMS: Int64
+        nowMS: Int64,
+        lidClosedBuiltInMic: Bool = false
     ) -> SourceIndicatorInput {
         SourceIndicatorInput(
             history: history,
@@ -29,7 +30,8 @@ struct IndicatorJudgeTests {
             recording: recording,
             recordingStartedAtMS: recordingStartedAtMS,
             lastTextAtMS: lastTextAtMS,
-            nowMS: nowMS
+            nowMS: nowMS,
+            lidClosedBuiltInMic: lidClosedBuiltInMic
         )
     }
 
@@ -136,5 +138,65 @@ struct IndicatorJudgeTests {
 
     @Test func lidOpenAndMicUnavailableIsNil() {
         #expect(IndicatorJudge.lidClosedMessage(clamshellClosed: false, micUnavailable: true) == nil)
+    }
+
+    @Test func lidClosedWithBuiltInMicTurnsSilenceIntoInfo() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 5_000, dbfs: -120)
+        let message = IndicatorJudge.judge(input(history, lastTextAtMS: now, nowMS: now, lidClosedBuiltInMic: true))
+        #expect(message == IndicatorMessage(severity: .info, text: "蓋が閉じているため内蔵マイクは使えません"))
+    }
+
+    @Test func lidClosedWithBuiltInMicTurnsAMissingAudioAlertIntoInfo() {
+        var history = LevelHistory()
+        history.appendGap(atMS: 5_900)
+        let message = IndicatorJudge.judge(input(history, nowMS: 6_000, lidClosedBuiltInMic: true))
+        #expect(message.severity == .info)
+    }
+
+    @Test func lidOpenSilenceStaysAnAlert() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 5_000, dbfs: -120)
+        let message = IndicatorJudge.judge(input(history, lastTextAtMS: now, nowMS: now, lidClosedBuiltInMic: false))
+        #expect(message.severity == .alert)
+    }
+
+    @Test func soundFiveSecondsAfterStartWithoutTextIsNotYetACaution() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 5_000, dbfs: -30)
+        let message = IndicatorJudge.judge(input(history, recordingStartedAtMS: 0, lastTextAtMS: nil, nowMS: now))
+        #expect(message.severity == .normal)
+    }
+
+    @Test func soundThirtyOneSecondsAfterStartWithoutTextIsACaution() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 31_000, dbfs: -30)
+        let message = IndicatorJudge.judge(input(history, recordingStartedAtMS: 0, lastTextAtMS: nil, nowMS: now))
+        #expect(message.severity == .caution)
+    }
+
+    @Test func aStaleLatestSampleIsTreatedAsAGapNotSilence() {
+        var history = LevelHistory()
+        fill(&history, durationMS: 3_000, dbfs: -120)
+        // 最後のsampleから2秒、更新が止まっている。無音の継続ではなく取得待ち
+        let message = IndicatorJudge.judge(input(history, lastTextAtMS: 5_000, nowMS: 5_000))
+        #expect(message.severity == .info)
+        #expect(message.text == "取得待ち")
+    }
+
+    @Test func aGapBecomesAnAlertOnlyAfterThreeSecondsSinceTheLastMeasurement() {
+        var history = LevelHistory()
+        fill(&history, durationMS: 10_000, dbfs: -30)
+        history.appendGap(atMS: 10_000)
+        let early = IndicatorJudge.judge(input(history, lastTextAtMS: 10_000, nowMS: 11_000))
+        #expect(early.severity == .info)
+        let late = IndicatorJudge.judge(input(history, lastTextAtMS: 10_000, nowMS: 13_000))
+        #expect(late.severity == .alert)
+        #expect(late.text == "音声が届いていません")
+    }
+
+    @Test func peerDisconnectNamesThePeer() {
+        let message = IndicatorJudge.judgePeer(wasConnected: true, connected: false, peerName: "Mac")
+        #expect(message?.text == "Macとの接続が切れました")
     }
 }

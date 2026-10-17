@@ -20,7 +20,21 @@ public struct LevelHistory: Sendable, Equatable {
         self.windowMS = windowMS
     }
 
+    /// これより古い最新sampleは、今は測れていない（欠測）として扱う
+    public static let defaultStaleAfterMS: Int64 = 1_000
+
     public var latest: LevelSample? { samples.last }
+
+    /// 最新のsample。nowMSからstaleAfterMSより古ければnil
+    public func latest(nowMS: Int64, staleAfterMS: Int64 = LevelHistory.defaultStaleAfterMS) -> LevelSample? {
+        guard let sample = samples.last, nowMS - sample.atMS <= staleAfterMS else { return nil }
+        return sample
+    }
+
+    /// 最後に実際に測れた（欠測でない）sampleの時刻
+    public var lastMeasuredAtMS: Int64? {
+        samples.last { $0.dbfs != nil }?.atMS
+    }
 
     public mutating func append(atMS: Int64, dbfs: Double) {
         push(LevelSample(atMS: atMS, dbfs: dbfs))

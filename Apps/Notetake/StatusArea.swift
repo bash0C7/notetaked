@@ -61,8 +61,7 @@ struct StatusArea: View {
 
     /// 指定sourceの最新の確定文字からの経過秒。確定文字が無ければnil
     private func secondsSinceText(for source: Source, nowMS: Int64) -> Int? {
-        let ends: [Int64] = appModel.utterances.filter { $0.source == source }.map(\.end)
-        guard let lastEnd = ends.max() else { return nil }
+        guard let lastEnd = appModel.lastTextAtMS(for: source) else { return nil }
         return max(0, Int((nowMS - lastEnd) / 1000))
     }
 
@@ -110,7 +109,7 @@ private struct SourceLevelRow: View {
     let windowMS: Int64
 
     private var valueText: String {
-        guard let dbfs = history.latest?.dbfs else { return "—" }
+        guard let dbfs = history.latest(nowMS: nowMS)?.dbfs else { return "—" }
         return String(format: "%.0f dB", dbfs)
     }
 

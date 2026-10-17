@@ -50,6 +50,8 @@ final class MicLevelMonitor {
 
     /// AUHALをこの場で閉じる（収録の開始前に、capture-daemonとマイクを取り合わないため）。`history`は残す
     func stop() {
+        // 止めた時点を欠測として残し、最後の値が生きているように見えないようにする
+        if isRunning { history.appendGap(atMS: Self.nowMS()) }
         gapTask?.cancel()
         gapTask = nil
         sink?.invalidate()

@@ -62,4 +62,19 @@ import Testing
             #expect(history.samples.count <= 901)
         }
     }
+
+    @Test func latestIsNilOnceTheNewestSampleIsStale() {
+        var history = LevelHistory()
+        history.append(atMS: 1_000, dbfs: -30)
+        #expect(history.latest(nowMS: 2_000, staleAfterMS: 1_000)?.dbfs == -30)
+        #expect(history.latest(nowMS: 2_001, staleAfterMS: 1_000) == nil)
+    }
+
+    @Test func lastMeasuredSkipsGaps() {
+        var history = LevelHistory()
+        history.append(atMS: 1_000, dbfs: -30)
+        history.appendGap(atMS: 2_000)
+        #expect(history.lastMeasuredAtMS == 1_000)
+        #expect(LevelHistory().lastMeasuredAtMS == nil)
+    }
 }

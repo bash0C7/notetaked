@@ -44,7 +44,7 @@ struct StatusArea: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 LevelGraph(samples: model.levelHistory.samples, windowMS: Self.graphWindowMS, nowMS: nowMS, height: 28)
-                Text(valueText)
+                Text(valueText(nowMS: nowMS))
                     .monospacedDigit()
                     .lineLimit(1)
                     .fixedSize()
@@ -62,8 +62,8 @@ struct StatusArea: View {
         }
     }
 
-    private var valueText: String {
-        guard let dbfs = model.levelHistory.latest?.dbfs else { return "—" }
+    private func valueText(nowMS: Int64) -> String {
+        guard let dbfs = model.levelHistory.latest(nowMS: nowMS)?.dbfs else { return "—" }
         return String(format: "%.0f dB", dbfs)
     }
 

@@ -432,15 +432,22 @@ final class AppModel {
                 return lid
             }
         }
-        let lastTextAtMS = utterances.filter { $0.source == source }.map(\.end).max()
+        let lidClosedBuiltInMic = source == .mic && clamshellClosed
+            && (preferredInputDeviceUID ?? InputDeviceResolution.builtInUID) == InputDeviceResolution.builtInUID
         return IndicatorJudge.judge(SourceIndicatorInput(
             history: source == .mic ? micHistory : systemHistory,
             captureState: status?.state,
             captureReason: status?.reason,
             recording: isRecording,
             recordingStartedAtMS: recordingStartedAtMS,
-            lastTextAtMS: lastTextAtMS,
-            nowMS: nowMS))
+            lastTextAtMS: lastTextAtMS(for: source),
+            nowMS: nowMS,
+            lidClosedBuiltInMic: lidClosedBuiltInMic))
+    }
+
+    /// このMacが取り込んだ発話のうち、指定sourceの最新の終了時刻。iPhone由来の発話は数えない
+    func lastTextAtMS(for source: Source) -> Int64? {
+        utterances.filter { $0.source == source && $0.platform == .mac }.map(\.end).max()
     }
 
     /// daemonの更新が止まっていれば赤。daemonが動いていない間は判定しない

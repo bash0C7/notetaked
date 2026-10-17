@@ -24,6 +24,8 @@ public struct SourceIndicatorInput: Sendable, Equatable {
     public var recordingStartedAtMS: Int64?
     public var lastTextAtMS: Int64?
     public var nowMS: Int64
+    /// 蓋が閉じていて、収録するmicが内蔵。この時の無音・欠測は想定どおりなので赤にしない
+    public var lidClosedBuiltInMic: Bool
 
     public init(
         history: LevelHistory,
@@ -32,7 +34,8 @@ public struct SourceIndicatorInput: Sendable, Equatable {
         recording: Bool,
         recordingStartedAtMS: Int64?,
         lastTextAtMS: Int64?,
-        nowMS: Int64
+        nowMS: Int64,
+        lidClosedBuiltInMic: Bool = false
     ) {
         self.history = history
         self.captureState = captureState
@@ -41,6 +44,7 @@ public struct SourceIndicatorInput: Sendable, Equatable {
         self.recordingStartedAtMS = recordingStartedAtMS
         self.lastTextAtMS = lastTextAtMS
         self.nowMS = nowMS
+        self.lidClosedBuiltInMic = lidClosedBuiltInMic
     }
 }
 
@@ -53,6 +57,15 @@ public enum IndicatorJudge {
     public static let daemonAlertMS: Int64 = 15_000
 
     public static func judge(_ input: SourceIndicatorInput) -> IndicatorMessage {
+        let message = judgeIgnoringLid(input)
+        if input.lidClosedBuiltInMic, message.severity == .alert,
+           let lid = lidClosedMessage(clamshellClosed: true, micUnavailable: true) {
+            return lid
+        }
+        return message
+    }
+
+    private static func judgeIgnoringLid(_ input: SourceIndicatorInput) -> IndicatorMessage {
         let now = input.nowMS
 
         if input.captureState == .retrying {
@@ -60,21 +73,26 @@ public enum IndicatorJudge {
             return IndicatorMessage(severity: .alert, text: text)
         }
 
-        if input.history.trailingSilenceMS(nowMS: now) >= silenceAlertMS {
+        // 最新のsampleが古ければ、測れていない（欠測）として扱う
+        let fresh = input.history.latest(nowMS: now)
+
+        if fresh?.dbfs != nil, input.history.trailingSilenceMS(nowMS: now) >= silenceAlertMS {
             return IndicatorMessage(severity: .alert, text: "音声がゼロです（入力が無音）")
         }
 
-        if input.recording, input.history.latest?.dbfs == nil {
+        if input.recording, fresh?.dbfs == nil {
             let startedAt = input.recordingStartedAtMS ?? now
-            if now - startedAt > startupGraceMS {
+            let gapLongEnough = input.history.lastMeasuredAtMS.map { now - $0 >= silenceAlertMS } ?? true
+            if now - startedAt > startupGraceMS, gapLongEnough {
                 return IndicatorMessage(severity: .alert, text: "音声が届いていません")
             }
             return IndicatorMessage(severity: .info, text: "取得待ち")
         }
 
         if input.recording {
-            let noRecentText = input.lastTextAtMS.map { now - $0 >= noTextCautionMS } ?? true
-            if noRecentText,
+            // 文字がまだ無い間は、収録の開始から30秒を数える
+            let since = input.lastTextAtMS ?? input.recordingStartedAtMS ?? now
+            if now - since >= noTextCautionMS,
                input.history.hasSound(above: soundThresholdDBFS, sinceMS: now - noTextCautionMS) {
                 return IndicatorMessage(severity: .caution, text: "音はあるのに文字が出ていません")
             }
@@ -91,9 +109,10 @@ public enum IndicatorJudge {
         return nil
     }
 
-    public static func judgePeer(wasConnected: Bool, connected: Bool) -> IndicatorMessage? {
+    /// peerNameは切れた相手の呼び名。Macから見れば「iPhone」、iPhoneから見れば「Mac」
+    public static func judgePeer(wasConnected: Bool, connected: Bool, peerName: String = "iPhone") -> IndicatorMessage? {
         guard wasConnected, !connected else { return nil }
-        return IndicatorMessage(severity: .caution, text: "iPhoneとの接続が切れました")
+        return IndicatorMessage(severity: .caution, text: "\(peerName)との接続が切れました")
     }
 
     /// 蓋が閉じていて内蔵マイクが使えないのは想定どおりなので、赤にせず情報として出す

@@ -174,7 +174,7 @@ final class MobileModel {
     var peerIndicator: IndicatorMessage? {
         var connected = false
         if case .connected = peerState { connected = true }
-        return IndicatorJudge.judgePeer(wasConnected: hasEverConnected, connected: connected)
+        return IndicatorJudge.judgePeer(wasConnected: hasEverConnected, connected: connected, peerName: "Mac")
     }
 
     /// 停止直後に遅れて届いた通知は、取り込み中ではないので捨てる
@@ -196,12 +196,13 @@ final class MobileModel {
         Task {
             do {
                 try await Transcriber.ensureAssets(locale: Self.locale)
+                // 準備中に停止が押されたら、マイクを開かずに終える
+                guard self.isRecording else { return }
                 let session = SessionStore.prefix(for: Date(), timeZone: .current)
                 let box = WeakBox(self)
                 // 開始前に届く通知は無いので、ここで履歴を作り直す。失敗したらcatchで元へ戻す
                 self.levelHistory = LevelHistory()
                 self.lastTextAtMS = nil
-                self.recordingStartedAtMS = Self.currentMS()
                 try await self.recorder.start(
                     locale: Self.locale,
                     onPiece: { piece, dbfs, direction in
@@ -216,6 +217,12 @@ final class MobileModel {
                         }
                     }
                 )
+                // recorder.startが戻ってから数える。開始前に停止が押されていたらマイクを閉じる
+                if self.isRecording {
+                    self.recordingStartedAtMS = Self.currentMS()
+                } else {
+                    try? await self.recorder.stop()
+                }
             } catch {
                 self.isRecording = false
                 self.levelHistory = LevelHistory()
