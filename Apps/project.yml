@@ -54,7 +54,7 @@ targets:
   NotetakeMobile:
     type: application
     platform: iOS
-    sources: [NotetakeMobile]
+    sources: [NotetakeMobile, Shared/LevelGraph.swift]
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore

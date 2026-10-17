@@ -9,8 +9,7 @@ struct ContentView: View {
         NavigationStack {
             Form {
                 Section("状態") {
-                    LabeledContent("Mac", value: peerStatusText)
-                    LabeledContent("未送信", value: "\(model.pendingCount)件")
+                    StatusArea(model: model)
                     LabeledContent("Watch", value: "\(model.watchStreams) stream")
                 }
 
@@ -57,16 +56,6 @@ struct ContentView: View {
             .sheet(isPresented: $showPairingSheet) {
                 PairingSheet(model: model)
             }
-        }
-    }
-
-    private var peerStatusText: String {
-        switch model.peerState {
-        case .idle: return "未接続"
-        case .browsing: return "検索中…"
-        case .connecting(let name): return "接続試行中: \(name)"
-        case .connected(let name): return "接続済み: \(name)"
-        case .failed(let reason): return "エラー: \(reason)"
         }
     }
 }
