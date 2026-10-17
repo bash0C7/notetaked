@@ -1,5 +1,15 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-10-18 未明）— Watchの入力レベル表示と継続収録: phase 1aを実装済み（branch `watch-1a-obs-outbox-color`、未merge）
+
+- **構想**: Apple Watchで会話を常時収録し、iPhoneで文字起こしする。user決定: `HKWorkoutSession`は使わない、個人開発署名、`signal-layer`（ヘルスケア）は破棄。設計書 `docs/superpowers/specs/2026-10-18-watch-continuous-recording-design.md`、plan `docs/superpowers/plans/2026-10-18-watch-1a-obs-outbox-color.md`（`docs/superpowers/`はgit管理外）。調査と敵対的レビューは`/private/tmp/.../scratchpad/watch-*.md`（消える可能性あり。要点は設計書に反映済み）。SDD ledgerは`.superpowers/sdd/2026-10-18-watch-1a-obs-outbox-color/progress.md`
+- **方式の結論**: `UIBackgroundModes: [audio]`を足し、前面で開始、背面ではengineを止めずファイルだけ切り替える。ただしApple DTS（2026年3月）は「背面での継続実行は最初からサポートされた用途ではない」と述べている。目標は終日でなく会議単位（段階A）から。watchOS 26での背面録音は**未確認**で、実機のspikeで確かめる
+- **phase 1aの実装（11 commit、`make verify`通過 443テスト、Opusの最終reviewと修正後のreview済み）**: `Outbox.init`のseq復元（ack済みとの最大）と`compactIfDrained`（未ackが0件かつcursorを読み直してlastAppendedSeq以上の時だけ、初回は退避コピー）/ iPhoneのack後compact / 赤黄の色を`Apps/Shared`へ / Watchの記録（`WatchObsRecord`、`WatchRecordingReducer`、`ChunkLevelSummary`/`ChunkTelemetry`、`WatchObsLog`をWatch内ファイルへ追記し区切りごとに`transferFile`）/ Watch録音の状態遷移（中断・経路変更・書き込み失敗・scenePhaseで「止まりました」、自動再開なし、前面で途絶えれば5秒で赤）/ iPhoneは`Documents/watch-obs`へ保存 / `FinalizeQueue`の進捗順序を決定的にする修正（既存の不安定さ）
+- **⚠ 版を揃えること**: 旧版のiPhoneは`kind: obs`のファイルを小片として読んで削除し、Watchは転送成功として自分の側も消すため、記録が全部失われる。**G1の前に、iPhoneをこのbranch以降の版にする**。逆（旧Watch+新iPhone）は問題なし。specの「spikeはWatchだけ入れ、iPhoneはmainのまま」は誤り
+- **実機で未検証（全部）**: 実際のoutboxで初回compactが走った後に退避コピーが残り、次のseqがcursorより大きく、Macがそのsegを受けること / Watch実機での中断・経路変更・mediaServicesReset・stop→startの誤停止なし / 電池の実測 / 記録ファイルがiPhoneの`Documents/watch-obs`に届き`devicectl device copy from`で取り出せること / `activate`前の`transferFile` / 背面とAODでの表示 / 実負荷でのFinalizeQueueの進捗表示
+- **次の手順**: ①user確認（設計書§0の論点。既定案: Watchのマイクを使う理由は仮、日中の充電なし、測定日はspikeの版を使う、継続収録は前面開始・10時間で自動停止・Macが収録していない時間のWatch segは`orphans.jsonl`、署名は無料で7日で切れる） ②S0（Watchの開発ツール復旧: `devicectl`は`00008301-E8932C8C210BC02E`、`xctrace`はoffline。`install.sh`の`4583DD30-…`は要確認。`generic/platform=watchOS`でbuildして`devicectl`で入れる） ③userの収録の合間にiPhoneとWatchへinstall ④G1（`.playAndRecord`で30分、手首を下げたまま）で合否 ⑤合格なら phase 1b（W-judge / W-level / W-lifecycle / P-serial / M-row）、不合格なら代案X（iPhoneで録音し、Watchは操作と表示のみ）
+- **deferredのminor**: `FinalizeQueueTests`は修正前に2回不安定だった（原因は修正済み）/ `PeerClient`の再接続時の送信順で、Macのcursorが古いsegを捨てる既存の欠落 / 記録の深さは受信時のみ計測（詰まると飛ぶ）、`lagMS`は推定値（detailに`est`）/ obsの`transferFinished`/`transferFailed`にsession・indexが無い / metadata復元に失敗した`.jsonl`がdiskに残る / 通知購読の解除なし / `mediaServicesReset`後も同じengineを使い回す
+
 ## 状態（2026-10-18）— 常時インジケーターは`main`へ merge 済み、実機確認も済み（最優先で読む）
 
 - **merge 済み**: PR #21で`main`へ merge（merge commit `cf030ef`）。`live-indicator`・`builtin-default-input`・`fix-ios-pending-count`はローカルもoriginも削除済み。残るbranchは`signal-layer`（別の作業の下書きPR #20。Watchの常時録音の構想の1段目で、心拍・HRVと地点の集計。このインジケーターとは無関係）
