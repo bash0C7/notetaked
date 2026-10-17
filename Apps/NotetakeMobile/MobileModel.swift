@@ -35,6 +35,9 @@ final class MobileModel {
     private let recorder = Recorder()
     private var peerClient: PeerClient?
     private var recordingStartedAtMS: Int64?
+    /// 開始と停止を1本の列にする。準備中の停止は開始が終わってから`recorder.stop()`へ届き、
+    /// 再開は停止の完了を待つ（`Recorder.start`が`await`の間に再入されるのを避ける）
+    private var lifecycleTask: Task<Void, Never>?
     /// 一度でも`connected`になったか。切断（黄）は、つながっていた後だけ出す
     private var hasEverConnected = false
     private var watchRelay: WatchRelay?
@@ -193,7 +196,9 @@ final class MobileModel {
         guard !isRecording else { return }
         lastError = nil
         isRecording = true
-        Task {
+        let previous = lifecycleTask
+        lifecycleTask = Task {
+            await previous?.value
             do {
                 try await Transcriber.ensureAssets(locale: Self.locale)
                 // 準備中に停止が押されたら、マイクを開かずに終える
@@ -238,7 +243,9 @@ final class MobileModel {
         recordingStartedAtMS = nil
         // 取り込み中でないことを、無音と区別できる欠測として残す
         levelHistory.appendGap(atMS: Self.currentMS())
-        Task {
+        let previous = lifecycleTask
+        lifecycleTask = Task {
+            await previous?.value
             do {
                 try await self.recorder.stop()
             } catch {

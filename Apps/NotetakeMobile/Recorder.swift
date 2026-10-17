@@ -50,6 +50,9 @@ actor Recorder {
     }
 
     private var session: AVCaptureSession?
+    /// `start`が最初のawaitより前に立てる。actorは`await`の間に再入できるため、`session == nil`だけでは
+    /// 準備中の2本目の`start`を弾けない（`defer`で成功・失敗のどの経路でも下ろす）
+    private var isStarting = false
     private var delegate: SampleDelegate?
     private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.capture")
     private var transcriber: Transcriber?
@@ -81,7 +84,9 @@ actor Recorder {
         onPiece: @escaping @Sendable (TranscriptPiece, Double, Direction?) -> Void,
         onLevel: @escaping @Sendable (Int64, Double) -> Void
     ) async throws {
-        guard session == nil else { throw RecorderError.alreadyRunning }
+        guard session == nil, !isStarting else { throw RecorderError.alreadyRunning }
+        isStarting = true
+        defer { isStarting = false }
         guard let microphone = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified) else {
             throw RecorderError.microphoneUnavailable
         }
