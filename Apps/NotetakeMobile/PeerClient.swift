@@ -19,6 +19,8 @@ actor PeerClient {
     private let pairingCode: String
     private let outbox: Outbox
     private let onState: @Sendable (PeerClientState) -> Void
+    /// ackの後に未送信の件数を数え直すため
+    private let onAck: @Sendable () -> Void
     private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.peer")
 
     private var browser: NWBrowser?
@@ -54,12 +56,14 @@ actor PeerClient {
         hello: HelloMessage,
         pairingCode: String,
         outbox: Outbox,
-        onState: @escaping @Sendable (PeerClientState) -> Void
+        onState: @escaping @Sendable (PeerClientState) -> Void,
+        onAck: @escaping @Sendable () -> Void
     ) {
         self.hello = hello
         self.pairingCode = pairingCode
         self.outbox = outbox
         self.onState = onState
+        self.onAck = onAck
     }
 
     /// browsingを開始する。既に動いていれば何もしない
@@ -320,6 +324,7 @@ actor PeerClient {
             send(.pong(id: id, t0: t0, t1: t1, t2: Self.nowMS()))
         case .ack(let seq):
             try? await outbox.acknowledge(upTo: seq)
+            onAck()
         default:
             break
         }
