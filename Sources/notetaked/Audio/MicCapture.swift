@@ -49,7 +49,7 @@ actor MicCapture: SourceCapture {
         captureDeviceID = nil
     }
 
-    /// 取り込む機器。固定した機器が接続中ならそれ、無ければ既定の入力。どちらも無ければnil
+    /// 取り込む機器。固定した機器が接続中ならそれ、無ければ既定の入力（Continuityならば内蔵）。使える機器が無ければnil
     private func target() -> (id: AudioDeviceID, fellBackFromPinned: Bool)? {
         if !pinnedUnusable,
             let uid = InputDeviceResolution.resolvedUID(
@@ -58,7 +58,12 @@ actor MicCapture: SourceCapture {
         {
             return (id, false)
         }
-        guard let id = InputDeviceProbe.defaultInputDeviceID() else { return nil }
+        let osDefaultUID = InputDeviceProbe.defaultInputDeviceID().flatMap(InputDeviceProbe.deviceUID(of:))
+        guard
+            let uid = InputDeviceResolution.fallbackUID(
+                osDefaultUID: osDefaultUID, candidates: InputDeviceProbe.candidates()),
+            let id = InputDeviceProbe.audioDeviceID(forUID: uid)
+        else { return nil }
         return (id, pinnedUID != nil)
     }
 
@@ -71,7 +76,7 @@ actor MicCapture: SourceCapture {
         capture = nil
         captureDeviceID = nil
         guard let target = target() else {
-            fail("入力機器がありません")
+            fail("使える入力機器がありません（iPhoneのマイクは自動では使いません）")
             return
         }
         guard let next = AUHALInputCapture(deviceID: target.id) else {
