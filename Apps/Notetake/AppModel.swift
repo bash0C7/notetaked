@@ -31,8 +31,19 @@ final class AppModel {
     /// 固定したい入力デバイスのUID。nil=内蔵マイク。daemonの起動引数（`--input-device`）には
     /// 常に乗る（nilなら内蔵マイクのUID）。固定先の切断（`.inputReset`）でもnilへ戻る
     var preferredInputDeviceUID: String? {
-        didSet { persistPreferredInputDeviceUID() }
+        didSet {
+            persistPreferredInputDeviceUID()
+            updateMicMonitor()
+        }
     }
+
+    /// ライブwindowが表示されているか。`LivePanelView`の出現・消滅から更新する
+    var livePanelVisible = false {
+        didSet { updateMicMonitor() }
+    }
+
+    /// 停止中のマイク音量。ライブwindowが開いている間だけ動く
+    let micLevelMonitor = MicLevelMonitor()
 
     var rotationIntervalHours: Double {
         didSet {
@@ -101,6 +112,10 @@ final class AppModel {
     private var isShuttingDown = false
     /// 進行中の`performRestart()`のTask。`shutdownDaemon()`が旧daemonの終了完了を待つために保持する。
     private var restartTask: Task<Void, Never>?
+    /// `.start`を送ってから、daemonが`recording == true`と伝えるまでの間。この間にstatusが届いても
+    /// モニターを開き直さない（capture-daemonとマイクを取り合わないため）
+    private var isStartPending = false
+    private var startPendingTimeoutTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -314,6 +329,8 @@ final class AppModel {
         // 予期せぬ終了でdaemonが持っていた録音状態は失われるため、UI側もリセットする。
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
+        clearStartPending()
+        updateMicMonitor()
         prefix = nil
         captureStatuses = []
         connectedPeers = [:]
@@ -362,11 +379,44 @@ final class AppModel {
 
     func startRecording() {
         lastError = nil
-        client?.send(.start)
+        // capture-daemonがマイクを開く前に、モニターのAUHALを閉じ終えておく
+        isStartPending = true
+        micLevelMonitor.stop()
+        guard let client else {
+            clearStartPending()
+            return
+        }
+        client.send(.start)
+        // 収録中と伝わらないまま残らないための安全網
+        startPendingTimeoutTask?.cancel()
+        startPendingTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.clearStartPending()
+        }
     }
 
     func stopRecording() {
         client?.send(.stop)
+    }
+
+    private func clearStartPending() {
+        startPendingTimeoutTask?.cancel()
+        startPendingTimeoutTask = nil
+        guard isStartPending else { return }
+        isStartPending = false
+        updateMicMonitor()
+    }
+
+    /// `livePanelVisible`・`isRecording`・`isStartPending`から、モニターを動かすか止めるかを決める
+    private func updateMicMonitor() {
+        if MicMonitorPolicy.shouldMonitor(
+            windowVisible: livePanelVisible, isRecording: isRecording, isStartPending: isStartPending)
+        {
+            micLevelMonitor.start(preferredUID: preferredInputDeviceUID)
+        } else {
+            micLevelMonitor.stop()
+        }
     }
 
     /// メニューとライブパネルの操作ボタンの有効無効
@@ -517,6 +567,10 @@ final class AppModel {
                 lastFinishedPrefix = previousPrefix
             }
             isRecording = status.recording
+            if status.recording {
+                clearStartPending()
+            }
+            updateMicMonitor()
             prefix = status.prefix
             sources = status.sources
             inputName = status.inputName
