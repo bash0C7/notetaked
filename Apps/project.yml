@@ -86,6 +86,7 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: io.github.bash0c7.notetake.ios
         NSMicrophoneUsageDescription: 会議の音声を文字起こしするためにマイクを使います。
+        UIBackgroundModes: [audio]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.bash0c7.notetake.ios.watchkitapp

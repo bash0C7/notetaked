@@ -107,7 +107,8 @@ final class WatchRecorder: NSObject {
 
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.record, mode: .default)
+            // 手首を下げても録れ続けるか（G1）を確かめる版。通知音を消さないため`.record`でなく`.playAndRecord`
+            try audioSession.setCategory(.playAndRecord, mode: .default)
             try audioSession.setActive(true)
         } catch {
             startFailed("マイクの初期化に失敗しました: \(error.localizedDescription)", session: nil)
@@ -207,7 +208,7 @@ final class WatchRecorder: NSObject {
         elapsedSeconds = 0
         nowMS = sessionStartMS
         dispatch(.started(atMS: sessionStartMS))
-        obsLog.record(.init(atMS: sessionStartMS, event: .started, session: sessionID))
+        obsLog.record(.init(atMS: sessionStartMS, event: .started, session: sessionID, detail: "category=playAndRecord"))
         startElapsedTimer()
     }
 
