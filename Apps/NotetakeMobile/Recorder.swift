@@ -50,6 +50,9 @@ actor Recorder {
     }
 
     private var session: AVCaptureSession?
+    /// `start`が最初のawaitより前に立てる。actorは`await`の間に再入できるため、`session == nil`だけでは
+    /// 準備中の2本目の`start`を弾けない（`defer`で成功・失敗のどの経路でも下ろす）
+    private var isStarting = false
     private var delegate: SampleDelegate?
     private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.capture")
     private var transcriber: Transcriber?
@@ -62,6 +65,11 @@ actor Recorder {
     private var sampleTime: AVAudioFramePosition = 0
     private var lastLevelDBFS: Double = -120
     private var ingestCount = 0
+    /// 音量の通知先。収録中だけ持つ
+    private var onLevel: (@Sendable (Int64, Double) -> Void)?
+    /// 音量を最後に通知した時刻。通知を100ms以上あけるために持つ
+    private var lastLevelNotifyAt: Date?
+    private static let levelNotifyInterval: TimeInterval = 0.1
     private var axisE: Float = 0, axis1: Float = 0, axis2: Float = 0, axis3: Float = 0
     private func i1Str(_ v: Float) -> String { String(format: "%.3f", v) }
 
@@ -73,9 +81,12 @@ actor Recorder {
 
     func start(
         locale: Locale,
-        onPiece: @escaping @Sendable (TranscriptPiece, Double, Direction?) -> Void
+        onPiece: @escaping @Sendable (TranscriptPiece, Double, Direction?) -> Void,
+        onLevel: @escaping @Sendable (Int64, Double) -> Void
     ) async throws {
-        guard session == nil else { throw RecorderError.alreadyRunning }
+        guard session == nil, !isStarting else { throw RecorderError.alreadyRunning }
+        isStarting = true
+        defer { isStarting = false }
         guard let microphone = AVCaptureDevice.default(.microphone, for: .audio, position: .unspecified) else {
             throw RecorderError.microphoneUnavailable
         }
@@ -93,6 +104,8 @@ actor Recorder {
         self.estimator = DirectionEstimator()
         self.sampleTime = 0
         self.lastLevelDBFS = -120
+        self.onLevel = onLevel
+        self.lastLevelNotifyAt = nil
 
         let pieces = try await transcriber.start()
 
@@ -157,6 +170,8 @@ actor Recorder {
         self.transcriber = nil
         self.clock = nil
         self.converter = nil
+        self.onLevel = nil
+        self.lastLevelNotifyAt = nil
 
         do {
             try await transcriber?.finish()
@@ -219,6 +234,12 @@ actor Recorder {
                 endMS: clock.ms(atFrame: sampleTime + convertedFrames))
         }
         lastLevelDBFS = AudioLevel.dbfs(converted)
+        let now: Date = Date()
+        let elapsedEnough: Bool = lastLevelNotifyAt.map { now.timeIntervalSince($0) >= Self.levelNotifyInterval } ?? true
+        if elapsedEnough, let onLevel {
+            lastLevelNotifyAt = now
+            onLevel(Int64((now.timeIntervalSince1970 * 1000).rounded()), lastLevelDBFS)
+        }
         if ingestCount % 200 == 0 { Diag.log("recorder: fed frames=\(convertedFrames) dbfs=\(lastLevelDBFS) sampleTime=\(sampleTime)") }
         ingestCount += 1
         await transcriber.feed(converted, at: sampleTime)

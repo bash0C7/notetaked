@@ -52,6 +52,8 @@ struct NotetakeApp: App {
         }
         Window("ライブ", id: "live") {
             LivePanelView(appModel: appDelegate.appModel)
+                .onAppear { appDelegate.appModel.livePanelVisible = true }
+                .onDisappear { appDelegate.appModel.livePanelVisible = false }
         }
         .defaultSize(width: 640, height: 480)
         Window("収録の話者", id: "speakers") {

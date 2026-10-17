@@ -2,16 +2,6 @@ import AVFoundation
 import Foundation
 import NotetakeCore
 
-/// 取り込み（MicCaptureとSystemAudioCapture）が、音声と状態の変化を渡す先
-protocol CaptureSink: AnyObject, Sendable {
-    /// 音声のcallbackから呼ぶ。bufferの写しを取るだけで、変換と書き込みは記録用のqueueで行う
-    func ingest(_ buffer: AVAudioPCMBuffer)
-    func noteState(_ state: CaptureSourceState, reason: String?)
-    func noteInput(_ device: InputDevice, fellBackFromPinned: Bool)
-    /// 取り込みの途中で音声を失った失敗を、実状態の`lastError`へ残す
-    func noteError(_ message: String)
-}
-
 /// 1つのsourceの生音声を書く。callbackから受け取ったbufferを直列のqueueへ渡し、
 /// 16kHz monoへの変換、anchorの判定、`.pcm`と`.meta.jsonl`への書き込みをそのqueueで行う
 final class SourceRecorder: CaptureSink, @unchecked Sendable {

@@ -28,11 +28,25 @@ final class AppModel {
         didSet { UserDefaults.standard.set(ownerName, forKey: DefaultsKey.ownerName) }
     }
 
-    /// 固定したい入力デバイスのUID。nil=既定（OSに合わせる）。設定すると次のdaemon起動引数
-    /// （`--input-device`）に乗る。daemonがpin先の切断でフォールバックした時（`.inputReset`）はnilに戻る
+    /// 固定したい入力デバイスのUID。nil=内蔵マイク。daemonの起動引数（`--input-device`）には
+    /// 常に乗る（nilなら内蔵マイクのUID）。固定先の切断（`.inputReset`）でもnilへ戻る
     var preferredInputDeviceUID: String? {
-        didSet { persistPreferredInputDeviceUID() }
+        didSet {
+            persistPreferredInputDeviceUID()
+            updateMicMonitor()
+        }
     }
+
+    /// ライブwindowが表示されているか。`LivePanelView`の出現・消滅から更新する
+    var livePanelVisible = false {
+        didSet {
+            updateMicMonitor()
+            updateEnvironmentRefresh()
+        }
+    }
+
+    /// 停止中のマイク音量。ライブwindowが開いている間だけ動く
+    let micLevelMonitor = MicLevelMonitor()
 
     var rotationIntervalHours: Double {
         didSet {
@@ -76,6 +90,21 @@ final class AppModel {
     var isPolishing = false
     /// 接続中のiPhone等のpeer（device id → 表示名）。`.peer(connected: false)`で削除する。
     var connectedPeers: [String: String] = [:]
+    /// device idごとの、iPhoneから直近に受信したsegの情報。収録をまたいでも、切断されても消さない
+    var lastPeerSeg: [String: PeerSegInfo] = [:]
+
+    /// 一度でもiPhone等のpeerが接続したか。切断の警告（`peerIndicator`）の前提。戻さない
+    private(set) var wasPeerConnected = false
+    /// 蓋が閉じているか。ライブwindowが開いている間、1秒ごとに更新する
+    private(set) var clamshellClosed = false
+    /// `capture-actual.json`の`updated`（epoch ms）。ライブwindowが開いている間、1秒ごとに更新する
+    private(set) var captureActualUpdatedMS: Int64?
+
+    struct PeerSegInfo: Equatable {
+        var deviceName: String
+        var receivedAt: Int64
+        var outcome: PeerSegOutcome
+    }
 
     private var client: DaemonClient?
     /// `client`が起動した時刻。heartbeat監視の起動直後猶予期間の起点（起動〜資産読込〜resumeの
@@ -101,6 +130,14 @@ final class AppModel {
     private var isShuttingDown = false
     /// 進行中の`performRestart()`のTask。`shutdownDaemon()`が旧daemonの終了完了を待つために保持する。
     private var restartTask: Task<Void, Never>?
+    /// `.start`を送ってから、daemonが`recording == true`と伝えるまでの間。この間にstatusが届いても
+    /// モニターを開き直さない（capture-daemonとマイクを取り合わないため）
+    private var isStartPending = false
+    private var startPendingTimeoutTask: Task<Void, Never>?
+    /// 収録中の音量を生音声ファイルの末尾から読む。収録中だけ持つ
+    private var levelReader: RecordingLevelReader?
+    /// 蓋とdaemonの更新時刻を1秒ごとに読み直すTask。ライブwindowが開いている間だけ動く
+    private var environmentRefreshTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -110,10 +147,17 @@ final class AppModel {
             outputDirectory = nil
         }
         ownerName = defaults.string(forKey: DefaultsKey.ownerName) ?? "私"
-        if let uid = defaults.string(forKey: DefaultsKey.preferredInputDeviceUID), !uid.isEmpty {
-            preferredInputDeviceUID = uid
-        } else {
-            preferredInputDeviceUID = nil
+        let storedUID = defaults.string(forKey: DefaultsKey.preferredInputDeviceUID).flatMap { $0.isEmpty ? nil : $0 }
+        // iPhone連携のマイク（Continuity）を保存していた場合はnil（内蔵マイク）へ戻す。
+        // didSetはinit中は発火しないため、変わった時は保存も自分で更新する
+        let sanitizedUID = InputDeviceResolution.sanitizedPreferredUID(storedUID, candidates: InputDeviceProbe.candidates())
+        preferredInputDeviceUID = sanitizedUID
+        if sanitizedUID != storedUID {
+            if let sanitizedUID {
+                defaults.set(sanitizedUID, forKey: DefaultsKey.preferredInputDeviceUID)
+            } else {
+                defaults.removeObject(forKey: DefaultsKey.preferredInputDeviceUID)
+            }
         }
         // didSetはinit中は発火しないため、ここでは正規化のみ行い、scheduleRotation()は呼ばない
         // （収録中でない起動直後は呼んでも何もしない）。
@@ -202,17 +246,14 @@ final class AppModel {
     // MARK: - Daemon lifecycle
 
     private func desiredArguments(outputDirectory: URL) -> [String] {
-        var arguments = [
+        [
             "serve",
             "--output", outputDirectory.path,
             "--owner", ownerName,
             "--source", "both",
             "--control", "stdio",
+            "--input-device", preferredInputDeviceUID ?? InputDeviceResolution.builtInUID,
         ]
-        if let preferredInputDeviceUID {
-            arguments += ["--input-device", preferredInputDeviceUID]
-        }
-        return arguments
     }
 
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
@@ -310,6 +351,10 @@ final class AppModel {
         // 予期せぬ終了でdaemonが持っていた録音状態は失われるため、UI側もリセットする。
         // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
         isRecording = false
+        clearStartPending()
+        updateMicMonitor()
+        levelReader?.stop()
+        levelReader = nil
         prefix = nil
         captureStatuses = []
         connectedPeers = [:]
@@ -354,15 +399,144 @@ final class AppModel {
         daemonRunning = false
     }
 
+    // MARK: - Indicator
+
+    /// 現在の収録が開始した時刻（epoch ms）。収録中でなければnil
+    var recordingStartedAtMS: Int64? {
+        recordingStartedAt.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) }
+    }
+
+    /// 収録中は生音声から、停止中はモニターから取ったマイクの音量
+    var micHistory: LevelHistory {
+        isRecording ? (levelReader?.histories[.mic] ?? LevelHistory()) : micLevelMonitor.history
+    }
+
+    /// system音声の音量。収録中だけ。停止中は空
+    var systemHistory: LevelHistory {
+        isRecording ? (levelReader?.histories[.system] ?? LevelHistory()) : LevelHistory()
+    }
+
+    /// 1つのsourceの赤・黄・正常の判定。`.system`は停止中は判定しない
+    func indicator(for source: Source, nowMS: Int64) -> IndicatorMessage {
+        if source == .system, !isRecording {
+            return IndicatorMessage(severity: .normal, text: "")
+        }
+        let status = captureStatuses.first { $0.source == source }
+        if source == .mic {
+            let micUnavailable = isRecording
+                ? status?.state == .retrying
+                : micLevelMonitor.unavailableReason != nil
+            if let lid = IndicatorJudge.lidClosedMessage(
+                clamshellClosed: clamshellClosed, micUnavailable: micUnavailable)
+            {
+                return lid
+            }
+        }
+        let lidClosedBuiltInMic = source == .mic && clamshellClosed
+            && (preferredInputDeviceUID ?? InputDeviceResolution.builtInUID) == InputDeviceResolution.builtInUID
+        return IndicatorJudge.judge(SourceIndicatorInput(
+            history: source == .mic ? micHistory : systemHistory,
+            captureState: status?.state,
+            captureReason: status?.reason,
+            recording: isRecording,
+            recordingStartedAtMS: recordingStartedAtMS,
+            lastTextAtMS: lastTextAtMS(for: source),
+            nowMS: nowMS,
+            lidClosedBuiltInMic: lidClosedBuiltInMic,
+            zeroSilenceIsAnomaly: source == .mic))
+    }
+
+    /// このMacが取り込んだ発話のうち、指定sourceの最新の終了時刻。iPhone由来の発話は数えない
+    func lastTextAtMS(for source: Source) -> Int64? {
+        utterances.filter { $0.source == source && $0.platform == .mac }.map(\.end).max()
+    }
+
+    /// daemonの更新が止まっていれば赤。daemonが動いていない間は判定しない
+    func daemonIndicator(nowMS: Int64) -> IndicatorMessage? {
+        guard daemonRunning else { return nil }
+        return IndicatorJudge.judgeDaemon(lastUpdatedMS: captureActualUpdatedMS, nowMS: nowMS)
+    }
+
+    /// iPhoneとの接続が一度つながってから切れたら黄
+    var peerIndicator: IndicatorMessage? {
+        IndicatorJudge.judgePeer(wasConnected: wasPeerConnected, connected: !connectedPeers.isEmpty)
+    }
+
+    /// ライブwindowが開いている間だけ、蓋とdaemonの更新時刻を1秒ごとに読み直す
+    private func updateEnvironmentRefresh() {
+        if livePanelVisible {
+            guard environmentRefreshTask == nil else { return }
+            environmentRefreshTask = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    self.clamshellClosed = ClamshellState.isClosed()
+                    self.captureActualUpdatedMS =
+                        (try? JSONFile.read(CaptureActualState.self, from: CaptureStatePaths.captureActualURL))?.updated
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+        } else {
+            environmentRefreshTask?.cancel()
+            environmentRefreshTask = nil
+        }
+    }
+
+    /// 収録の開始・区切りで音量の読み取りを張り直し、停止で片付ける
+    private func updateLevelReader(status: StatusEvent, isNewRecording: Bool) {
+        if !status.recording {
+            levelReader?.stop()
+            levelReader = nil
+        } else if isNewRecording, let prefix = status.prefix {
+            levelReader?.stop()
+            let reader = RecordingLevelReader(
+                prefix: prefix, sources: status.sources.filter { $0 == .mic || $0 == .system })
+            reader.start()
+            levelReader = reader
+        }
+    }
+
     // MARK: - Commands
 
     func startRecording() {
         lastError = nil
-        client?.send(.start)
+        // capture-daemonがマイクを開く前に、モニターのAUHALを閉じ終えておく
+        isStartPending = true
+        micLevelMonitor.stop()
+        guard let client else {
+            clearStartPending()
+            return
+        }
+        client.send(.start)
+        // 収録中と伝わらないまま残らないための安全網
+        startPendingTimeoutTask?.cancel()
+        startPendingTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.clearStartPending()
+        }
     }
 
     func stopRecording() {
         client?.send(.stop)
+    }
+
+    private func clearStartPending() {
+        startPendingTimeoutTask?.cancel()
+        startPendingTimeoutTask = nil
+        guard isStartPending else { return }
+        isStartPending = false
+        updateMicMonitor()
+    }
+
+    /// `livePanelVisible`・`isRecording`・`isStartPending`から、モニターを動かすか止めるかを決める
+    private func updateMicMonitor() {
+        if MicMonitorPolicy.shouldMonitor(
+            windowVisible: livePanelVisible, isRecording: isRecording, isStartPending: isStartPending)
+        {
+            micLevelMonitor.start(preferredUID: preferredInputDeviceUID)
+        } else {
+            micLevelMonitor.stop()
+        }
     }
 
     /// メニューとライブパネルの操作ボタンの有効無効
@@ -513,6 +687,11 @@ final class AppModel {
                 lastFinishedPrefix = previousPrefix
             }
             isRecording = status.recording
+            if status.recording {
+                clearStartPending()
+            }
+            updateMicMonitor()
+            updateLevelReader(status: status, isNewRecording: isNewRecording)
             prefix = status.prefix
             sources = status.sources
             inputName = status.inputName
@@ -546,10 +725,13 @@ final class AppModel {
             FileHandle.standardError.write(Data("notetaked log: \(message)\n".utf8))
         case .peer(let device, let deviceName, let connected):
             if connected {
+                wasPeerConnected = true
                 connectedPeers[device] = deviceName
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
+        case .peerSeg(let device, let deviceName, let receivedAt, let outcome):
+            lastPeerSeg[device] = PeerSegInfo(deviceName: deviceName, receivedAt: receivedAt, outcome: outcome)
         case .inputReset:
             preferredInputDeviceUID = nil
         case .finalizeState(let state):

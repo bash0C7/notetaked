@@ -1,0 +1,71 @@
+import Foundation
+
+/// 音量の1点。dbfsがnilなら欠測（測れなかった区間）
+public struct LevelSample: Sendable, Equatable {
+    public var atMS: Int64
+    public var dbfs: Double?
+
+    public init(atMS: Int64, dbfs: Double?) {
+        self.atMS = atMS
+        self.dbfs = dbfs
+    }
+}
+
+/// 直近windowMS分の音量の履歴。古い順に持ち、窓より古い分は足すたびに捨てる
+public struct LevelHistory: Sendable, Equatable {
+    public let windowMS: Int64
+    public private(set) var samples: [LevelSample] = []
+
+    public init(windowMS: Int64 = 90_000) {
+        self.windowMS = windowMS
+    }
+
+    /// これより古い最新sampleは、今は測れていない（欠測）として扱う
+    public static let defaultStaleAfterMS: Int64 = 1_000
+
+    public var latest: LevelSample? { samples.last }
+
+    /// 最新のsample。nowMSからstaleAfterMSより古ければnil
+    public func latest(nowMS: Int64, staleAfterMS: Int64 = LevelHistory.defaultStaleAfterMS) -> LevelSample? {
+        guard let sample = samples.last, nowMS - sample.atMS <= staleAfterMS else { return nil }
+        return sample
+    }
+
+    /// 最後に実際に測れた（欠測でない）sampleの時刻
+    public var lastMeasuredAtMS: Int64? {
+        samples.last { $0.dbfs != nil }?.atMS
+    }
+
+    public mutating func append(atMS: Int64, dbfs: Double) {
+        push(LevelSample(atMS: atMS, dbfs: dbfs))
+    }
+
+    /// 測れなかった時点を足す。無音の連続はここで途切れる（欠測は無音ではない）
+    public mutating func appendGap(atMS: Int64) {
+        push(LevelSample(atMS: atMS, dbfs: nil))
+    }
+
+    /// 末尾から連続する完全な無音の期間（ms）。連続の先頭のsampleの時刻からnowMSまで
+    public func trailingSilenceMS(nowMS: Int64) -> Int64 {
+        var runStartMS: Int64?
+        for sample in samples.reversed() {
+            guard let dbfs = sample.dbfs, LevelScale.isSilent(dbfs: dbfs) else { break }
+            runStartMS = sample.atMS
+        }
+        guard let runStartMS else { return 0 }
+        return max(nowMS - runStartMS, 0)
+    }
+
+    public func hasSound(above thresholdDBFS: Double, sinceMS: Int64) -> Bool {
+        samples.contains { sample in
+            guard sample.atMS >= sinceMS, let dbfs = sample.dbfs else { return false }
+            return dbfs > thresholdDBFS
+        }
+    }
+
+    private mutating func push(_ sample: LevelSample) {
+        samples.append(sample)
+        let dropCount = samples.prefix { sample.atMS - $0.atMS > windowMS }.count
+        if dropCount > 0 { samples.removeFirst(dropCount) }
+    }
+}

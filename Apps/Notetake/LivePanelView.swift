@@ -5,9 +5,6 @@ import NotetakeCore
 /// ライブパネル（"live"ウィンドウ）。収録中のutteranceをリアルタイムに表示し、
 /// コピー・話者改名・常に前面表示を提供する。
 struct LivePanelView: View {
-    /// Picker上で「既定（OSに合わせる）」を表す選択肢のtag（`appModel.preferredInputDeviceUID == nil`に対応）
-    private static let defaultDeviceTag = ""
-
     let appModel: AppModel
     @State private var floating = false
     @State private var availableInputDevices: [InputDevice] = []
@@ -37,37 +34,40 @@ struct LivePanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button("セッション開始") { appModel.startRecording() }
-                        .disabled(!appModel.recordingControls.canStart)
-                    Button("セッション終了") { appModel.stopRecording() }
-                        .disabled(!appModel.recordingControls.canStop)
-                    Button("区切る") { appModel.rotateRecording() }
-                        .disabled(!appModel.recordingControls.canRotate)
-                    Button("整形") { appModel.polishLastRecording() }
-                        .disabled(!appModel.recordingControls.canPolish)
-                    if let polishNote = appModel.recordingControls.polishNote {
-                        Text(polishNote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Toggle("常に前面", isOn: $floating)
-                        .onChange(of: floating) {
-                            applyFloating(floating)
-                        }
-                    Button("全文コピー") { appModel.copyAllToPasteboard() }
-                    Picker("入力デバイス", selection: inputDeviceSelection) {
-                        Text("既定（OSに合わせる）").tag(Self.defaultDeviceTag)
-                        ForEach(availableInputDevices, id: \.uid) { device in
-                            Text(device.name).tag(device.uid)
-                        }
-                    }
-                    .fixedSize()
-                    .onAppear { availableInputDevices = InputDeviceProbe.all() }
+            WrappingLayout(spacing: 8, lineSpacing: 6) {
+                Button("セッション開始") { appModel.startRecording() }
+                    .disabled(!appModel.recordingControls.canStart)
+                Button("セッション終了") { appModel.stopRecording() }
+                    .disabled(!appModel.recordingControls.canStop)
+                Button("区切る") { appModel.rotateRecording() }
+                    .disabled(!appModel.recordingControls.canRotate)
+                Button("整形") { appModel.polishLastRecording() }
+                    .disabled(!appModel.recordingControls.canPolish)
+                if let polishNote = appModel.recordingControls.polishNote {
+                    Text(polishNote)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 6)
+                Toggle("常に前面", isOn: $floating)
+                    .onChange(of: floating) {
+                        applyFloating(floating)
+                    }
+                Button("全文コピー") { appModel.copyAllToPasteboard() }
+                Picker("入力デバイス", selection: inputDeviceSelection) {
+                    ForEach(availableInputDevices, id: \.uid) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                }
+                .fixedSize()
+                .onAppear {
+                    // 内蔵マイクを先頭へ、他は元の順のまま並べる
+                    let inputs = InputDeviceProbe.selectableInputs()
+                    availableInputDevices = inputs.filter { $0.uid == InputDeviceResolution.builtInUID }
+                        + inputs.filter { $0.uid != InputDeviceResolution.builtInUID }
+                }
             }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -92,14 +92,10 @@ struct LivePanelView: View {
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
             }
+            Divider()
+            StatusArea(appModel: appModel, statusText: statusText)
         }
-        .frame(minWidth: 480, minHeight: 320)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Text(statusText)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        .frame(minWidth: 480, minHeight: 460)
     }
 
     private var statusText: String {
@@ -120,13 +116,13 @@ struct LivePanelView: View {
         return text
     }
 
-    /// `appModel.preferredInputDeviceUID`（`nil`=既定）と、Pickerのtag（`nil`を表せないため
-    /// `Self.defaultDeviceTag`で代用）を橋渡しするbinding。選択したら即座に確定してdaemonへ反映する
+    /// `appModel.preferredInputDeviceUID`（`nil`=内蔵マイク）と、Pickerのtag（内蔵マイクのUID）を
+    /// 橋渡しするbinding。選択したら即座に確定してdaemonへ反映する
     private var inputDeviceSelection: Binding<String> {
         Binding(
-            get: { appModel.preferredInputDeviceUID ?? Self.defaultDeviceTag },
+            get: { appModel.preferredInputDeviceUID ?? InputDeviceResolution.builtInUID },
             set: { newValue in
-                appModel.preferredInputDeviceUID = newValue == Self.defaultDeviceTag ? nil : newValue
+                appModel.preferredInputDeviceUID = newValue == InputDeviceResolution.builtInUID ? nil : newValue
                 appModel.ensureDaemon()
             }
         )
@@ -136,6 +132,60 @@ struct LivePanelView: View {
         let window = NSApp.windows.first { $0.identifier?.rawValue == "live" }
             ?? NSApp.windows.first { $0.title == "ライブ" }
         window?.level = isFloating ? .floating : .normal
+    }
+}
+
+/// 子viewを左から並べ、幅に収まらなければ次の行へ折り返すレイアウト。
+/// 操作の行を横スクロールや`>>`に隠さず、最小幅でも全部のコントロールを見せるために使う。
+private struct WrappingLayout: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth: CGFloat = proposal.width ?? .infinity
+        let frames: [CGRect] = arrange(maxWidth: maxWidth, subviews: subviews)
+        let width: CGFloat = frames.map(\.maxX).max() ?? 0
+        let height: CGFloat = frames.map(\.maxY).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames: [CGRect] = arrange(maxWidth: bounds.width, subviews: subviews)
+        for (index, subview) in subviews.enumerated() {
+            let origin = CGPoint(x: bounds.minX + frames[index].minX, y: bounds.minY + frames[index].minY)
+            subview.place(at: origin, anchor: .topLeading, proposal: ProposedViewSize(frames[index].size))
+        }
+    }
+
+    /// 各子viewの位置と大きさを、行の先頭を(0, 0)として求める。行内は縦中央ぞろえ
+    private func arrange(maxWidth: CGFloat, subviews: Subviews) -> [CGRect] {
+        var frames: [CGRect] = []
+        var lineStart: Int = 0
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            let size: CGSize = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                centerLine(&frames, from: lineStart, height: lineHeight)
+                y += lineHeight + lineSpacing
+                x = 0
+                lineHeight = 0
+                lineStart = index
+            }
+            frames.append(CGRect(x: x, y: y, width: size.width, height: size.height))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        centerLine(&frames, from: lineStart, height: lineHeight)
+        return frames
+    }
+
+    private func centerLine(_ frames: inout [CGRect], from start: Int, height: CGFloat) {
+        for index in start..<frames.count {
+            let offset: CGFloat = (height - frames[index].height) / 2
+            frames[index].origin.y += offset
+        }
     }
 }
 

@@ -1,5 +1,26 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-10-17 夜）— 常時インジケーターの実装は完了、実機確認が未実施（最優先で読む）
+
+- **branch** `live-indicator`（origin に push 済み、`main` へは未 merge）。`builtin-default-input`（入力機器の方針）と`fix-ios-pending-count`（iPhoneの未送信件数）を merge して含む。この2本も origin に push 済み。PR・merge の話は user が切り出すまでしない
+- **目的**: 「ちゃんと音を拾っているか」を、異常の時だけでなく**常に**ライブパネル（Mac）とiPhoneアプリで見えるようにする（2026-10-17にmic・systemが約10分、完全な無音のまま気づけなかった事故が発端）。メニューバーは user が隠しているので使わない
+- **設計と計画（`docs/superpowers/`は`~/.config/git/ignore`でgit管理外。消えないよう注意）**: spec `docs/superpowers/specs/2026-10-17-live-indicator-design.md`、plan `docs/superpowers/plans/2026-10-17-live-indicator-1-core.md` / `-2-mac.md` / `-3-ios.md`。SDDのledgerは`.superpowers/sdd/<plan名>/progress.md`（git管理外。deferredのminorと rulingがここにある）
+- **進み具合**（実装は`superpowers:subagent-driven-development`、Sonnetが実装、Haikuが`make verify`、Sonnetがtask review、全体reviewはcontroller。各taskは`make verify`通過とreview承認の後にcontrollerがcommit）
+  - plan 1（`NotetakeCore`の共有部分）: **完了**。`LevelHistory`・`LevelScale`・`IndicatorJudge`（赤・黄・正常の判定）・`Event.peerSeg`
+  - plan 2（Mac）: Task 1〜7 **完了**（マイク取り込みのfile分割 / 共有の`LevelGraph` / 収録中の音量リーダー（生音声ファイルの末尾を読む） / 停止中のmicモニター（パネルが開いている間だけ） / `peerSeg`の送受信 / 蓋の状態と判定の入力 / 画面下部の`StatusArea`と、`>>`に畳まれない操作の行）。**Task 8（実機確認）は未実施**
+  - plan 3（iPhone）: Task 1〜3 **完了**（`Recorder`の音量通知 / `MobileModel`の履歴と判定 / iPhoneの`StatusArea`）。Task 4（実機確認）は未実施
+  - 全体reviewは**完了**（Opus）。出荷前に直すべき指摘（蓋閉じ+内蔵micの赤、開始直後の黄、欠測の古さと3秒の継続、iPhoneの準備中の停止、接続断の文言、iPhone由来の発話をMacのmic判定から除く）を直し、`make verify`（380件）とreviewを通した（commit 32fc63e）
+- **user の指示（2026-10-17）**: userが収録を続けている間は、**収録の持続を最優先**にする。`make install-app`、iPhoneへの install・launch（`device` skillの`install.sh` / `launch.sh`）、入力音量の変更、アプリ・daemonの停止は行っていない。ゼロ音声の再現は別のタイミングにする。したがって**`/Applications`のNotetake.appは`builtin-default-input`の版（インジケーター無し）のまま**、iPhoneは`fix-ios-pending-count`の版のまま
+- **実機で確認済み（2026-10-18、`make install-app`とiPhone installの後）**: Macの停止中のmicモニター（パネルが開いている間、グラフと値が動く）/ 収録中のmicとsystemの音量グラフ（`say`でsystemが動く）/ ゼロ音声（macOSの入力音量を0にするとちょうど`-120.0 dBFS`になり、赤の「音声がゼロです」が出て、音量を戻すと回復する）/ パネルの赤い閉じるボタンでマイクの点が消える（Cmd+Wではウィンドウが閉じない）/ 操作の行が`>>`に畳まれない / Macのiphone行（「最終受信N秒前」「今の収録に入りました」）/ iPhoneの音量グラフと未送信件数が出る。**直した点**: 何も再生していないsystem音声の-120が赤になる誤報（systemは`zeroSilenceIsAnomaly: false`）
+- **蓋を閉じた収録（2026-10-18 00:29〜00:30、約1分半、実機で確認済み）**: 内蔵micは取り込みが`recording`のまま、ちょうど`-120.0 dBFS`のゼロ音声になった（機器は一覧に残る。レビューが懸念した通り）。蓋を開けると自然に`-40 dBFS`台へ戻った。systemは元々何も再生していない`-120.0`。iPhoneの発話は蓋を閉じている間も届き続け、今の収録に入った。iPhoneの停止後は、グラフが「取り込み中ではありません」になり「未送信」が0件に戻った
+- **蓋を閉じたままのsystem音声（2026-10-18 00:35〜00:38、約2分40秒、実機で確認済み）**: `say`を15秒おきに流すと、蓋を閉じていてもsystemの音量が`-21 dBFS`台に上がり、「蓋を閉じたままのシステム音声の確認です。」が`system`として文字になった（`ScreenCaptureKit`は蓋を閉じても取れる）。内蔵micは同じく`-120.0`、蓋を開けて約10秒で復帰、iPhoneの発話は届き続けた。運用の結論: 蓋を閉じる収録はiPhoneで声を録り、Mac本体の収録も続ける（system音声と、iPhoneが切れた時の保険）
+- **iPhoneの開始・停止の二重start修正（`MobileModel`の`lifecycleTask`と`Recorder.isStarting`、2026-10-18）**: `make verify`通過。iPhoneで「開始→すぐ停止→すぐ開始」を繰り返した後の通常収録は、文字起こしとMacへの送信が動いた（Mac側の受信で確認）。マイクの点が消えることとエラー表示が出ないことは、userの目視（直感通り）で、私は観測していない。見送った他のminor 8件はOpusで要否を検証し、「起きにくいか表示だけの誤り」として直さないと判断した
+- **実機で確かめていないもの**: 蓋を閉じている最中のライブパネルの文言（閉じている間は画面を見られず観測不可能なので対象外。蓋の情報表示になり赤にならない判定は単体テストで固定済み）/ 最小化でのマイクの点 / 欠測の赤（daemonの取り込みが止まる状況）。systemの無音は赤い文言は出ないが、グラフには実測の無音の赤い線が出る
+- **deferredのminor（実機で見て直す候補）**: 停止中のモニターは「使える入力なし」の後、蓋を開けても開き直さない / `lastPeerSeg`の「今の収録に入りました」が区切り・停止の後も残る / iPhoneで準備中に停止してすぐ再開すると`recorder.start`が二重になりうる / 停止中のモニターは、起動に失敗すると同じ機器では再試行しない / 収録の開始が10秒を超えると`isStartPending`の安全網が切れてモニターとdaemonが競合しうる / `RecordingLevelReader`は縮んだ・作り直されたファイルに追従しない / `StatusArea`の判定文言が480ptで切れうる、`polishNote`に`lineLimit`無し / iPhoneの`Recorder`の間引きが`Date`（単調でない）。`AppModel`の蓋閉じ判定（内蔵mic）は近似で、単体では固定されていない
+- **私が決めたこと（確認してほしい）**: worktreeを作らず同じcheckoutでbranchを切った / subagentはcommitせずcontrollerが確認後にcommitした（AGENTS.mdの指定） / 設計の細部（しきい値: ゼロ音声3秒、開始の猶予5秒、文字が出ない30秒、音ありは`-50 dBFS`より上、daemon無応答15秒）は初期値で実機で調整する / iPhoneの停止中モニターは作らない（iPhoneは取り込み中だけ表示）/ 停止中のmicモニターは「パネルが開いている間だけ」マイクを開く（userはこの案に了承済み）
+- **この作業で分かった落とし穴**: reviewerが「コンパイルは通る」と判断しても、`make verify`で落ちたことが3回あった（`#Preview`の型検査の内部エラー、`@MainActor`クラスのstaticを非隔離から参照、`@Sendable`クロージャが生ポインタを捕まえる）。**コンパイルの真偽は`make verify`だけが決める**。zshでは`log`が組み込みと衝突するので`/usr/bin/log`を使う。前面の`sleep`は使えない
+- **次の手順**: ①userの指示があったら`make install-app`とiPhoneへのinstallを行い、上の「実機で確かめていないもの」を順に確かめる ②結果をこのHANDOFFへ書く（確かめたものだけ「確認済み」） ③userが切り出したらPR / merge
+
 ## 状態（2026-10-06）
 
 - **branch** `batch-finalize-redesign`。mainより24 commit先、未push。spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`
@@ -17,6 +38,11 @@
 - **マイクの取り込み（AUHALへ統一）**: 既定の入力でも`AVAudioEngine`を使わず、入力だけのAUHALで取り込む。`AVAudioEngine`は出力機器と組になるため、既定の入力が出力（AirPods）と違うと、startが`-10868`で失敗するか、startが成功しても音声が届かなかった（probeで確認）。既定の入力・機器の一覧・今の機器のサンプルレートが変わった時、開始に失敗した時、音声が5秒届かない時（`CaptureStall`）に作り直す
   - 実機で確かめた（音なし）: 収録中に既定の入力をAirPodsとMacBookの間で3往復して、毎回`recording`のまま追従し、43.8秒の収録に43.8秒分の音声が録れた。固定した機器は既定の入力が変わっても動かない。固定が無ければ`fell_back_from_pinned`で既定へ追従する
   - 未確認: 3時間の収録（`144154`）が14:56に止まった引き金は再現できていない。途絶の見張りは、判定の単体テストだけで、実機では動かしていない。固定した機器の物理的な切断（`blueutil`）は、この変更の後に確かめていない
+- **入力機器の方針（内蔵マイクを既定にし、iPhone連携のマイクを自動で選ばない）**（2026-10-17、branch `builtin-default-input`）: appは常に`--input-device`を渡す（保存値が無ければ`BuiltInMicrophoneDevice`）。接続種別（`kAudioDevicePropertyTransportType`）がContinuity Capture（`ccwd`、`ccwl`）の機器は、パネルの選択肢に出さず、固定が使えない時や固定なしの取り込み先からも除く。使える機器が無い時は`retrying`で理由を出す。前の版で保存したiPhone連携の固定値は、起動時に内蔵へ戻す。OSの既定への追随はやめた（AirPodsはパネルで選んだ時だけ使う）。plan: `docs/superpowers/plans/2026-10-17-builtin-default-input.md`（git管理外）
+  - `make verify`通過（警告なし、swift-testing 294件）
+  - 実機で確かめた: `make install-app`の後、serveに`--input-device BuiltInMicrophoneDevice`が付き、内蔵固定の経路で実音声（約-29〜-37 dBFS）が入る。収録中にOSの既定をiPhone 16eのマイクへ替えても、segの`input.name`は`MacBook Proのマイク`のまま、`mic.meta.jsonl`の`device`行は増えず、音声は続いた（確認後に内蔵へ戻した）。アプリと同じ手順の再現で、iPhone 13 Pro / 16eのマイクとも`ccwd`と引け、選択肢から除かれる
+  - 未検証: `ccwl`（無線）の値、蓋を閉じて内蔵が使えない時の挙動、AirPodsを選んだ後の切断（`inputReset`で内蔵へ戻る流れ）、パネルのドロップダウンを開いての目視（閉じた状態で`MacBook Proのマイク`の表示だけ確認）、Pickerのtagが選択肢に無い場面（未接続の固定先など）
+- **2026-10-17のマイク無音（原因は未確定）**: 14:47以降の収録で、micもsystemも`-120.0 dBFS`（完全な無音）になり、録音中の表示のまま文字起こしが出なかった。アプリの再起動とdaemonの作り直しでは直らず、`make install-app`の再ビルドで直った。直前の版は`codesign -dvv`で`Authority=(unavailable)`、再ビルド後は`Authority=Apple Development`で検証済み。署名の状態が悪かったことが引き金かどうかは確かめていない。取り込みの失敗が利用者へ伝わらない穴（録音中の表示のまま無音）は残っている。次: 無音の検知とパネルの音量グラフ・状態行（設計は未着手）、iPhoneアプリの「未送信1件」が居座る表示の不具合（`PeerClient`が`.ack`を処理した後に`refreshPendingCount`を呼ばない。起動し直すと0件になることを確認済み）
 - **未確認（段階1）**: appでの確認（メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイ消灯中のsystem音声（userの判断で行っていない）、固定した入力機器が外れた時
 - **使われなくなった状態ファイル**: `~/Library/Application Support/Notetake/state/`の`capture-command.json`、`capture-event.json`、`capture.heartbeat`、`current-session.json`と、`.tmp-`を含む一時ファイルは、どのprocessも読まない。手で消してよい
 

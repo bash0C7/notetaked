@@ -696,13 +696,16 @@ actor ServeSession {
         var seg = segment
         let bestOffsetMS = peerStates[connectionID].flatMap { ClockOffset.best($0.offsetSamples)?.offsetMS }
         seg.clockOffsetMS = ClockOffset.segmentOffsetMS(fromRemoteOffset: bestOffsetMS ?? 0)
-        seg.receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+        let receivedAt = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+        seg.receivedAt = receivedAt
 
         let normalizedStart = seg.start + seg.clockOffsetMS
         let matchedPrefix = SessionMatcher.match(
             segmentStartMS: normalizedStart, sessions: await archive.sessions(in: outputDirectory))
 
+        let outcome: PeerSegOutcome
         if let matchedPrefix, recording, matchedPrefix == currentPrefix {
+            outcome = .current
             do {
                 try await archive.appendLive(.segment(seg))
                 for utterance in reconciler.apply(.segment(seg)) {
@@ -712,6 +715,7 @@ actor ServeSession {
                 await control.send(.error("failed to append peer segment: \(error)"))
             }
         } else if let matchedPrefix {
+            outcome = .other
             do {
                 try await archive.appendAndRender([.segment(seg)], prefix: matchedPrefix, in: outputDirectory)
                 await control.send(.log("appended peer seg to \(matchedPrefix), final.md regenerated"))
@@ -719,6 +723,7 @@ actor ServeSession {
                 await control.send(.error("failed to append peer seg to \(matchedPrefix): \(error)"))
             }
         } else {
+            outcome = .orphan
             do {
                 try await archive.appendOrphan(seg, in: outputDirectory)
                 await control.send(
@@ -727,6 +732,10 @@ actor ServeSession {
                 await control.send(.error("failed to append orphan seg: \(error)"))
             }
         }
+
+        // appendが失敗してもsegは受信済みなので、受信自体はアプリへ伝える
+        await control.send(
+            .peerSeg(device: seg.device, deviceName: seg.deviceName, receivedAt: receivedAt, outcome: outcome))
 
         updateCursor(device: seg.device, seq: seg.seq)
         await peerListener.send(.ack(seq: seg.seq), to: connectionID)

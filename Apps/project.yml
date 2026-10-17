@@ -19,7 +19,12 @@ targets:
   Notetake:
     type: application
     platform: macOS
-    sources: [Notetake, ../Sources/notetaked/Audio/InputDeviceProbe.swift]
+    sources:
+      - Notetake
+      - Shared/LevelGraph.swift
+      - ../Sources/notetaked/Audio/InputDeviceProbe.swift
+      - ../Sources/notetaked/Audio/AUHALInputCapture.swift
+      - ../Sources/notetaked/Capture/CaptureSink.swift
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore
@@ -49,7 +54,7 @@ targets:
   NotetakeMobile:
     type: application
     platform: iOS
-    sources: [NotetakeMobile]
+    sources: [NotetakeMobile, Shared/LevelGraph.swift]
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore

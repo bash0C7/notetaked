@@ -18,6 +18,50 @@ enum InputDeviceProbe {
         return discovery.devices.map(makeInputDevice)
     }
 
+    /// 機器の接続種別。読めなければ`.other`
+    static func transport(of deviceID: AudioDeviceID) -> InputTransport {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var fourCC: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &fourCC) == noErr else { return .other }
+        return InputTransport(fourCC: fourCC)
+    }
+
+    /// 接続中の入力機器のUIDと接続種別。`AudioDeviceID`を引けない機器は`.other`として含める
+    static func candidates() -> [InputCandidate] {
+        all().map { device in
+            let transport = audioDeviceID(forUID: device.uid).map(transport(of:)) ?? .other
+            return InputCandidate(uid: device.uid, transport: transport)
+        }
+    }
+
+    /// 選択肢に出す入力機器。Continuity（iPhone連携）を除く
+    static func selectableInputs() -> [InputDevice] {
+        let continuityUIDs = Set(candidates().filter { $0.transport == .continuity }.map(\.uid))
+        return all().filter { !continuityUIDs.contains($0.uid) }
+    }
+
+    /// 取り込む機器。固定した機器が接続中ならそれ、無ければ既定の入力（Continuityならば内蔵）。使える機器が無ければnil
+    static func captureTarget(pinnedUID: String?, pinnedUnusable: Bool) -> (id: AudioDeviceID, fellBackFromPinned: Bool)? {
+        if !pinnedUnusable,
+            let uid = InputDeviceResolution.resolvedUID(
+                pinnedUID: pinnedUID, availableUIDs: Set(all().map(\.uid))),
+            let id = audioDeviceID(forUID: uid)
+        {
+            return (id, false)
+        }
+        let osDefaultUID = defaultInputDeviceID().flatMap(deviceUID(of:))
+        guard
+            let uid = InputDeviceResolution.fallbackUID(
+                osDefaultUID: osDefaultUID, candidates: candidates()),
+            let id = audioDeviceID(forUID: uid)
+        else { return nil }
+        return (id, pinnedUID != nil)
+    }
+
     /// OSの既定の入力機器の`AudioDeviceID`。無ければnil
     static func defaultInputDeviceID() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(

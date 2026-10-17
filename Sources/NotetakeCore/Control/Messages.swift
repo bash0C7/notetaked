@@ -142,6 +142,16 @@ public struct StatusEvent: Codable, Sendable, Equatable {
     }
 }
 
+/// iPhoneから受けたsegの行き先
+public enum PeerSegOutcome: String, Codable, Sendable {
+    /// 収録中のprefixへ追記した
+    case current
+    /// 別のprefixへ追記した
+    case other
+    /// 行き先が無く、orphanへ回した
+    case orphan
+}
+
 public enum Event: Codable, Sendable, Equatable {
     case status(StatusEvent)
     case utterance(Utterance)
@@ -149,6 +159,8 @@ public enum Event: Codable, Sendable, Equatable {
     case error(String)
     case log(String)
     case peer(device: String, deviceName: String, connected: Bool)
+    /// iPhoneのsegを受信した（受信時刻はepochのミリ秒）
+    case peerSeg(device: String, deviceName: String, receivedAt: Int64, outcome: PeerSegOutcome)
     /// pinした入力デバイスが切断され、OS既定入力へフォールバックした
     case inputReset
     case finalizeState(FinalizeStateEvent)
@@ -162,6 +174,8 @@ public enum Event: Codable, Sendable, Equatable {
         case device
         case deviceName = "device_name"
         case connected
+        case receivedAt = "received_at"
+        case outcome
     }
 
     public init(from decoder: Decoder) throws {
@@ -187,6 +201,12 @@ public enum Event: Codable, Sendable, Equatable {
             let deviceName = try container.decode(String.self, forKey: .deviceName)
             let connected = try container.decode(Bool.self, forKey: .connected)
             self = .peer(device: device, deviceName: deviceName, connected: connected)
+        case "peer_seg":
+            let device = try container.decode(String.self, forKey: .device)
+            let deviceName = try container.decode(String.self, forKey: .deviceName)
+            let receivedAt = try container.decode(Int64.self, forKey: .receivedAt)
+            let outcome = try container.decode(PeerSegOutcome.self, forKey: .outcome)
+            self = .peerSeg(device: device, deviceName: deviceName, receivedAt: receivedAt, outcome: outcome)
         case "input_reset":
             self = .inputReset
         case "finalize_state":
@@ -222,6 +242,12 @@ public enum Event: Codable, Sendable, Equatable {
             try container.encode(device, forKey: .device)
             try container.encode(deviceName, forKey: .deviceName)
             try container.encode(connected, forKey: .connected)
+        case .peerSeg(let device, let deviceName, let receivedAt, let outcome):
+            try container.encode("peer_seg", forKey: .ev)
+            try container.encode(device, forKey: .device)
+            try container.encode(deviceName, forKey: .deviceName)
+            try container.encode(receivedAt, forKey: .receivedAt)
+            try container.encode(outcome, forKey: .outcome)
         case .inputReset:
             try container.encode("input_reset", forKey: .ev)
         case .finalizeState(let payload):
