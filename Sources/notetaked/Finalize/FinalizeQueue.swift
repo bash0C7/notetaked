@@ -155,9 +155,22 @@ actor FinalizeQueue {
             } else {
                 run = (FinalizedRuns.latestRun(in: records, device: info.device) ?? 0) + 1
                 let prefix = job.prefix
-                try await dependencies.runChild(sessionDirectory, run, job.speakers) { [weak self] line in
-                    Task { await self?.noteLine(line, prefix: prefix) }
+                // 行はAsyncStreamで1本の消費Taskへ順に渡し、runChildが戻る前に全行をnoteLineへ流し切る
+                let (lines, continuation) = AsyncStream<String>.makeStream()
+                let consumer = Task { [weak self] in
+                    for await line in lines { await self?.noteLine(line, prefix: prefix) }
                 }
+                do {
+                    try await dependencies.runChild(sessionDirectory, run, job.speakers) { line in
+                        continuation.yield(line)
+                    }
+                } catch {
+                    continuation.finish()
+                    await consumer.value
+                    throw error
+                }
+                continuation.finish()
+                await consumer.value
             }
             let result = try JSONFile.read(FinalizeResult.self, from: resultURL)
             guard let result, result.run == run else {
