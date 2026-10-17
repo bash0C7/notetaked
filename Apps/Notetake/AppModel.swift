@@ -87,6 +87,14 @@ final class AppModel {
     var isPolishing = false
     /// 接続中のiPhone等のpeer（device id → 表示名）。`.peer(connected: false)`で削除する。
     var connectedPeers: [String: String] = [:]
+    /// device idごとの、iPhoneから直近に受信したsegの情報。収録をまたいでも、切断されても消さない
+    var lastPeerSeg: [String: PeerSegInfo] = [:]
+
+    struct PeerSegInfo: Equatable {
+        var deviceName: String
+        var receivedAt: Int64
+        var outcome: PeerSegOutcome
+    }
 
     private var client: DaemonClient?
     /// `client`が起動した時刻。heartbeat監視の起動直後猶予期間の起点（起動〜資産読込〜resumeの
@@ -608,8 +616,8 @@ final class AppModel {
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
-        case .peerSeg:
-            break
+        case .peerSeg(let device, let deviceName, let receivedAt, let outcome):
+            lastPeerSeg[device] = PeerSegInfo(deviceName: deviceName, receivedAt: receivedAt, outcome: outcome)
         case .inputReset:
             preferredInputDeviceUID = nil
         case .finalizeState(let state):
