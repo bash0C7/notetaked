@@ -17,6 +17,11 @@
 - **マイクの取り込み（AUHALへ統一）**: 既定の入力でも`AVAudioEngine`を使わず、入力だけのAUHALで取り込む。`AVAudioEngine`は出力機器と組になるため、既定の入力が出力（AirPods）と違うと、startが`-10868`で失敗するか、startが成功しても音声が届かなかった（probeで確認）。既定の入力・機器の一覧・今の機器のサンプルレートが変わった時、開始に失敗した時、音声が5秒届かない時（`CaptureStall`）に作り直す
   - 実機で確かめた（音なし）: 収録中に既定の入力をAirPodsとMacBookの間で3往復して、毎回`recording`のまま追従し、43.8秒の収録に43.8秒分の音声が録れた。固定した機器は既定の入力が変わっても動かない。固定が無ければ`fell_back_from_pinned`で既定へ追従する
   - 未確認: 3時間の収録（`144154`）が14:56に止まった引き金は再現できていない。途絶の見張りは、判定の単体テストだけで、実機では動かしていない。固定した機器の物理的な切断（`blueutil`）は、この変更の後に確かめていない
+- **入力機器の方針（内蔵マイクを既定にし、iPhone連携のマイクを自動で選ばない）**（2026-10-17、branch `builtin-default-input`）: appは常に`--input-device`を渡す（保存値が無ければ`BuiltInMicrophoneDevice`）。接続種別（`kAudioDevicePropertyTransportType`）がContinuity Capture（`ccwd`、`ccwl`）の機器は、パネルの選択肢に出さず、固定が使えない時や固定なしの取り込み先からも除く。使える機器が無い時は`retrying`で理由を出す。前の版で保存したiPhone連携の固定値は、起動時に内蔵へ戻す。OSの既定への追随はやめた（AirPodsはパネルで選んだ時だけ使う）。plan: `docs/superpowers/plans/2026-10-17-builtin-default-input.md`（git管理外）
+  - `make verify`通過（警告なし、swift-testing 294件）
+  - 実機で確かめた: `make install-app`の後、serveに`--input-device BuiltInMicrophoneDevice`が付き、内蔵固定の経路で実音声（約-29〜-37 dBFS）が入る。収録中にOSの既定をiPhone 16eのマイクへ替えても、segの`input.name`は`MacBook Proのマイク`のまま、`mic.meta.jsonl`の`device`行は増えず、音声は続いた（確認後に内蔵へ戻した）。アプリと同じ手順の再現で、iPhone 13 Pro / 16eのマイクとも`ccwd`と引け、選択肢から除かれる
+  - 未検証: `ccwl`（無線）の値、蓋を閉じて内蔵が使えない時の挙動、AirPodsを選んだ後の切断（`inputReset`で内蔵へ戻る流れ）、パネルのドロップダウンを開いての目視（閉じた状態で`MacBook Proのマイク`の表示だけ確認）、Pickerのtagが選択肢に無い場面（未接続の固定先など）
+- **2026-10-17のマイク無音（原因は未確定）**: 14:47以降の収録で、micもsystemも`-120.0 dBFS`（完全な無音）になり、録音中の表示のまま文字起こしが出なかった。アプリの再起動とdaemonの作り直しでは直らず、`make install-app`の再ビルドで直った。直前の版は`codesign -dvv`で`Authority=(unavailable)`、再ビルド後は`Authority=Apple Development`で検証済み。署名の状態が悪かったことが引き金かどうかは確かめていない。取り込みの失敗が利用者へ伝わらない穴（録音中の表示のまま無音）は残っている。次: 無音の検知とパネルの音量グラフ・状態行（設計は未着手）、iPhoneアプリの「未送信1件」が居座る表示の不具合（`PeerClient`が`.ack`を処理した後に`refreshPendingCount`を呼ばない。起動し直すと0件になることを確認済み）
 - **未確認（段階1）**: appでの確認（メニューの取り込みの状態、app経由のserve引き継ぎ）、ディスプレイ消灯中のsystem音声（userの判断で行っていない）、固定した入力機器が外れた時
 - **使われなくなった状態ファイル**: `~/Library/Application Support/Notetake/state/`の`capture-command.json`、`capture-event.json`、`capture.heartbeat`、`current-session.json`と、`.tmp-`を含む一時ファイルは、どのprocessも読まない。手で消してよい
 
