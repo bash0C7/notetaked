@@ -46,8 +46,10 @@ final class WatchRecorder: NSObject {
     private var feedTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
     private var writer: ChunkWriter?
+    private let obsLog: WatchObsLog
 
     override init() {
+        obsLog = WatchObsLog(directory: Self.obsDirectory(), device: WatchIdentity.deviceID())
         ownerName = UserDefaults.standard.string(forKey: DefaultsKey.ownerName) ?? "私"
         super.init()
         if WCSession.isSupported() {
@@ -56,6 +58,9 @@ final class WatchRecorder: NSObject {
         }
         // 前回の異常終了などで送り切れなかった小片をsidecarのmetadataから復元して再送する。
         pendingTransfers = ChunkTransfer.resendLeftovers(in: Self.chunksDirectory())
+        let launchedAtMS = Self.nowMS()
+        obsLog.resendLeftovers(nowMS: launchedAtMS)
+        obsLog.record(.init(atMS: launchedAtMS, event: .launched))
     }
 
     // MARK: - Recording
@@ -185,6 +190,11 @@ final class WatchRecorder: NSObject {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return documents.appendingPathComponent("chunks", isDirectory: true)
     }
+
+    private static func obsDirectory() -> URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return documents.appendingPathComponent("obs", isDirectory: true)
+    }
 }
 
 // MARK: - WCSessionDelegate
@@ -202,26 +212,57 @@ extension WatchRecorder: WCSessionDelegate {
         }
     }
 
-    /// `transferFile`の完了通知。成功なら小片本体とsidecarを削除し、失敗ならファイルを残して
+    /// `transferFile`の完了通知。小片は成功なら本体とsidecarを削除し、失敗ならファイルを残して
     /// （`WCSession`が自動で再試行するが、アプリ再起動時にも`resendLeftovers`から拾えるように）
-    /// `lastError`に記録するだけにとどめる。
+    /// `lastError`に記録するだけにとどめる。記録ファイル（obs）は`pendingTransfers`に数えず、
+    /// 成功なら消し、失敗なら残して次の起動の`obsLog.resendLeftovers`に任せる。
+    /// どちらも結果を`transferFinished` / `transferFailed`として記録する。
     nonisolated func session(
         _ session: WCSession,
         didFinish fileTransfer: WCSessionFileTransfer,
         error: Error?
     ) {
-        let url = fileTransfer.file.fileURL
-        if let error {
-            Task { @MainActor [weak self] in
-                self?.lastError = "小片の転送に失敗しました: \(error.localizedDescription)"
+        let url: URL = fileTransfer.file.fileURL
+        let metadata: [String: Any] = fileTransfer.file.metadata ?? [:]
+        let kind: WatchTransferKind = WatchTransferKind.of(metadata)
+        // metadataは[String: Any]でSendableでないため、Taskへ渡す前にここで値だけ取り出す
+        let chunkSession: String? = metadata["session"] as? String
+        let chunkIndex: Int? = metadata["index"] as? Int
+        let failure: String? = error?.localizedDescription
+
+        switch kind {
+        case .obs:
+            if failure == nil {
+                try? FileManager.default.removeItem(at: url)
             }
-            return
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.recordTransferResult(session: nil, index: nil, failure: failure)
+            }
+        case .chunk:
+            if failure == nil {
+                ChunkTransfer.cleanup(fileURL: url)
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let failure {
+                    self.lastError = "小片の転送に失敗しました: \(failure)"
+                } else {
+                    self.pendingTransfers = max(0, self.pendingTransfers - 1)
+                }
+                self.recordTransferResult(session: chunkSession, index: chunkIndex, failure: failure)
+            }
         }
-        ChunkTransfer.cleanup(fileURL: url)
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.pendingTransfers = max(0, self.pendingTransfers - 1)
-        }
+    }
+}
+
+extension WatchRecorder {
+    fileprivate func recordTransferResult(session: String?, index: Int?, failure: String?) {
+        obsLog.record(
+            .init(
+                atMS: Self.nowMS(),
+                event: failure == nil ? .transferFinished : .transferFailed,
+                session: session, index: index, detail: failure))
     }
 }
 
