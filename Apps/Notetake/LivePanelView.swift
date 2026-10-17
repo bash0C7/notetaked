@@ -5,9 +5,6 @@ import NotetakeCore
 /// ライブパネル（"live"ウィンドウ）。収録中のutteranceをリアルタイムに表示し、
 /// コピー・話者改名・常に前面表示を提供する。
 struct LivePanelView: View {
-    /// Picker上で「既定（OSに合わせる）」を表す選択肢のtag（`appModel.preferredInputDeviceUID == nil`に対応）
-    private static let defaultDeviceTag = ""
-
     let appModel: AppModel
     @State private var floating = false
     @State private var availableInputDevices: [InputDevice] = []
@@ -57,13 +54,17 @@ struct LivePanelView: View {
                         }
                     Button("全文コピー") { appModel.copyAllToPasteboard() }
                     Picker("入力デバイス", selection: inputDeviceSelection) {
-                        Text("既定（OSに合わせる）").tag(Self.defaultDeviceTag)
                         ForEach(availableInputDevices, id: \.uid) { device in
                             Text(device.name).tag(device.uid)
                         }
                     }
                     .fixedSize()
-                    .onAppear { availableInputDevices = InputDeviceProbe.all() }
+                    .onAppear {
+                        // 内蔵マイクを先頭へ、他は元の順のまま並べる
+                        let inputs = InputDeviceProbe.selectableInputs()
+                        availableInputDevices = inputs.filter { $0.uid == InputDeviceResolution.builtInUID }
+                            + inputs.filter { $0.uid != InputDeviceResolution.builtInUID }
+                    }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 6)
@@ -120,13 +121,13 @@ struct LivePanelView: View {
         return text
     }
 
-    /// `appModel.preferredInputDeviceUID`（`nil`=既定）と、Pickerのtag（`nil`を表せないため
-    /// `Self.defaultDeviceTag`で代用）を橋渡しするbinding。選択したら即座に確定してdaemonへ反映する
+    /// `appModel.preferredInputDeviceUID`（`nil`=内蔵マイク）と、Pickerのtag（内蔵マイクのUID）を
+    /// 橋渡しするbinding。選択したら即座に確定してdaemonへ反映する
     private var inputDeviceSelection: Binding<String> {
         Binding(
-            get: { appModel.preferredInputDeviceUID ?? Self.defaultDeviceTag },
+            get: { appModel.preferredInputDeviceUID ?? InputDeviceResolution.builtInUID },
             set: { newValue in
-                appModel.preferredInputDeviceUID = newValue == Self.defaultDeviceTag ? nil : newValue
+                appModel.preferredInputDeviceUID = newValue == InputDeviceResolution.builtInUID ? nil : newValue
                 appModel.ensureDaemon()
             }
         )

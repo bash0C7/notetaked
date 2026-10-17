@@ -28,8 +28,8 @@ final class AppModel {
         didSet { UserDefaults.standard.set(ownerName, forKey: DefaultsKey.ownerName) }
     }
 
-    /// 固定したい入力デバイスのUID。nil=既定（OSに合わせる）。設定すると次のdaemon起動引数
-    /// （`--input-device`）に乗る。daemonがpin先の切断でフォールバックした時（`.inputReset`）はnilに戻る
+    /// 固定したい入力デバイスのUID。nil=内蔵マイク。daemonの起動引数（`--input-device`）には
+    /// 常に乗る（nilなら内蔵マイクのUID）。固定先の切断（`.inputReset`）でもnilへ戻る
     var preferredInputDeviceUID: String? {
         didSet { persistPreferredInputDeviceUID() }
     }
@@ -110,10 +110,17 @@ final class AppModel {
             outputDirectory = nil
         }
         ownerName = defaults.string(forKey: DefaultsKey.ownerName) ?? "私"
-        if let uid = defaults.string(forKey: DefaultsKey.preferredInputDeviceUID), !uid.isEmpty {
-            preferredInputDeviceUID = uid
-        } else {
-            preferredInputDeviceUID = nil
+        let storedUID = defaults.string(forKey: DefaultsKey.preferredInputDeviceUID).flatMap { $0.isEmpty ? nil : $0 }
+        // iPhone連携のマイク（Continuity）を保存していた場合はnil（内蔵マイク）へ戻す。
+        // didSetはinit中は発火しないため、変わった時は保存も自分で更新する
+        let sanitizedUID = InputDeviceResolution.sanitizedPreferredUID(storedUID, candidates: InputDeviceProbe.candidates())
+        preferredInputDeviceUID = sanitizedUID
+        if sanitizedUID != storedUID {
+            if let sanitizedUID {
+                defaults.set(sanitizedUID, forKey: DefaultsKey.preferredInputDeviceUID)
+            } else {
+                defaults.removeObject(forKey: DefaultsKey.preferredInputDeviceUID)
+            }
         }
         // didSetはinit中は発火しないため、ここでは正規化のみ行い、scheduleRotation()は呼ばない
         // （収録中でない起動直後は呼んでも何もしない）。
@@ -202,17 +209,14 @@ final class AppModel {
     // MARK: - Daemon lifecycle
 
     private func desiredArguments(outputDirectory: URL) -> [String] {
-        var arguments = [
+        [
             "serve",
             "--output", outputDirectory.path,
             "--owner", ownerName,
             "--source", "both",
             "--control", "stdio",
+            "--input-device", preferredInputDeviceUID ?? InputDeviceResolution.builtInUID,
         ]
-        if let preferredInputDeviceUID {
-            arguments += ["--input-device", preferredInputDeviceUID]
-        }
-        return arguments
     }
 
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
