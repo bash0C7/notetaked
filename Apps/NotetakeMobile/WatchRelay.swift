@@ -40,6 +40,11 @@ final class WatchSessionDelegate: NSObject, WCSessionDelegate, @unchecked Sendab
     /// `file.fileURL`はこのcallback内でしか有効でないため、まず同期的にアプリ管理下へコピーする。
     /// metadataが読めない場合はコピーを削除して終わる（再送する側の材料が無く復旧不能なため）。
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        let fileMetadata: [String: Any] = file.metadata ?? [:]
+        if WatchTransferKind.of(fileMetadata) == .obs {
+            saveObsFile(file, metadata: fileMetadata)
+            return
+        }
         let destination = WatchRelay.inboxDirectory()
             .appendingPathComponent("\(UUID().uuidString).m4a")
         do {
@@ -56,6 +61,39 @@ final class WatchSessionDelegate: NSObject, WCSessionDelegate, @unchecked Sendab
         let relay = self.relay
         Task {
             await relay.receive(url: destination, meta: meta)
+        }
+    }
+
+    /// `<Documents>/watch-obs`。devicectlで取り出せるようDocuments配下に置く。無ければ作る
+    static func watchObsDirectory() -> URL {
+        let base: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let directory: URL = base.appendingPathComponent("watch-obs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Watchの記録ファイルをcallbackの中で同期的に保存する（戻るとfile.fileURLが消えるため）。
+    /// 再送で同じファイルが届くので、同名があれば消してからコピーして冪等にする。
+    /// metadataが読めなければ1行logして捨てる。`relay`へは渡さない。
+    private func saveObsFile(_ file: WCSessionFile, metadata: [String: Any]) {
+        guard let meta = WatchObsFileMetadata(metadata: metadata) else {
+            Diag.log("WatchSessionDelegate: received obs file with missing/invalid metadata; discarding")
+            return
+        }
+        // deviceはWatch由来の文字列なので、ディレクトリ外へ出る名前は受け付けない
+        let fileName: String = meta.fileName
+        guard fileName == (fileName as NSString).lastPathComponent, fileName != ".", fileName != ".." else {
+            Diag.log("WatchSessionDelegate: obs file name is not a plain file name; discarding")
+            return
+        }
+        let destination: URL = Self.watchObsDirectory().appendingPathComponent(fileName)
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: file.fileURL, to: destination)
+        } catch {
+            Diag.log("WatchSessionDelegate: failed to save obs file \(fileName): \(error)")
         }
     }
 }
