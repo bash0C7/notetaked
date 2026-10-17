@@ -195,6 +195,64 @@ private func makeDirectoryCompactedAfterAckingEverything() async throws -> URL {
     #expect(try lineCount(of: outbox.backupURL) == 3) // 上書きしない
 }
 
+/// cursorのパスを中身のあるdirectoryにして、cursorを書けない状態を作る
+private func blockCursorFile(in dir: URL) throws {
+    let cursor = dir.appendingPathComponent("outbox.cursor")
+    try? FileManager.default.removeItem(at: cursor)
+    try FileManager.default.createDirectory(at: cursor, withIntermediateDirectories: true)
+    try "x".write(to: cursor.appendingPathComponent("blocker"), atomically: true, encoding: .utf8)
+}
+
+@Test func acknowledgeDoesNotAdvanceWhenTheCursorCannotBeWritten() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try blockCursorFile(in: dir)
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+
+    await #expect(throws: (any Error).self) { try await outbox.acknowledge(upTo: 3) }
+    #expect(await outbox.ackedSeq == 0)
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 3)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+
+    let reopened = Outbox(directory: dir)
+    #expect(await reopened.nextSeq() == 4)
+}
+
+@Test func compactIfDrainedDoesNothingWhenTheCursorCannotBeRead() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.acknowledge(upTo: 2)
+    try blockCursorFile(in: dir)
+
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 2)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
+@Test func compactIfDrainedDoesNothingWhenTheCursorFileIsStale() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.acknowledge(upTo: 2)
+    try "1".write(to: outbox.cursorURL, atomically: true, encoding: .utf8)
+
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 2)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
 @Test func compactIfDrainedDoesNothingOnAnEmptyFile() async throws {
     let dir = makeTempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

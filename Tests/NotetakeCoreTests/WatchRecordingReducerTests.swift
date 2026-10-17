@@ -71,6 +71,21 @@ private typealias Reducer = WatchRecordingReducer
     #expect(fresh.message == IndicatorMessage(severity: .normal, text: "録音中"))
 }
 
+@Test func becomingActiveWithAQueuedBufferIsNotStale() {
+    let recording = WatchRecordingPhase.recording(startedAtMS: 0, lastBufferAtMS: 1_000)
+    #expect(Reducer.reduce(recording, .becameActive(atMS: 60_000), queueDepth: 1) == recording)
+    let halted = Reducer.reduce(recording, .becameActive(atMS: 60_000), queueDepth: 0)
+    #expect(halted == .halted(reason: .noAudio, atMS: 60_000, detail: nil))
+}
+
+@Test func queuedBuffersKeepTheDisplayAsRecording() {
+    let recording = WatchRecordingPhase.recording(startedAtMS: 0, lastBufferAtMS: 1_000)
+    let queued = Reducer.display(recording, nowMS: 60_000, queueDepth: 3)
+    #expect(queued.message == IndicatorMessage(severity: .normal, text: "録音中"))
+    let empty = Reducer.display(recording, nowMS: 60_000, queueDepth: 0)
+    #expect(empty.message == IndicatorMessage(severity: .alert, text: "音声が届いていません"))
+}
+
 @Test func stopAlwaysReturnsToIdle() {
     #expect(Reducer.reduce(.recording(startedAtMS: 0, lastBufferAtMS: nil), .stopped(atMS: 1)) == .idle)
     #expect(Reducer.reduce(.halted(reason: .noAudio, atMS: 0, detail: nil), .stopped(atMS: 1)) == .idle)

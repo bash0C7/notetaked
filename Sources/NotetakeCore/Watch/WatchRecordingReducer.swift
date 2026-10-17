@@ -44,7 +44,11 @@ public enum WatchRecordingReducer {
     /// bufferが途切れてからこの時間（ms）を超えたら音声が届いていないとみなす
     public static let noAudioHaltMS: Int64 = 5_000
 
-    public static func reduce(_ phase: WatchRecordingPhase, _ event: WatchRecordingEvent) -> WatchRecordingPhase {
+    /// `queueDepth`はtapが積んで未処理のbuffer数。0より大きい間はtapが流れている証拠なので、
+    /// MainActorがbufferを受けた時刻が古くてもstaleとみなさない
+    public static func reduce(
+        _ phase: WatchRecordingPhase, _ event: WatchRecordingEvent, queueDepth: Int = 0
+    ) -> WatchRecordingPhase {
         if case .stopped = event { return .idle }
 
         switch phase {
@@ -71,19 +75,21 @@ public enum WatchRecordingReducer {
             case .writeFailed(let atMS, let message):
                 return .halted(reason: .writeFailed, atMS: atMS, detail: message)
             case .becameActive(let atMS):
-                return isStale(phase, nowMS: atMS) ? .halted(reason: .noAudio, atMS: atMS, detail: nil) : phase
+                return isStale(phase, nowMS: atMS, queueDepth: queueDepth) ? .halted(reason: .noAudio, atMS: atMS, detail: nil) : phase
             default:
                 return phase
             }
         }
     }
 
-    public static func display(_ phase: WatchRecordingPhase, nowMS: Int64) -> WatchRecordingDisplay {
+    public static func display(
+        _ phase: WatchRecordingPhase, nowMS: Int64, queueDepth: Int = 0
+    ) -> WatchRecordingDisplay {
         switch phase {
         case .idle:
             return WatchRecordingDisplay(isActive: false, message: IndicatorMessage(severity: .normal, text: ""))
         case .recording:
-            if isStale(phase, nowMS: nowMS) {
+            if isStale(phase, nowMS: nowMS, queueDepth: queueDepth) {
                 return WatchRecordingDisplay(
                     isActive: true,
                     message: IndicatorMessage(severity: .alert, text: "音声が届いていません")
@@ -98,7 +104,8 @@ public enum WatchRecordingReducer {
         }
     }
 
-    private static func isStale(_ phase: WatchRecordingPhase, nowMS: Int64) -> Bool {
+    private static func isStale(_ phase: WatchRecordingPhase, nowMS: Int64, queueDepth: Int) -> Bool {
+        guard queueDepth <= 0 else { return false }
         guard case .recording(let startedAtMS, let lastBufferAtMS) = phase else { return false }
         return nowMS - (lastBufferAtMS ?? startedAtMS) > noAudioHaltMS
     }

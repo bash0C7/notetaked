@@ -76,8 +76,15 @@ public actor Outbox {
     /// cursor更新（後退しない）
     public func acknowledge(upTo seq: Int) throws {
         guard seq > acked else { return }
+        // cursorを書けてからackedを進める。書けないまま進めると、compact後の再起動でseqが戻る
+        try String(seq).write(to: cursorURL, atomically: true, encoding: .utf8)
         acked = seq
-        try String(acked).write(to: cursorURL, atomically: true, encoding: .utf8)
+    }
+
+    /// cursorファイルを読み直した値。読めない・数値でない時はnil
+    private func persistedCursor() -> Int? {
+        guard let text = try? String(contentsOf: cursorURL, encoding: .utf8) else { return nil }
+        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     public var ackedSeq: Int {
@@ -90,10 +97,12 @@ public actor Outbox {
     }
 
     /// 未ackが0件で、outbox.jsonlに中身がある時だけcompactする。compact前の控えを`backupURL`に1回だけ残す。
+    /// cursorファイルが読めて`lastAppendedSeq`以上の時だけ行う（再起動でseqが戻り、Macに受信済みとして捨てられるのを防ぐ）。
     /// compactしたらtrue、何もしなかったらfalse
     @discardableResult
     public func compactIfDrained() throws -> Bool {
         guard lastAppendedSeq <= acked else { return false }
+        guard let persisted = persistedCursor(), persisted >= lastAppendedSeq else { return false }
         let attributes = try? FileManager.default.attributesOfItem(atPath: outboxURL.path)
         guard let size = attributes?[.size] as? NSNumber, size.intValue > 0 else { return false }
         if !FileManager.default.fileExists(atPath: backupURL.path) {

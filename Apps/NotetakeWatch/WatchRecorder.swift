@@ -46,7 +46,7 @@ final class WatchRecorder: NSObject {
     var lastError: String?
 
     var display: WatchRecordingDisplay {
-        WatchRecordingReducer.display(phase, nowMS: nowMS)
+        WatchRecordingReducer.display(phase, nowMS: nowMS, queueDepth: max(0, queueCounter.value))
     }
 
     /// 停止ボタンを出すか。音声が途絶えて警告中でも`true`（止まった扱いにするのは`.halted`だけ）
@@ -149,8 +149,9 @@ final class WatchRecorder: NSObject {
         // 実行時にexecutor検査で落ちる（2026-09-13の実機クラッシュ）。`@Sendable`を明示して隔離を外す。
         // `continuation`と`counter`はSendableで、`self`やactorには触れない。
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { @Sendable buffer, _ in
-            continuation.yield(CapturedBuffer(buffer: buffer))
+            // yieldの前に増やす（feedTaskの`decrement()`が先に走って一瞬負になるのを防ぐ）
             counter.increment()
+            continuation.yield(CapturedBuffer(buffer: buffer))
         }
 
         do {
@@ -252,7 +253,7 @@ final class WatchRecorder: NSObject {
     /// `phase`は`.halted`のまま残し、画面に「止まりました」を出し続ける。中断が終わっても自動では再開しない
     private func dispatch(_ event: WatchRecordingEvent) {
         let previous = phase
-        let next = WatchRecordingReducer.reduce(previous, event)
+        let next = WatchRecordingReducer.reduce(previous, event, queueDepth: max(0, queueCounter.value))
         phase = next
         guard case .recording = previous, case .halted(let reason, let atMS, let detail) = next else { return }
         obsLog.record(
@@ -301,11 +302,16 @@ final class WatchRecorder: NSObject {
             let typeValue: UInt? = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let optionsValue: UInt = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
             let shouldResume: Bool = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
+            // 復帰時のsuspend由来のbeganを通話と区別するため、reasonとwasSuspendedを記録に残す。
+            // wasSuspendedのキーはSDK上で非推奨のため、定数を使わず文字列で読む（warningを出さない）
+            let reasonValue: UInt? = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+            let wasSuspended: Bool? = notification.userInfo?["AVAudioSessionInterruptionWasSuspendedKey"] as? Bool
+            let beganDetail: String = "reason:\(reasonValue.map { String($0) } ?? "nil") wasSuspended:\(wasSuspended.map { String($0) } ?? "nil")"
             Task { @MainActor [weak self] in
                 guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
                 switch type {
                 case .began:
-                    self?.interruptionBegan()
+                    self?.interruptionBegan(detail: beganDetail)
                 case .ended:
                     self?.interruptionEnded(shouldResume: shouldResume)
                 @unknown default:
@@ -330,9 +336,9 @@ final class WatchRecorder: NSObject {
         notificationObservers = [interruption, reset, configuration]
     }
 
-    private func interruptionBegan() {
+    private func interruptionBegan(detail: String) {
         let atMS = Self.currentMS()
-        obsLog.record(.init(atMS: atMS, event: .interruptionBegan, session: currentSessionID))
+        obsLog.record(.init(atMS: atMS, event: .interruptionBegan, session: currentSessionID, detail: detail))
         dispatch(.interruptionBegan(atMS: atMS))
     }
 
@@ -354,6 +360,15 @@ final class WatchRecorder: NSObject {
 
     private func configurationChanged() {
         let atMS = Self.currentMS()
+        // 通知はTask経由で遅れて届く。停止直後の始め直しで、前の`setActive`由来の通知が新しいsessionへ
+        // 届いても、engineが動いていれば健全な録音なので記録だけして止めない
+        if engine.isRunning {
+            obsLog.record(
+                .init(
+                    atMS: atMS, event: .configurationChanged, session: currentSessionID,
+                    detail: "ignored: engine_running"))
+            return
+        }
         obsLog.record(.init(atMS: atMS, event: .configurationChanged, session: currentSessionID))
         dispatch(.configurationChanged(atMS: atMS))
     }
@@ -491,7 +506,7 @@ extension WatchRecorder {
 
 // MARK: - QueueDepthCounter
 
-/// tapが積んだ未処理のbuffer数。tapのclosure（audio thread）は`yield`の直後に`increment()`だけを呼び、
+/// tapが積んだ未処理のbuffer数。tapのclosure（audio thread）は`yield`の直前に`increment()`だけを呼び、
 /// feedTaskがbufferを受けたら`decrement()`する。ロックを取らずにaudio threadから触れるよう`Atomic`にする
 final class QueueDepthCounter: Sendable {
     private let count = Atomic<Int>(0)
