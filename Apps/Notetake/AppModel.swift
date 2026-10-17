@@ -554,6 +554,8 @@ final class AppModel {
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
+        case .peerSeg:
+            break
         case .inputReset:
             preferredInputDeviceUID = nil
         case .finalizeState(let state):

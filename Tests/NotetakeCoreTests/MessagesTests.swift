@@ -76,9 +76,12 @@ import Testing
     let logEvent = Event.log("started recording")
     let peerEvent = Event.peer(device: "iphone-1", deviceName: "bash iPhone", connected: true)
     let inputResetEvent = Event.inputReset
+    let peerSegEvent = Event.peerSeg(
+        device: "iphone-1", deviceName: "bash iPhone", receivedAt: 1_792_000_000_000, outcome: .current)
 
     let events: [Event] = [
         statusEvent, utteranceEvent, volatileEvent, errorEvent, logEvent, peerEvent, inputResetEvent,
+        peerSegEvent,
     ]
     for event in events {
         let line = try event.encodedLine()
@@ -96,6 +99,24 @@ import Testing
         try event.encodedLine()
             == "{\"connected\":true,\"device\":\"iphone-1\",\"device_name\":\"bash iPhone\",\"ev\":\"peer\"}"
     )
+}
+
+@Test func peerSegEventExactString() throws {
+    let event = Event.peerSeg(
+        device: "iphone-1", deviceName: "bash iPhone", receivedAt: 1_792_000_000_000, outcome: .orphan)
+    #expect(
+        try event.encodedLine()
+            == "{\"device\":\"iphone-1\",\"device_name\":\"bash iPhone\",\"ev\":\"peer_seg\",\"outcome\":\"orphan\",\"received_at\":1792000000000}"
+    )
+}
+
+@Test func peerSegEventRoundTrips() throws {
+    for outcome in [PeerSegOutcome.current, .other, .orphan] {
+        let event = Event.peerSeg(
+            device: "iphone-1", deviceName: "bash iPhone", receivedAt: 1_792_000_000_000, outcome: outcome)
+        let line = try event.encodedLine()
+        #expect(try JSONDecoder().decode(Event.self, from: Data(line.utf8)) == event)
+    }
 }
 
 @Test func statusEventNilPrefixOmitsKey() throws {
