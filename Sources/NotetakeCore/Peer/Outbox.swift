@@ -4,6 +4,8 @@ import Foundation
 public actor Outbox {
     public nonisolated let outboxURL: URL
     public nonisolated let cursorURL: URL
+    /// compactIfDrainedが最初の1回だけ取る、compact前のoutbox.jsonlの控え
+    public nonisolated let backupURL: URL
 
     private var fileHandle: FileHandle?
     private var lastAppendedSeq: Int
@@ -15,6 +17,15 @@ public actor Outbox {
         self.outboxURL = directory.appendingPathComponent("outbox.jsonl")
         self.cursorURL = directory.appendingPathComponent("outbox.cursor")
 
+        self.backupURL = directory.appendingPathComponent("outbox.before-compact.jsonl")
+
+        var ackedSeq = 0
+        if let cursorText = try? String(contentsOf: cursorURL, encoding: .utf8) {
+            let trimmed = cursorText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ackedSeq = Int(trimmed) ?? 0
+        }
+        self.acked = ackedSeq
+
         var maxSeq = 0
         if let text = try? String(contentsOf: outboxURL, encoding: .utf8) {
             for record in NDJSON.decodeAll(text) {
@@ -23,14 +34,8 @@ public actor Outbox {
                 }
             }
         }
-        self.lastAppendedSeq = maxSeq
-
-        var ackedSeq = 0
-        if let cursorText = try? String(contentsOf: cursorURL, encoding: .utf8) {
-            let trimmed = cursorText.trimmingCharacters(in: .whitespacesAndNewlines)
-            ackedSeq = Int(trimmed) ?? 0
-        }
-        self.acked = ackedSeq
+        // compactで全行を捨てた後でも、ack済みseqを再採番しない
+        self.lastAppendedSeq = max(maxSeq, ackedSeq)
     }
 
     /// segment.seqをそのまま記録（呼び出し側が単調増加させる）。開いたまま保持して追記
@@ -77,6 +82,25 @@ public actor Outbox {
 
     public var ackedSeq: Int {
         acked
+    }
+
+    /// 未ackの件数（lastAppendedSeq - acked、負にならない）
+    public var unacknowledgedCount: Int {
+        max(0, lastAppendedSeq - acked)
+    }
+
+    /// 未ackが0件で、outbox.jsonlに中身がある時だけcompactする。compact前の控えを`backupURL`に1回だけ残す。
+    /// compactしたらtrue、何もしなかったらfalse
+    @discardableResult
+    public func compactIfDrained() throws -> Bool {
+        guard lastAppendedSeq <= acked else { return false }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: outboxURL.path)
+        guard let size = attributes?[.size] as? NSNumber, size.intValue > 0 else { return false }
+        if !FileManager.default.fileExists(atPath: backupURL.path) {
+            try FileManager.default.copyItem(at: outboxURL, to: backupURL)
+        }
+        try compact()
+        return true
     }
 
     /// ack済み行を捨てて書き直す
