@@ -442,7 +442,8 @@ final class AppModel {
             recordingStartedAtMS: recordingStartedAtMS,
             lastTextAtMS: lastTextAtMS(for: source),
             nowMS: nowMS,
-            lidClosedBuiltInMic: lidClosedBuiltInMic))
+            lidClosedBuiltInMic: lidClosedBuiltInMic,
+            zeroSilenceIsAnomaly: source == .mic))
     }
 
     /// このMacが取り込んだ発話のうち、指定sourceの最新の終了時刻。iPhone由来の発話は数えない

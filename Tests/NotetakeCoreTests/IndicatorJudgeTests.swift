@@ -21,7 +21,8 @@ struct IndicatorJudgeTests {
         recordingStartedAtMS: Int64? = 0,
         lastTextAtMS: Int64? = nil,
         nowMS: Int64,
-        lidClosedBuiltInMic: Bool = false
+        lidClosedBuiltInMic: Bool = false,
+        zeroSilenceIsAnomaly: Bool = true
     ) -> SourceIndicatorInput {
         SourceIndicatorInput(
             history: history,
@@ -31,7 +32,8 @@ struct IndicatorJudgeTests {
             recordingStartedAtMS: recordingStartedAtMS,
             lastTextAtMS: lastTextAtMS,
             nowMS: nowMS,
-            lidClosedBuiltInMic: lidClosedBuiltInMic
+            lidClosedBuiltInMic: lidClosedBuiltInMic,
+            zeroSilenceIsAnomaly: zeroSilenceIsAnomaly
         )
     }
 
@@ -158,6 +160,20 @@ struct IndicatorJudgeTests {
         var history = LevelHistory()
         let now = fill(&history, durationMS: 5_000, dbfs: -120)
         let message = IndicatorJudge.judge(input(history, lastTextAtMS: now, nowMS: now, lidClosedBuiltInMic: false))
+        #expect(message.severity == .alert)
+    }
+
+    @Test func zeroSilenceWhereNothingPlaysIsNotAnAlertForSystemAudio() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 10_000, dbfs: -120)
+        let message = IndicatorJudge.judge(input(history, lastTextAtMS: now, nowMS: now, zeroSilenceIsAnomaly: false))
+        #expect(message.severity == .normal)
+    }
+
+    @Test func aGapStaysAnAlertEvenWhenZeroSilenceIsNormal() {
+        var history = LevelHistory()
+        let now = fill(&history, durationMS: 10_000, dbfs: -120) + 5_000
+        let message = IndicatorJudge.judge(input(history, lastTextAtMS: now, nowMS: now, zeroSilenceIsAnomaly: false))
         #expect(message.severity == .alert)
     }
 

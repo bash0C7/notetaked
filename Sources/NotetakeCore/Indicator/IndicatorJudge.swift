@@ -26,6 +26,8 @@ public struct SourceIndicatorInput: Sendable, Equatable {
     public var nowMS: Int64
     /// 蓋が閉じていて、収録するmicが内蔵。この時の無音・欠測は想定どおりなので赤にしない
     public var lidClosedBuiltInMic: Bool
+    /// ちょうど-120 dBFSの無音を異常とみなす。何も再生していないsystem音声は常にこの値になるため、systemはfalse
+    public var zeroSilenceIsAnomaly: Bool
 
     public init(
         history: LevelHistory,
@@ -35,7 +37,8 @@ public struct SourceIndicatorInput: Sendable, Equatable {
         recordingStartedAtMS: Int64?,
         lastTextAtMS: Int64?,
         nowMS: Int64,
-        lidClosedBuiltInMic: Bool = false
+        lidClosedBuiltInMic: Bool = false,
+        zeroSilenceIsAnomaly: Bool = true
     ) {
         self.history = history
         self.captureState = captureState
@@ -45,6 +48,7 @@ public struct SourceIndicatorInput: Sendable, Equatable {
         self.lastTextAtMS = lastTextAtMS
         self.nowMS = nowMS
         self.lidClosedBuiltInMic = lidClosedBuiltInMic
+        self.zeroSilenceIsAnomaly = zeroSilenceIsAnomaly
     }
 }
 
@@ -76,7 +80,7 @@ public enum IndicatorJudge {
         // 最新のsampleが古ければ、測れていない（欠測）として扱う
         let fresh = input.history.latest(nowMS: now)
 
-        if fresh?.dbfs != nil, input.history.trailingSilenceMS(nowMS: now) >= silenceAlertMS {
+        if input.zeroSilenceIsAnomaly, fresh?.dbfs != nil, input.history.trailingSilenceMS(nowMS: now) >= silenceAlertMS {
             return IndicatorMessage(severity: .alert, text: "音声がゼロです（入力が無音）")
         }
 
