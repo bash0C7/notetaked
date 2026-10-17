@@ -26,10 +26,17 @@ final class MobileModel {
     /// WatchRelayが現在扱っているWatch session（=収録）の数。ContentViewに「Watch: N stream」で出す
     private(set) var watchStreams = 0
     var lastError: String?
+    /// 直近の取り込み音量。Recorderからの通知で伸び、取り込みの開始で作り直す
+    private(set) var levelHistory = LevelHistory()
+    /// 最後に確定した文字が出た時刻（epoch ms）。取り込みの開始で`nil`へ戻る
+    private(set) var lastTextAtMS: Int64?
 
     private let outbox: Outbox
     private let recorder = Recorder()
     private var peerClient: PeerClient?
+    private var recordingStartedAtMS: Int64?
+    /// 一度でも`connected`になったか。切断（黄）は、つながっていた後だけ出す
+    private var hasEverConnected = false
     private var watchRelay: WatchRelay?
     // `WCSession.delegate`はweak参照のため、こちらで強参照を保持し続ける必要がある
     private var watchSessionDelegate: WatchSessionDelegate?
@@ -70,6 +77,7 @@ final class MobileModel {
                 Task { @MainActor in
                     guard let model = box.value else { return }
                     model.peerState = state
+                    if case .connected = state { model.hasEverConnected = true }
                     await model.refreshPendingCount()
                 }
             },
@@ -149,6 +157,36 @@ final class MobileModel {
         await refreshPendingCount()
     }
 
+    // MARK: - Indicator
+
+    func indicator(nowMS: Int64) -> IndicatorMessage {
+        IndicatorJudge.judge(SourceIndicatorInput(
+            history: levelHistory,
+            captureState: isRecording ? .recording : .off,
+            captureReason: nil,
+            recording: isRecording,
+            recordingStartedAtMS: recordingStartedAtMS,
+            lastTextAtMS: lastTextAtMS,
+            nowMS: nowMS
+        ))
+    }
+
+    var peerIndicator: IndicatorMessage? {
+        var connected = false
+        if case .connected = peerState { connected = true }
+        return IndicatorJudge.judgePeer(wasConnected: hasEverConnected, connected: connected)
+    }
+
+    /// 停止直後に遅れて届いた通知は、取り込み中ではないので捨てる
+    private func handleLevel(atMS: Int64, dbfs: Double) {
+        guard isRecording else { return }
+        levelHistory.append(atMS: atMS, dbfs: dbfs)
+    }
+
+    private static func currentMS() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1000).rounded())
+    }
+
     // MARK: - Recording
 
     func startRecording() {
@@ -160,6 +198,10 @@ final class MobileModel {
                 try await Transcriber.ensureAssets(locale: Self.locale)
                 let session = SessionStore.prefix(for: Date(), timeZone: .current)
                 let box = WeakBox(self)
+                // 開始前に届く通知は無いので、ここで履歴を作り直す。失敗したらcatchで元へ戻す
+                self.levelHistory = LevelHistory()
+                self.lastTextAtMS = nil
+                self.recordingStartedAtMS = Self.currentMS()
                 try await self.recorder.start(
                     locale: Self.locale,
                     onPiece: { piece, dbfs, direction in
@@ -168,10 +210,16 @@ final class MobileModel {
                             await model.handleFinalPiece(piece, dbfs: dbfs, direction: direction, session: session)
                         }
                     },
-                    onLevel: { _, _ in }
+                    onLevel: { atMS, dbfs in
+                        Task { @MainActor in
+                            box.value?.handleLevel(atMS: atMS, dbfs: dbfs)
+                        }
+                    }
                 )
             } catch {
                 self.isRecording = false
+                self.levelHistory = LevelHistory()
+                self.recordingStartedAtMS = nil
                 self.lastError = "録音の開始に失敗しました: \(error.localizedDescription)"
             }
         }
@@ -180,6 +228,9 @@ final class MobileModel {
     func stopRecording() {
         guard isRecording else { return }
         isRecording = false
+        recordingStartedAtMS = nil
+        // 取り込み中でないことを、無音と区別できる欠測として残す
+        levelHistory.appendGap(atMS: Self.currentMS())
         Task {
             do {
                 try await self.recorder.stop()
@@ -192,6 +243,7 @@ final class MobileModel {
     private func handleFinalPiece(_ piece: TranscriptPiece, dbfs: Double, direction: Direction?, session: String) async {
         guard !piece.text.isEmpty else { return }
         lastText = piece.text
+        lastTextAtMS = Self.currentMS()
         // seqは`PeerClient.enqueue`→`Outbox.appendAssigningSeq`が原子的に採番する（ここでは0）
         let input = await recorder.currentInput()
         let segment = Segment(
