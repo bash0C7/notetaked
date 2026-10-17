@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import NotetakeCore
+import SwiftUI
 import Synchronization
 import WatchConnectivity
 import WatchKit
@@ -32,12 +33,26 @@ final class WatchRecorder: NSObject {
     /// `tapQueue`の記録と電池残量の読み直しの間隔
     private static let sampleIntervalMS: Int64 = 1000
 
-    private(set) var isRecording = false
+    /// 録音の状態。`dispatch(_:)`だけが書き換える（reducerを通さず直接触らない）
+    private(set) var phase: WatchRecordingPhase = .idle
+    /// 画面の再評価用の現在時刻（ms）。経過時間のtimerが毎秒更新する。
+    /// reducerにtickは無いので、前面のままbufferが途絶えた時に`display`が「音声が届いていません」へ
+    /// 変わるのは、この更新で`display`が再評価されるため（bufferのたびには更新しない）
+    private(set) var nowMS: Int64 = WatchRecorder.currentMS()
     private(set) var elapsedSeconds: Int = 0
     /// 転送完了（`didFinish`のsuccess）がまだ届いていない小片の数。起動時に再送をキューした
     /// leftoverも含む。
     private(set) var pendingTransfers: Int = 0
     var lastError: String?
+
+    var display: WatchRecordingDisplay {
+        WatchRecordingReducer.display(phase, nowMS: nowMS)
+    }
+
+    /// 停止ボタンを出すか。音声が途絶えて警告中でも`true`（止まった扱いにするのは`.halted`だけ）
+    var isRecording: Bool {
+        display.isActive
+    }
 
     /// 収録に載せる自分の名前。今はUserDefaultsのみ（`WCSession.applicationContext`経由でiPhoneから
     /// 受け取るのは将来の拡張）。
@@ -52,6 +67,14 @@ final class WatchRecorder: NSObject {
     private var writer: ChunkWriter?
     private var queueCounter = QueueDepthCounter()
     private let obsLog: WatchObsLog
+    /// 録音中のsession ID。記録の`session`に載せる
+    private var currentSessionID: String?
+    /// 実行中の`tearDown`の後始末。終わるまで`start()`を始めない（前のsessionの`setActive(false)`が
+    /// 新しいsessionを巻き込まないように）
+    private var tearDownTask: Task<Void, Never>?
+    /// timerが毎秒読み直す電池残量（0...1）。負の値（監視が無効など）はnil
+    @ObservationIgnored private var cachedBatteryLevel: Double?
+    @ObservationIgnored private var notificationObservers: [NSObjectProtocol] = []
 
     override init() {
         obsLog = WatchObsLog(directory: Self.obsDirectory(), device: WatchIdentity.deviceID())
@@ -63,15 +86,23 @@ final class WatchRecorder: NSObject {
         }
         // 前回の異常終了などで送り切れなかった小片をsidecarのmetadataから復元して再送する。
         pendingTransfers = ChunkTransfer.resendLeftovers(in: Self.chunksDirectory())
-        let launchedAtMS = Self.nowMS()
+        let launchedAtMS = Self.currentMS()
         obsLog.resendLeftovers(nowMS: launchedAtMS)
         obsLog.record(.init(atMS: launchedAtMS, event: .launched))
+        observeAudioNotifications()
     }
 
     // MARK: - Recording
 
     func start() {
         guard !isRecording else { return }
+        if let pending = tearDownTask {
+            Task { @MainActor [weak self] in
+                await pending.value
+                self?.start()
+            }
+            return
+        }
         lastError = nil
 
         let audioSession = AVAudioSession.sharedInstance()
@@ -79,18 +110,19 @@ final class WatchRecorder: NSObject {
             try audioSession.setCategory(.record, mode: .default)
             try audioSession.setActive(true)
         } catch {
-            lastError = "マイクの初期化に失敗しました: \(error.localizedDescription)"
+            startFailed("マイクの初期化に失敗しました: \(error.localizedDescription)", session: nil)
             return
         }
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        let sessionStartMS = Self.nowMS()
+        let sessionStartMS = Self.currentMS()
+        let sessionID: String = String(sessionStartMS)
 
         let writer: ChunkWriter
         do {
             writer = try ChunkWriter(
-                session: String(sessionStartMS),
+                session: sessionID,
                 sessionStartMS: sessionStartMS,
                 inputFormat: inputFormat,
                 device: WatchIdentity.deviceID(),
@@ -100,8 +132,8 @@ final class WatchRecorder: NSObject {
                 chunksDirectory: Self.chunksDirectory()
             )
         } catch {
-            lastError = "録音ファイルの作成に失敗しました: \(error.localizedDescription)"
             try? audioSession.setActive(false)
+            startFailed("録音ファイルの作成に失敗しました: \(error.localizedDescription)", session: sessionID)
             return
         }
         self.writer = writer
@@ -111,6 +143,7 @@ final class WatchRecorder: NSObject {
         let counter = QueueDepthCounter()
         queueCounter = counter
         WKInterfaceDevice.current().isBatteryMonitoringEnabled = true
+        cachedBatteryLevel = Self.currentBatteryLevel()
         // このclosureはreal-time audio threadから呼ばれる。`AVAudioNodeTapBlock`はSDK上`@Sendable`で
         // ないため、`@MainActor`なこのクラスの中で書いたclosureはそのままだとMainActor隔離と推論され、
         // 実行時にexecutor検査で落ちる（2026-09-13の実機クラッシュ）。`@Sendable`を明示して隔離を外す。
@@ -128,33 +161,34 @@ final class WatchRecorder: NSObject {
             bufferContinuation = nil
             self.writer = nil
             Task { _ = await writer.finish() }
-            lastError = "録音の開始に失敗しました: \(error.localizedDescription)"
             try? audioSession.setActive(false)
+            startFailed("録音の開始に失敗しました: \(error.localizedDescription)", session: sessionID)
             return
         }
 
-        let sessionID: String = String(sessionStartMS)
+        currentSessionID = sessionID
         let sampleRate: Double = inputFormat.sampleRate
         feedTask = Task { @MainActor [weak self] in
             var lastSampledAtMS: Int64 = 0
-            var batteryLevel: Double?
             for await captured in stream {
                 counter.decrement()
                 let depth: Int = max(0, counter.value)
                 let bufferMS: Int64 = Int64((Double(captured.buffer.frameLength) / sampleRate * 1000).rounded())
-                let nowMS: Int64 = Self.nowMS()
-                // 深さの記録はbufferを受けた時だけ走るので、feedTaskが詰まっている間は記録が飛ぶ
-                if nowMS - lastSampledAtMS >= Self.sampleIntervalMS {
-                    lastSampledAtMS = nowMS
-                    batteryLevel = Self.currentBatteryLevel()
-                    self?.obsLog.record(
+                let arrivedAtMS: Int64 = Self.currentMS()
+                guard let self else { return }
+                // 毎bufferでは`@Observable`の状態を変えない。1秒に1回だけreducerへ渡し、
+                // 深さの記録もその時だけ行う（feedTaskが詰まっている間は記録が飛ぶ）
+                // 止まった後に始め直した別sessionの状態を、古いfeedTaskの残りbufferで動かさない
+                if arrivedAtMS - lastSampledAtMS >= Self.sampleIntervalMS, self.currentSessionID == sessionID {
+                    lastSampledAtMS = arrivedAtMS
+                    self.dispatch(.bufferArrived(atMS: arrivedAtMS))
+                    self.obsLog.record(
                         .init(
-                            atMS: nowMS, event: .tapQueue, session: sessionID,
+                            atMS: arrivedAtMS, event: .tapQueue, session: sessionID,
                             detail: "est:depth*bufferMS", value: Double(depth), lagMS: Int64(depth) * bufferMS))
                 }
-                let context = ChunkAppendContext(batteryLevel: batteryLevel, queueDepth: depth)
+                let context = ChunkAppendContext(batteryLevel: self.cachedBatteryLevel, queueDepth: depth)
                 let outcome = await writer.append(captured.buffer, context: context)
-                guard let self else { return }
                 switch outcome {
                 case .ok:
                     break
@@ -169,14 +203,24 @@ final class WatchRecorder: NSObject {
             }
         }
 
-        isRecording = true
         elapsedSeconds = 0
+        nowMS = sessionStartMS
+        dispatch(.started(atMS: sessionStartMS))
+        obsLog.record(.init(atMS: sessionStartMS, event: .started, session: sessionID))
         startElapsedTimer()
     }
 
     func stop() {
         guard isRecording else { return }
-        isRecording = false
+        let stoppedAtMS = Self.currentMS()
+        dispatch(.stopped(atMS: stoppedAtMS))
+        obsLog.record(.init(atMS: stoppedAtMS, event: .stopped, session: currentSessionID))
+        tearDown()
+    }
+
+    /// 録音の後始末。`stop()`と、録音中に`.halted`へ移った時（`dispatch`）の両方から呼ぶ。
+    /// 音声の入口を止め、積み残しのbufferを書き切って最後の小片を閉じ、記録をiPhoneへ送る
+    private func tearDown() {
         elapsedTask?.cancel()
         elapsedTask = nil
 
@@ -189,17 +233,132 @@ final class WatchRecorder: NSObject {
         self.writer = nil
         let feedTask = self.feedTask
         self.feedTask = nil
+        currentSessionID = nil
 
         // feedTaskが積み残しのbufferを全部writerへ渡し終えるのを待ってから、最後の小片を
         // 閉じて転送する（そうしないと末尾の数百msが失われる）。
-        Task { @MainActor [weak self] in
+        tearDownTask = Task { @MainActor [weak self] in
             await feedTask?.value
             if let metadata = await writer?.finish() {
                 self?.chunkClosed(metadata)
             }
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            self?.obsLog.ship(nowMS: Self.currentMS())
+            self?.tearDownTask = nil
         }
     }
+
+    /// 唯一の`phase`の更新口。録音中から`.halted`へ移った時は、止まった理由を記録して後始末する。
+    /// `phase`は`.halted`のまま残し、画面に「止まりました」を出し続ける。中断が終わっても自動では再開しない
+    private func dispatch(_ event: WatchRecordingEvent) {
+        let previous = phase
+        let next = WatchRecordingReducer.reduce(previous, event)
+        phase = next
+        guard case .recording = previous, case .halted(let reason, let atMS, let detail) = next else { return }
+        obsLog.record(
+            .init(atMS: atMS, event: .halted, session: currentSessionID, detail: Self.haltDetail(reason, detail)))
+        tearDown()
+    }
+
+    private static func haltDetail(_ reason: WatchHaltReason, _ detail: String?) -> String {
+        guard let detail else { return reason.rawValue }
+        return "\(reason.rawValue): \(detail)"
+    }
+
+    private func startFailed(_ message: String, session: String?) {
+        lastError = message
+        let failedAtMS = Self.currentMS()
+        dispatch(.startFailed(atMS: failedAtMS, message: message))
+        obsLog.record(.init(atMS: failedAtMS, event: .startFailed, session: session, detail: message))
+    }
+
+    /// 前面のscenePhaseを記録し、前面へ戻った時はbufferが途絶えていないかをreducerに判定させる
+    func scenePhaseChanged(_ scenePhase: ScenePhase) {
+        let changedAtMS = Self.currentMS()
+        let name: String
+        switch scenePhase {
+        case .active: name = "active"
+        case .inactive: name = "inactive"
+        case .background: name = "background"
+        @unknown default: name = "unknown"
+        }
+        obsLog.record(.init(atMS: changedAtMS, event: .scenePhase, session: currentSessionID, detail: name))
+        if scenePhase == .active {
+            nowMS = changedAtMS
+            dispatch(.becameActive(atMS: changedAtMS))
+        }
+    }
+
+    // MARK: - Notifications
+
+    /// 中断・音声サービスの再起動・engineの構成変更を、initで1回だけ購読する。
+    /// closureは通知を投げたスレッドで呼ばれるため`@Sendable`を明示し、値だけ取り出してMainActorへ渡す
+    private func observeAudioNotifications() {
+        let center = NotificationCenter.default
+        let interruption: NSObjectProtocol = center.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: nil
+        ) { @Sendable [weak self] (notification: Notification) in
+            let typeValue: UInt? = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let optionsValue: UInt = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
+            let shouldResume: Bool = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
+            Task { @MainActor [weak self] in
+                guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+                switch type {
+                case .began:
+                    self?.interruptionBegan()
+                case .ended:
+                    self?.interruptionEnded(shouldResume: shouldResume)
+                @unknown default:
+                    break
+                }
+            }
+        }
+        let reset: NSObjectProtocol = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: nil
+        ) { @Sendable [weak self] (_: Notification) in
+            Task { @MainActor [weak self] in
+                self?.mediaServicesReset()
+            }
+        }
+        let configuration: NSObjectProtocol = center.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { @Sendable [weak self] (_: Notification) in
+            Task { @MainActor [weak self] in
+                self?.configurationChanged()
+            }
+        }
+        notificationObservers = [interruption, reset, configuration]
+    }
+
+    private func interruptionBegan() {
+        let atMS = Self.currentMS()
+        obsLog.record(.init(atMS: atMS, event: .interruptionBegan, session: currentSessionID))
+        dispatch(.interruptionBegan(atMS: atMS))
+    }
+
+    private func interruptionEnded(shouldResume: Bool) {
+        let atMS = Self.currentMS()
+        obsLog.record(
+            .init(
+                atMS: atMS, event: .interruptionEnded, session: currentSessionID,
+                detail: "shouldResume:\(shouldResume)"))
+        // 自動では再開しない（reducerも`.halted`から戻さない）
+        dispatch(.interruptionEnded(atMS: atMS, shouldResume: shouldResume))
+    }
+
+    private func mediaServicesReset() {
+        let atMS = Self.currentMS()
+        obsLog.record(.init(atMS: atMS, event: .mediaServicesReset, session: currentSessionID))
+        dispatch(.mediaServicesReset(atMS: atMS))
+    }
+
+    private func configurationChanged() {
+        let atMS = Self.currentMS()
+        obsLog.record(.init(atMS: atMS, event: .configurationChanged, session: currentSessionID))
+        dispatch(.configurationChanged(atMS: atMS))
+    }
+
+    // MARK: - Timer
 
     private func startElapsedTimer() {
         let startedAt = Date()
@@ -208,6 +367,10 @@ final class WatchRecorder: NSObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, self.isRecording else { return }
                 self.elapsedSeconds = Int(Date().timeIntervalSince(startedAt))
+                // `nowMS`の更新で`display`が再評価される。bufferが途絶えて`dispatch`が呼ばれない間も
+                // 「録音中」のまま固まらず、noAudioHaltMSを超えたら警告に変わる
+                self.nowMS = Self.currentMS()
+                self.cachedBatteryLevel = Self.currentBatteryLevel()
             }
         }
     }
@@ -215,19 +378,25 @@ final class WatchRecorder: NSObject {
     /// 小片が閉じて転送に入った時の後始末。記録に残し、区切りごとにiPhoneへ送る
     private func chunkClosed(_ metadata: WatchChunkMetadata) {
         pendingTransfers += 1
-        let nowMS: Int64 = Self.nowMS()
+        let closedAtMS: Int64 = Self.currentMS()
         obsLog.record(
             .init(
-                atMS: nowMS, event: .chunkClosed, session: metadata.session, index: metadata.index,
+                atMS: closedAtMS, event: .chunkClosed, session: metadata.session, index: metadata.index,
                 value: metadata.maxDBFS))
         if (metadata.index + 1) % WatchObsLog.shipEveryChunks == 0 {
-            obsLog.ship(nowMS: nowMS)
+            obsLog.ship(nowMS: closedAtMS)
         }
     }
 
     private func writeFailed(_ message: String, session: String) {
+        // 同じsessionの初回だけ扱う。止まった後（tearDownでnilになる）に積み残しのbufferが
+        // 失敗しても、重複して記録せず、始め直した別sessionも止めない
+        guard currentSessionID == session else { return }
         lastError = message
-        obsLog.record(.init(atMS: Self.nowMS(), event: .writeFailed, session: session, detail: message))
+        let failedAtMS = Self.currentMS()
+        obsLog.record(.init(atMS: failedAtMS, event: .writeFailed, session: session, detail: message))
+        // 録音中でなければreducerが無視する（停止の後始末中に届いた失敗で止まった表示にしない）
+        dispatch(.writeFailed(atMS: failedAtMS, message: message))
     }
 
     /// 電池残量（0...1）。監視が無効などで負の値が返る時はnil
@@ -236,7 +405,7 @@ final class WatchRecorder: NSObject {
         return level < 0 ? nil : level
     }
 
-    private static func nowMS() -> Int64 {
+    private static func currentMS() -> Int64 {
         Int64((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
@@ -314,7 +483,7 @@ extension WatchRecorder {
     fileprivate func recordTransferResult(session: String?, index: Int?, failure: String?) {
         obsLog.record(
             .init(
-                atMS: Self.nowMS(),
+                atMS: Self.currentMS(),
                 event: failure == nil ? .transferFinished : .transferFailed,
                 session: session, index: index, detail: failure))
     }

@@ -32,6 +32,14 @@ struct WatchContentView: View {
                     .font(.system(.title2, design: .monospaced))
                     .monospacedDigit()
 
+                let message = recorder.display.message
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .font(.footnote)
+                        .foregroundStyle(message.severity.color)
+                        .multilineTextAlignment(.center)
+                }
+
                 Text("未転送 \(recorder.pendingTransfers)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
