@@ -180,3 +180,96 @@ private func fixtureMeta(
     // the ignored chunk must not have been buffered either
     #expect(sequencer.flush() == [])
 }
+
+private let legacyMetadataKeys: Set<String> = [
+    "session", "index", "start_at_ms", "sample_rate", "device", "device_name", "owner",
+]
+
+@Test func oldMetadataWithoutSummaryStillDecodes() {
+    let dict: [String: Any] = [
+        "session": "1700000000000",
+        "index": 0,
+        "start_at_ms": Int64(1_700_000_000_000),
+        "sample_rate": 16000.0,
+        "device": "watch-abc",
+        "device_name": "小芝のApple Watch",
+        "owner": "小芝",
+    ]
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.meanDBFS == nil)
+    #expect(restored?.batteryLevel == nil)
+    #expect(restored?.maxQueueDepth == nil)
+}
+
+@Test func metadataWithSummaryRoundTrips() {
+    var meta = fixtureMeta()
+    meta.maxDBFS = -12.5
+    meta.meanDBFS = -40.25
+    meta.batteryLevel = 0.8
+    meta.maxQueueDepth = 3
+    let restored = WatchChunkMetadata(metadata: meta.metadata)
+    #expect(restored == meta)
+}
+
+@Test func metadataWithoutSummaryOmitsTheNewKeys() {
+    let keys = Set(fixtureMeta().metadata.keys)
+    #expect(keys == legacyMetadataKeys)
+}
+
+@Test func summaryWithWrongTypesIsIgnoredNotRejected() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = "x"
+    dict["max_queue_depth"] = "y"
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.maxQueueDepth == nil)
+}
+
+@Test func summaryNumbersAcceptNSNumberAndInt() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = NSNumber(value: -20.5)
+    dict["battery_level"] = Int(1)
+    dict["max_queue_depth"] = NSNumber(value: 4)
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored?.maxDBFS == -20.5)
+    #expect(restored?.batteryLevel == 1.0)
+    #expect(restored?.maxQueueDepth == 4)
+}
+
+@Test func negativeQueueDepthIsIgnored() {
+    var dict = fixtureMeta().metadata
+    dict["max_queue_depth"] = -1
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxQueueDepth == nil)
+
+    dict["max_queue_depth"] = NSNumber(value: -3)
+    #expect(WatchChunkMetadata(metadata: dict)?.maxQueueDepth == nil)
+}
+
+@Test func boolIsNotReadAsNumber() {
+    var dict = fixtureMeta().metadata
+    dict["max_queue_depth"] = true
+    dict["battery_level"] = NSNumber(value: true)
+    dict["max_dbfs"] = false
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxQueueDepth == nil)
+    #expect(restored?.batteryLevel == nil)
+    #expect(restored?.maxDBFS == nil)
+}
+
+@Test func nonFiniteSummaryDoublesAreIgnored() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = Double.nan
+    dict["mean_dbfs"] = -Double.infinity
+    dict["battery_level"] = Double.infinity
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.meanDBFS == nil)
+    #expect(restored?.batteryLevel == nil)
+}

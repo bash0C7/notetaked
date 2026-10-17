@@ -3,6 +3,7 @@ import Foundation
 /// Watch側の録音小片（20秒AAC）に付随するmetadata。
 /// `WCSession.transferFile` の `metadata`（`[String: Any]`、plist型のみ）と往復する。
 /// keyはsnake_case: `session`, `index`, `start_at_ms`, `sample_rate`, `device`, `device_name`, `owner`
+/// 任意項目（無ければkeyごと出さない）: `max_dbfs`, `mean_dbfs`, `battery_level`, `max_queue_depth`
 public struct WatchChunkMetadata: Sendable, Equatable {
     /// Watch側の収録id（開始時刻ms文字列）
     public var session: String
@@ -14,6 +15,13 @@ public struct WatchChunkMetadata: Sendable, Equatable {
     public var device: String
     public var deviceName: String
     public var owner: String
+    /// 小片内の最大dBFS（旧形式のmetadataには無い）
+    public var maxDBFS: Double?
+    public var meanDBFS: Double?
+    /// 小片を閉じた時点の電池残量（0...1）
+    public var batteryLevel: Double?
+    /// 小片の間にWatch側で待っていた転送の最大数
+    public var maxQueueDepth: Int?
 
     public init(
         session: String,
@@ -22,7 +30,11 @@ public struct WatchChunkMetadata: Sendable, Equatable {
         sampleRate: Double,
         device: String,
         deviceName: String,
-        owner: String
+        owner: String,
+        maxDBFS: Double? = nil,
+        meanDBFS: Double? = nil,
+        batteryLevel: Double? = nil,
+        maxQueueDepth: Int? = nil
     ) {
         self.session = session
         self.index = index
@@ -31,9 +43,14 @@ public struct WatchChunkMetadata: Sendable, Equatable {
         self.device = device
         self.deviceName = deviceName
         self.owner = owner
+        self.maxDBFS = maxDBFS
+        self.meanDBFS = meanDBFS
+        self.batteryLevel = batteryLevel
+        self.maxQueueDepth = maxQueueDepth
     }
 
-    /// 型が合わなければnil（`startAtMS`はNSNumber/Int/Int64/Doubleを許容）
+    /// 必須の7項目の型が合わなければnil（`startAtMS`はNSNumber/Int/Int64/Doubleを許容）。
+    /// 追加の4項目は任意で、無いか型が合わなければその項目だけnil
     public init?(metadata: [String: Any]) {
         guard
             let session = metadata["session"] as? String,
@@ -54,10 +71,14 @@ public struct WatchChunkMetadata: Sendable, Equatable {
         self.device = device
         self.deviceName = deviceName
         self.owner = owner
+        self.maxDBFS = Self.doubleValue(metadata["max_dbfs"])
+        self.meanDBFS = Self.doubleValue(metadata["mean_dbfs"])
+        self.batteryLevel = Self.doubleValue(metadata["battery_level"])
+        self.maxQueueDepth = Self.intValue(metadata["max_queue_depth"])
     }
 
     public var metadata: [String: Any] {
-        [
+        var dict: [String: Any] = [
             "session": session,
             "index": index,
             "start_at_ms": startAtMS,
@@ -66,6 +87,46 @@ public struct WatchChunkMetadata: Sendable, Equatable {
             "device_name": deviceName,
             "owner": owner,
         ]
+        if let maxDBFS { dict["max_dbfs"] = maxDBFS }
+        if let meanDBFS { dict["mean_dbfs"] = meanDBFS }
+        if let batteryLevel { dict["battery_level"] = batteryLevel }
+        if let maxQueueDepth { dict["max_queue_depth"] = maxQueueDepth }
+        return dict
+    }
+
+    private static func isBool(_ any: Any?) -> Bool {
+        guard let number = any as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    private static func doubleValue(_ any: Any?) -> Double? {
+        guard !isBool(any) else { return nil }
+        let value: Double
+        switch any {
+        case let v as Double:
+            value = v
+        case let v as Int:
+            value = Double(v)
+        case let v as NSNumber:
+            value = v.doubleValue
+        default:
+            return nil
+        }
+        return value.isFinite ? value : nil
+    }
+
+    private static func intValue(_ any: Any?) -> Int? {
+        guard !isBool(any) else { return nil }
+        let value: Int
+        switch any {
+        case let v as Int:
+            value = v
+        case let v as NSNumber:
+            value = v.intValue
+        default:
+            return nil
+        }
+        return value >= 0 ? value : nil
     }
 
     private static func int64Value(_ any: Any?) -> Int64? {
