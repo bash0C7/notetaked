@@ -282,7 +282,7 @@ final class MobileModel {
     }
 
     private func refreshPendingCount() async {
-        pendingCount = (try? await outbox.pending())?.count ?? pendingCount
+        pendingCount = await outbox.unacknowledgedCount
     }
 
     private static let locale = Locale(identifier: "ja-JP")

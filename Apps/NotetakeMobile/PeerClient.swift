@@ -324,6 +324,7 @@ actor PeerClient {
             send(.pong(id: id, t0: t0, t1: t1, t2: Self.nowMS()))
         case .ack(let seq):
             try? await outbox.acknowledge(upTo: seq)
+            _ = try? await outbox.compactIfDrained()
             onAck()
         default:
             break
