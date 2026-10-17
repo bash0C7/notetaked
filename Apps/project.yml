@@ -21,6 +21,7 @@ targets:
     platform: macOS
     sources:
       - Notetake
+      - Shared/LevelGraph.swift
       - ../Sources/notetaked/Audio/InputDeviceProbe.swift
       - ../Sources/notetaked/Audio/AUHALInputCapture.swift
       - ../Sources/notetaked/Capture/CaptureSink.swift
