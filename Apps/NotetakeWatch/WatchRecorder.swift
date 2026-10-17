@@ -1,7 +1,9 @@
 import AVFoundation
 import Foundation
 import NotetakeCore
+import Synchronization
 import WatchConnectivity
+import WatchKit
 
 /// Watchの録音状態と、AVAudioEngine → 20秒ごとのAAC小片 → `WCSession.transferFile`の一連を管理する。
 /// v1は前面のみで録音する前提（バックグラウンド録音の継続は保証しない）。
@@ -27,6 +29,8 @@ final class WatchRecorder: NSObject {
     }
 
     private static let chunkDurationSeconds: Double = 20
+    /// `tapQueue`の記録と電池残量の読み直しの間隔
+    private static let sampleIntervalMS: Int64 = 1000
 
     private(set) var isRecording = false
     private(set) var elapsedSeconds: Int = 0
@@ -46,6 +50,7 @@ final class WatchRecorder: NSObject {
     private var feedTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
     private var writer: ChunkWriter?
+    private var queueCounter = QueueDepthCounter()
     private let obsLog: WatchObsLog
 
     override init() {
@@ -103,12 +108,16 @@ final class WatchRecorder: NSObject {
 
         let (stream, continuation) = AsyncStream<CapturedBuffer>.makeStream()
         bufferContinuation = continuation
+        let counter = QueueDepthCounter()
+        queueCounter = counter
+        WKInterfaceDevice.current().isBatteryMonitoringEnabled = true
         // このclosureはreal-time audio threadから呼ばれる。`AVAudioNodeTapBlock`はSDK上`@Sendable`で
         // ないため、`@MainActor`なこのクラスの中で書いたclosureはそのままだとMainActor隔離と推論され、
         // 実行時にexecutor検査で落ちる（2026-09-13の実機クラッシュ）。`@Sendable`を明示して隔離を外す。
-        // `continuation`はSendableな値型で、`self`やactorには触れない。
+        // `continuation`と`counter`はSendableで、`self`やactorには触れない。
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { @Sendable buffer, _ in
             continuation.yield(CapturedBuffer(buffer: buffer))
+            counter.increment()
         }
 
         do {
@@ -124,17 +133,38 @@ final class WatchRecorder: NSObject {
             return
         }
 
+        let sessionID: String = String(sessionStartMS)
+        let sampleRate: Double = inputFormat.sampleRate
         feedTask = Task { @MainActor [weak self] in
+            var lastSampledAtMS: Int64 = 0
+            var batteryLevel: Double?
             for await captured in stream {
-                let outcome = await writer.append(captured.buffer)
+                counter.decrement()
+                let depth: Int = max(0, counter.value)
+                let bufferMS: Int64 = Int64((Double(captured.buffer.frameLength) / sampleRate * 1000).rounded())
+                let nowMS: Int64 = Self.nowMS()
+                // 深さの記録はbufferを受けた時だけ走るので、feedTaskが詰まっている間は記録が飛ぶ
+                if nowMS - lastSampledAtMS >= Self.sampleIntervalMS {
+                    lastSampledAtMS = nowMS
+                    batteryLevel = Self.currentBatteryLevel()
+                    self?.obsLog.record(
+                        .init(
+                            atMS: nowMS, event: .tapQueue, session: sessionID,
+                            detail: "est:depth*bufferMS", value: Double(depth), lagMS: Int64(depth) * bufferMS))
+                }
+                let context = ChunkAppendContext(batteryLevel: batteryLevel, queueDepth: depth)
+                let outcome = await writer.append(captured.buffer, context: context)
                 guard let self else { return }
                 switch outcome {
                 case .ok:
                     break
-                case .chunkQueued:
-                    self.pendingTransfers += 1
+                case .chunkQueued(let metadata):
+                    self.chunkClosed(metadata)
+                case .chunkQueuedThenWriteFailed(let metadata, let message):
+                    self.chunkClosed(metadata)
+                    self.writeFailed(message, session: sessionID)
                 case .writeFailed(let message):
-                    self.lastError = message
+                    self.writeFailed(message, session: sessionID)
                 }
             }
         }
@@ -164,8 +194,8 @@ final class WatchRecorder: NSObject {
         // 閉じて転送する（そうしないと末尾の数百msが失われる）。
         Task { @MainActor [weak self] in
             await feedTask?.value
-            if let queued = await writer?.finish(), queued {
-                self?.pendingTransfers += 1
+            if let metadata = await writer?.finish() {
+                self?.chunkClosed(metadata)
             }
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         }
@@ -180,6 +210,30 @@ final class WatchRecorder: NSObject {
                 self.elapsedSeconds = Int(Date().timeIntervalSince(startedAt))
             }
         }
+    }
+
+    /// 小片が閉じて転送に入った時の後始末。記録に残し、区切りごとにiPhoneへ送る
+    private func chunkClosed(_ metadata: WatchChunkMetadata) {
+        pendingTransfers += 1
+        let nowMS: Int64 = Self.nowMS()
+        obsLog.record(
+            .init(
+                atMS: nowMS, event: .chunkClosed, session: metadata.session, index: metadata.index,
+                value: metadata.maxDBFS))
+        if (metadata.index + 1) % WatchObsLog.shipEveryChunks == 0 {
+            obsLog.ship(nowMS: nowMS)
+        }
+    }
+
+    private func writeFailed(_ message: String, session: String) {
+        lastError = message
+        obsLog.record(.init(atMS: Self.nowMS(), event: .writeFailed, session: session, detail: message))
+    }
+
+    /// 電池残量（0...1）。監視が無効などで負の値が返る時はnil
+    private static func currentBatteryLevel() -> Double? {
+        let level = Double(WKInterfaceDevice.current().batteryLevel)
+        return level < 0 ? nil : level
     }
 
     private static func nowMS() -> Int64 {
@@ -266,7 +320,33 @@ extension WatchRecorder {
     }
 }
 
+// MARK: - QueueDepthCounter
+
+/// tapが積んだ未処理のbuffer数。tapのclosure（audio thread）は`yield`の直後に`increment()`だけを呼び、
+/// feedTaskがbufferを受けたら`decrement()`する。ロックを取らずにaudio threadから触れるよう`Atomic`にする
+final class QueueDepthCounter: Sendable {
+    private let count = Atomic<Int>(0)
+
+    func increment() {
+        count.add(1, ordering: .relaxed)
+    }
+
+    func decrement() {
+        count.subtract(1, ordering: .relaxed)
+    }
+
+    var value: Int {
+        count.load(ordering: .relaxed)
+    }
+}
+
 // MARK: - ChunkWriter
+
+/// `ChunkWriter.append`へ渡す、小片の要約に足す値
+struct ChunkAppendContext: Sendable {
+    let batteryLevel: Double?
+    let queueDepth: Int
+}
 
 /// 現在の小片ファイルへPCM bufferを直列に書き込み、累積frame数が`chunkDurationSeconds`分に達したら
 /// 閉じて次のファイルへrotateする。閉じた小片は`ChunkTransfer`でsidecar付きの転送キューに入れる。
@@ -276,7 +356,9 @@ extension WatchRecorder {
 actor ChunkWriter {
     enum AppendOutcome: Sendable, Equatable {
         case ok
-        case chunkQueued
+        case chunkQueued(WatchChunkMetadata)
+        /// 小片は閉じて転送に入ったが、次の小片を開けなかった
+        case chunkQueuedThenWriteFailed(WatchChunkMetadata, String)
         case writeFailed(String)
     }
 
@@ -298,6 +380,7 @@ actor ChunkWriter {
     private var currentChunkStartMS: Int64
     private var framesWrittenInChunk: AVAudioFramePosition = 0
     private var totalFrames: AVAudioFramePosition = 0
+    private var telemetry = ChunkTelemetry()
 
     init(
         session: String,
@@ -336,7 +419,7 @@ actor ChunkWriter {
     }
 
     /// bufferを現在のfileへ書き込む。rotationの閾値に達したら閉じて転送キューへ入れ、次のfileを開く。
-    func append(_ buffer: sending AVAudioPCMBuffer) -> AppendOutcome {
+    func append(_ buffer: sending AVAudioPCMBuffer, context: ChunkAppendContext) -> AppendOutcome {
         guard let currentFile else {
             return .writeFailed("録音ファイルが開かれていません")
         }
@@ -346,6 +429,8 @@ actor ChunkWriter {
             return .writeFailed("小片の書き込みに失敗しました: \(error.localizedDescription)")
         }
         framesWrittenInChunk += AVAudioFramePosition(buffer.frameLength)
+        telemetry.add(
+            dbfs: AudioLevel.dbfs(buffer), batteryLevel: context.batteryLevel, queueDepth: context.queueDepth)
         guard framesWrittenInChunk >= chunkFrameLimit else {
             return .ok
         }
@@ -358,13 +443,20 @@ actor ChunkWriter {
         do {
             try openNextFile()
         } catch {
-            return .writeFailed("次の小片ファイルの作成に失敗しました: \(error.localizedDescription)")
+            let message = "次の小片ファイルの作成に失敗しました: \(error.localizedDescription)"
+            if let queued {
+                return .chunkQueuedThenWriteFailed(queued, message)
+            }
+            return .writeFailed(message)
         }
-        return queued ? .chunkQueued : .ok
+        if let queued {
+            return AppendOutcome.chunkQueued(queued)
+        }
+        return AppendOutcome.ok
     }
 
-    /// 収録停止時。書きかけの最後の小片があれば閉じて転送する。戻り値は転送をキューしたかどうか。
-    func finish() -> Bool {
+    /// 収録停止時。書きかけの最後の小片があれば閉じて転送する。戻り値は転送をキューした小片のmetadata。
+    func finish() -> WatchChunkMetadata? {
         closeAndTransferCurrentFile()
     }
 
@@ -388,20 +480,23 @@ actor ChunkWriter {
         currentURL = url
     }
 
-    private func closeAndTransferCurrentFile() -> Bool {
-        guard let url = currentURL else { return false }
+    private func closeAndTransferCurrentFile() -> WatchChunkMetadata? {
+        guard let url = currentURL else { return nil }
         currentFile = nil
         currentURL = nil
         guard framesWrittenInChunk > 0 else {
             // 何も書けていない（開始直後に停止した等）空fileは転送せず捨てる。
             try? FileManager.default.removeItem(at: url)
-            return false
+            telemetry.reset()
+            return nil
         }
-        let metadata = WatchChunkMetadata(
+        let base = WatchChunkMetadata(
             session: session, index: index, startAtMS: currentChunkStartMS,
             sampleRate: sampleRate, device: device, deviceName: deviceName, owner: owner)
+        let metadata: WatchChunkMetadata = telemetry.applied(to: base)
+        telemetry.reset()
         ChunkTransfer.send(fileURL: url, metadata: metadata)
-        return true
+        return metadata
     }
 }
 
