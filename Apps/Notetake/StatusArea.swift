@@ -71,17 +71,6 @@ struct StatusArea: View {
     }
 }
 
-private extension IndicatorSeverity {
-    /// 赤はalertだけ。info・normalは目立たせない
-    var color: Color {
-        switch self {
-        case .alert: return Color.red
-        case .caution: return Color.orange
-        case .info, .normal: return Color.secondary
-        }
-    }
-}
-
 /// daemonの更新が止まった時の赤い帯
 private struct DaemonBannerRow: View {
     let message: IndicatorMessage
