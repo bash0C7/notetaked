@@ -1,5 +1,22 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-10-17 夜）— 常時インジケーターの実装途中（最優先で読む）
+
+- **branch** `live-indicator`（origin に push 済み、`main` へは未 merge）。`builtin-default-input`（入力機器の方針）と`fix-ios-pending-count`（iPhoneの未送信件数）を merge して含む。この2本も origin に push 済み。PR・merge の話は user が切り出すまでしない
+- **目的**: 「ちゃんと音を拾っているか」を、異常の時だけでなく**常に**ライブパネル（Mac）とiPhoneアプリで見えるようにする（2026-10-17にmic・systemが約10分、完全な無音のまま気づけなかった事故が発端）。メニューバーは user が隠しているので使わない
+- **設計と計画（`docs/superpowers/`は`~/.config/git/ignore`でgit管理外。消えないよう注意）**: spec `docs/superpowers/specs/2026-10-17-live-indicator-design.md`、plan `docs/superpowers/plans/2026-10-17-live-indicator-1-core.md` / `-2-mac.md` / `-3-ios.md`。SDDのledgerは`.superpowers/sdd/<plan名>/progress.md`（git管理外。deferredのminorと rulingがここにある）
+- **進み具合**（実装は`superpowers:subagent-driven-development`、Sonnetが実装、Haikuが`make verify`、Sonnetがtask review、全体reviewはcontroller。各taskは`make verify`通過とreview承認の後にcontrollerがcommit）
+  - plan 1（`NotetakeCore`の共有部分）: **完了**。`LevelHistory`・`LevelScale`・`IndicatorJudge`（赤・黄・正常の判定）・`Event.peerSeg`
+  - plan 2（Mac）: Task 1〜7 **完了**（マイク取り込みのfile分割 / 共有の`LevelGraph` / 収録中の音量リーダー（生音声ファイルの末尾を読む） / 停止中のmicモニター（パネルが開いている間だけ） / `peerSeg`の送受信 / 蓋の状態と判定の入力 / 画面下部の`StatusArea`と、`>>`に畳まれない操作の行）。**Task 8（実機確認）は未実施**
+  - plan 3（iPhone）: Task 1 **完了**（`Recorder`の音量通知`onLevel`）。**Task 2（`MobileModel`の履歴と判定）、Task 3（iPhoneの`StatusArea`）が未着手**。Task 4（実機確認）は未実施
+  - 最後に全体reviewを controller が行う（plan 3の後）
+- **user の指示（2026-10-17）**: userが収録を続けている間は、**収録の持続を最優先**にする。`make install-app`、iPhoneへの install・launch（`device` skillの`install.sh` / `launch.sh`）、入力音量の変更、アプリ・daemonの停止は行っていない。ゼロ音声の再現は別のタイミングにする。したがって**`/Applications`のNotetake.appは`builtin-default-input`の版（インジケーター無し）のまま**、iPhoneは`fix-ios-pending-count`の版のまま
+- **実機で確かめていないもの（全部、これから）**: `StatusArea`の見た目と更新、音量グラフが実際に動くか、ゼロ音声で3秒後に赤になるか（macOSの入力音量を0にして再現する。`-120.0`になるかも未確認）、停止中のモニターとパネルを閉じた後のオレンジの点（ウィンドウを閉じる・最小化の2通りで`onDisappear`が出るか）、蓋を閉じた収録（mic・systemの音量、iPhoneの受信。消灯中のsystem音声は元から未確認）、`peerSeg`の`outcome`表示、iPhoneのステータス領域。`make install-app`はuserの収録を止めるので、userに確かめてから行う
+- **deferredのminor（致命的でないが、実機で見て直す候補）**: 欠測が収録中に末尾へ1件来ると、猶予（収録開始から5秒）の後は即座に赤になりうる（`IndicatorJudge`。「連続した欠測の長さ」を使う案）/ 停止中のモニターは、起動に失敗すると同じ機器では再試行しない / 収録の開始が10秒を超えると`isStartPending`の安全網が切れてモニターとdaemonが競合しうる / `RecordingLevelReader`は縮んだ・作り直されたファイルに追従しない（prefixは収録ごとに固有）/ `StatusArea`の判定文言が480ptで切れうる、`polishNote`に`lineLimit`無し / iPhoneの`Recorder`の間引きが`Date`（単調でない）、`stop()`の直前に数件届きうる
+- **私が決めたこと（確認してほしい）**: worktreeを作らず同じcheckoutでbranchを切った / subagentはcommitせずcontrollerが確認後にcommitした（AGENTS.mdの指定） / 設計の細部（しきい値: ゼロ音声3秒、開始の猶予5秒、文字が出ない30秒、音ありは`-50 dBFS`より上、daemon無応答15秒）は初期値で実機で調整する / iPhoneの停止中モニターは作らない（iPhoneは取り込み中だけ表示）/ 停止中のmicモニターは「パネルが開いている間だけ」マイクを開く（userはこの案に了承済み）
+- **この作業で分かった落とし穴**: reviewerが「コンパイルは通る」と判断しても、`make verify`で落ちたことが3回あった（`#Preview`の型検査の内部エラー、`@MainActor`クラスのstaticを非隔離から参照、`@Sendable`クロージャが生ポインタを捕まえる）。**コンパイルの真偽は`make verify`だけが決める**。zshでは`log`が組み込みと衝突するので`/usr/bin/log`を使う。前面の`sleep`は使えない
+- **次の手順**: ①plan 3のTask 2・3を実装（`make verify`とreviewを通す） ②全体review ③userの確認の上で`make install-app`とiPhoneへのinstallを行い、上の「実機で確かめていないもの」を順に確かめる ④結果をこのHANDOFFへ書く（確かめたものだけ「確認済み」）
+
 ## 状態（2026-10-06）
 
 - **branch** `batch-finalize-redesign`。mainより24 commit先、未push。spec `docs/superpowers/specs/2026-10-03-batch-finalize-redesign-design.md`
