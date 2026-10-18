@@ -12,7 +12,7 @@ Macのメニューバーappとdaemonで会議音声（マイク + システム�
 | `NotetakeCore` | `Sources/NotetakeCore` | 共有ロジック。生音声の形式と時刻の基準点 / Segment / Reconciler / LocationLabel / DirectionEstimator / PeerMessageなど |
 | Notetake.app | `Apps/Notetake` | メニューバーapp。capture-daemonとserveを子processとして起動・監視・再起動・終了し、メニューにsourceごとの取り込みの状態を出す。ライブパネル（本文・区切る・整形）と設定Windowを持つ |
 | NotetakeMobile | `Apps/NotetakeMobile` | iPhone app。Bonjour + TLS PSKでMacへ接続し、マイク（iPhone 16eは空間音声FOAで方位付き）の文字起こしをsegとして送る。Watchからの小片を中継する |
-| NotetakeWatch | `Apps/NotetakeWatch` | Watch app。20秒のAAC小片を`WCSession.transferFile`でiPhoneへ送る |
+| NotetakeWatch | `Apps/NotetakeWatch` | Watch app。手首を下げても録れ続け、20秒のAAC小片を`WCSession.transferFile`でiPhoneへ送り、小片ごとに`sendMessage`の合図でiPhoneを起こす。表示は最小（色の点と1行と触覚） |
 
 出力（設定「保存先」、既定`~/Downloads`）: `<prefix>.live.txt` / `.timed.jsonl`（全record）/ `.final.md`（`HH:mm:ss **話者**（場所）: 本文`）/ `.polished.md`、`orphans.jsonl`。収録中の発話には話者を付けず、micは自分の名前、systemは「リモート」と表示する。収録の停止または区切りの後に、その収録の生音声全体を一括で文字起こしと話者分離（確定）し、話者付きの`.final.md`と`<prefix>.speakers.json`（話者ごとの名前と発話秒数）を書く。話者の名前はメニューの「収録の話者」windowで付け、人数を指定して確定し直せる。生音声は`$TMPDIR/notetake-capture/<prefix>/`（`<source>.pcm`は16kHz monoのFloat32、`<source>.meta.jsonl`は時刻の基準点と入力機器、`session.json`）に置き、削除はOSに任せる。
 
@@ -46,9 +46,18 @@ make clean    # .buildと生成済みXcodeプロジェクトを削除
 1. `make install-app`後に`open /Applications/Notetake.app`で起動（`open`で開く。binary直起動はUIが壊れる）。設定Windowで保存先・自分の名前・自動で区切る間隔（時間、0で区切らない）・ペアリングコード
 2. メニュー / ライブパネルの「収録開始」「収録停止」「区切る」（prefixを切り替える）「整形」（直前の収録を`polish`）。メニューにsourceごとの取り込みの状態（取り込み中 / 再開待ち / 停止）が出る。ディスプレイの消灯などでsystem音声が止まると、capture-daemonが5秒ごとに作り直す。
 3. iPhone: Notetakeにペアリングコードを入力→「接続: <Mac名>」→「開始」。segはMacの収録に時刻で割り当てられ、切断中の分は再接続後に送られて`final.md`が再生成される
-4. Watch: Notetakeで「開始」→iPhone経由でMacへ届く（`（Watch）`行）
+4. Watch: Notetakeで「開始」→iPhone経由でMacへ届く（`（Watch）`行）。常用する時の注意は下の「Watchを常用する時の注意」
 
 CLI単体: `.build/release/notetaked capture-daemon`を起動しておき、`.build/release/notetaked serve --output <dir> --owner <名前> --source both [--pair-code 123456]`（stdinに`{"cmd":"start"|"stop"|"rotate"|"rename_speaker"|"pair_code"|"quit"}`、stdoutに`status` / `utterance` / `volatile` / `peer` / `log` / `error` / `input_reset`イベント）。serveは`capture-desired.json`でcapture-daemonへ取り込みを指示する。
+
+## Watchを常用する時の注意
+
+- **iPhoneの「Watch受信モード」を入にしておく**。手首を下げたWatchは`isReachable`がfalseになり、合図だけでは背面のiPhoneを起こせない。受信モードはiPhoneが無音を再生して背面に生き続ける。**12時間で自動的に切れる**ので、1日1回、iPhoneアプリを前面にして入れ直す。切れると、手首を下げている間の小片はiPhoneの受け取り箱に溜まり、アプリを前面にするまで文字起こしされない
+- **中断で止まったら、Watchで開始し直す**。タイマー・通話・Siri・アラームなどの中断でWatchの収録が止まっても、自動では再開しない。止まったことは、Watchの通知と、iPhone・MacのWatch行の色に出る
+- **iPhoneのmic収録とは同時に動かさない**。mic収録中は無音再生が止まり、収録が終わると再開する
+- **Macが収録していない時間に届いたWatchの発話は、`orphans.jsonl`（保存先）に残る**。どの収録にも混ざらないが、失われない。収録として取り込むかはissue #23で保留
+- **電池は未測定**。Watchは約30分で10%減った例がある（画面の点灯を含みうる）。iPhone・Watchの減りは、日頃の利用の中で見る
+- **版を揃える**: iPhoneはWatchと同じか新しい版にする。入れ替えはMac → iPhone → Watchの順で、userの収録中は行わない。iPhoneのbuildが「cannot find type」で落ちる時は、`make project`で`Apps/Notetake.xcodeproj`を作り直す（新しいfileが入っていない）
 
 ## 既知の制限
 
