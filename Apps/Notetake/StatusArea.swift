@@ -49,9 +49,12 @@ struct StatusArea: View {
             }
             PeerRow(
                 connectedNames: appModel.connectedPeerNames,
-                lastSeg: newestPeerSeg(),
+                lastSeg: PeerSegSummary.latest(Array(appModel.lastPeerSeg.values), platform: .ios),
                 message: appModel.peerIndicator,
                 nowMS: nowMS)
+            if let watch = watchRowInput() {
+                WatchRow(snapshot: watch.snapshot, lastSeg: watch.lastSeg, nowMS: nowMS)
+            }
             FooterRow(statusText: statusText, clamshellClosed: appModel.clamshellClosed)
         }
         .font(.callout)
@@ -65,20 +68,12 @@ struct StatusArea: View {
         return max(0, Int((nowMS - lastEnd) / 1000))
     }
 
-    /// 受信時刻が最も新しいiPhone等のseg情報
-    private func newestPeerSeg() -> AppModel.PeerSegInfo? {
-        appModel.lastPeerSeg.values.max { $0.receivedAt < $1.receivedAt }
-    }
-}
-
-private extension IndicatorSeverity {
-    /// 赤はalertだけ。info・normalは目立たせない
-    var color: Color {
-        switch self {
-        case .alert: return Color.red
-        case .caution: return Color.orange
-        case .info, .normal: return Color.secondary
-        }
+    /// Watch行の材料。Watchのsegもsnapshotも一度も無ければnil（行を出さない）
+    private func watchRowInput() -> (snapshot: WatchStatusSnapshot?, lastSeg: PeerSegSummary?)? {
+        let snapshot = appModel.watchStatuses.values.max { $0.updatedAtMS < $1.updatedAtMS }
+        let lastSeg = PeerSegSummary.latest(Array(appModel.lastPeerSeg.values), platform: .watchos)
+        if snapshot == nil, lastSeg == nil { return nil }
+        return (snapshot, lastSeg)
     }
 }
 
@@ -170,7 +165,7 @@ private struct SystemStoppedRow: View {
 /// iPhoneの接続と最終受信の行
 private struct PeerRow: View {
     let connectedNames: [String]
-    let lastSeg: AppModel.PeerSegInfo?
+    let lastSeg: PeerSegSummary?
     let message: IndicatorMessage?
     let nowMS: Int64
 
@@ -190,11 +185,12 @@ private struct PeerRow: View {
         return Self.outcomeText(seg.outcome)
     }
 
-    private static func outcomeText(_ outcome: PeerSegOutcome) -> String {
+    fileprivate static func outcomeText(_ outcome: PeerSegOutcome) -> String {
         switch outcome {
         case .current: return "今の収録に入りました"
         case .other: return "別の収録に追記しました"
         case .orphan: return "どの収録にも入らず orphans.jsonl へ"
+        case .peerRecording: return "端末の収録に入りました"
         }
     }
 
@@ -220,6 +216,64 @@ private struct PeerRow: View {
                 .padding(.leading, 56)
             Text(message?.text ?? "")
                 .foregroundStyle(Color.orange)
+                .lineLimit(1)
+                .frame(height: 16, alignment: .leading)
+                .padding(.leading, 56)
+        }
+    }
+}
+
+/// Watch（iPhone経由）の行。色と文言は`WatchStatusJudge`。`watch_status`が来ない間は`peerSeg`だけで出す
+private struct WatchRow: View {
+    let snapshot: WatchStatusSnapshot?
+    let lastSeg: PeerSegSummary?
+    let nowMS: Int64
+
+    private var message: IndicatorMessage {
+        WatchStatusJudge.judge(snapshot, nowMS: nowMS)
+    }
+
+    /// 最終受信。snapshotの小片の受信時刻を優先し、無ければ`peerSeg`の受信時刻
+    private var lastReceivedText: String {
+        guard let receivedAt = snapshot?.lastChunkReceivedAtMS ?? lastSeg?.receivedAt else { return "最終受信 —" }
+        return "最終受信 \(max(0, Int((nowMS - receivedAt) / 1000)))秒前"
+    }
+
+    private var batteryText: String? {
+        snapshot?.batteryLevel.map { "電池 \(Int(($0 * 100).rounded()))%" }
+    }
+
+    private var outcomeLine: String {
+        lastSeg.map { PeerRow.outcomeText($0.outcome) } ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text("Watch")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .leading)
+                Text("（iPhone経由）")
+                    .lineLimit(1)
+                Text(lastReceivedText)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let batteryText {
+                    Text(batteryText)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .lineLimit(1)
+            Text(outcomeLine)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(height: 16, alignment: .leading)
+                .padding(.leading, 56)
+            Text(message.text)
+                .foregroundStyle(message.severity.color)
                 .lineLimit(1)
                 .frame(height: 16, alignment: .leading)
                 .padding(.leading, 56)

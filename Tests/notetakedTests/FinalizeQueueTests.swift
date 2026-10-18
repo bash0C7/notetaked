@@ -39,6 +39,13 @@ private final class Log: @unchecked Sendable {
         }
     }
 
+    func details(of prefix: String) -> [String?] {
+        events.compactMap { event in
+            if case .finalizeState(let state) = event, state.prefix == prefix { return state.detail }
+            return nil
+        }
+    }
+
     func logs() -> [String] {
         events.compactMap { event in
             if case .log(let message) = event { return message }
@@ -175,9 +182,32 @@ private func text(_ url: URL) throws -> String {
     #expect(finalized.first?.speakers.map(\.id) == ["s1", "s2"])
     #expect(try text(SessionFiles.finalURL(prefix: "p1", directory: harness.output)).contains("**話者1**"))
     #expect(await queue.state(of: "p1")?.run == 1)
-    await waitUntil { harness.log.logs().contains("p1: finalize: 完了 run 1") }
     #expect(harness.log.logs().contains("p1: finalize: 完了 run 1"))
     #expect(!harness.log.logs().contains { $0.contains("DEBUG") })
+}
+
+@Test func childLinesAreReflectedInOrderBeforeTheFinalizedState() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let queue = harness.queue(runChild: { prefix, run, _, onLine in
+        for percent in stride(from: 5, through: 95, by: 5) {
+            onLine("finalize-progress mic transcribe \(percent)")
+        }
+        onLine("finalize: 完了 run \(run)")
+        try harness.writeResult(prefix: prefix, run: run)
+    })
+
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    let expected = stride(from: 5, through: 95, by: 5).map { "mic 文字起こし \($0)%" }
+    #expect(harness.log.details(of: "p1").compactMap { $0 } == expected)
+    #expect(harness.log.states(of: "p1") == [.waiting, .running] + Array(repeating: .running, count: expected.count) + [.finalized])
+    let events = harness.log.events
+    let completion = events.firstIndex { if case .log("p1: finalize: 完了 run 1") = $0 { return true } else { return false } }
+    let finalized = events.firstIndex { if case .finalized = $0 { return true } else { return false } }
+    #expect(try #require(completion) < #require(finalized))
 }
 
 @Test func queueWaitsWhileCaptureDaemonStillWritesThePrefix() async throws {

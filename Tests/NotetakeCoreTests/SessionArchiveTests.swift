@@ -245,3 +245,80 @@ private func text(_ url: URL) throws -> String {
     #expect(spans.map(\.prefix) == ["old", prefix])
     #expect(spans.first?.endMS == 1_200)
 }
+
+private func peerSegment(_ platform: Platform, start: Int64, end: Int64) -> Segment {
+    Segment(
+        id: UUID(), session: "w1", seq: 1, device: "watch1", deviceName: "Watch", owner: "山田太郎", platform: platform,
+        source: .watch, input: .test, start: start, end: end, text: "peerの発話")
+}
+
+private func macSegment(start: Int64, end: Int64) -> Segment {
+    Segment(
+        id: UUID(), session: prefix, seq: 1, device: device, deviceName: device, owner: "山田太郎", platform: .mac,
+        source: .mic, input: .test, start: start, end: end, text: "Macの発話")
+}
+
+@Test func oldSessionRecordDecodesAsMac() throws {
+    let record = try NDJSON.decode(#"{"t":"session","id":"p","started":5,"owner":"山田"}"#)
+    guard case .session(let session) = record else { Issue.record("session ではない"); return }
+    #expect(session.origin == nil)
+    #expect(session.peerDevice == nil)
+    #expect(session.peerSession == nil)
+    #expect(try NDJSON.encode(record).contains("origin") == false)
+}
+
+@Test func peerSessionRecordRoundTrips() throws {
+    let record = Record.session(
+        SessionRecord(id: "p-watch", started: 5, owner: "山田", origin: .peer, peerDevice: "watch1", peerSession: "123"))
+    let line = try NDJSON.encode(record)
+    #expect(line.contains("\"peer_device\""))
+    #expect(line.contains("\"peer_session\""))
+    #expect(try NDJSON.decode(line) == record)
+}
+
+@Test func unendedMacSessionEndsAtTheLastMacUtterance() {
+    let records: [Record] = [
+        .session(SessionRecord(id: "m", started: 0, owner: "山田")),
+        .segment(macSegment(start: 9_000, end: 10_000)),
+        .segment(peerSegment(.ios, start: 59_000, end: 60_000)),
+    ]
+    #expect(SessionSpanReader.span(prefix: "m", records: records)?.endMS == 10_000)
+}
+
+@Test func peerSegmentsDoNotChainTheEnd() {
+    var records: [Record] = [
+        .session(SessionRecord(id: "m", started: 0, owner: "山田")),
+        .segment(macSegment(start: 9_000, end: 10_000)),
+    ]
+    var end = SessionSpanReader.span(prefix: "m", records: records)!.endMS!
+    for _ in 0..<5 {
+        let next = peerSegment(.watchos, start: end + 4_000, end: end + 6_000)
+        let span = SessionSpanReader.span(prefix: "m", records: records)!
+        #expect(SessionMatcher.match(segmentStartMS: next.start, sessions: [span]) == "m")
+        records.append(.segment(next))
+        end = SessionSpanReader.span(prefix: "m", records: records)!.endMS!
+        #expect(end == 10_000)
+    }
+    let late = SessionSpanReader.span(prefix: "m", records: records)!
+    #expect(SessionMatcher.match(segmentStartMS: 15_001, sessions: [late]) == nil)
+}
+
+@Test func endedSessionStillUsesSessionEnd() {
+    let records: [Record] = [
+        .session(SessionRecord(id: "m", started: 0, owner: "山田")),
+        .segment(macSegment(start: 1_000, end: 2_000)),
+        .sessionEnd(SessionEndRecord(ended: 7_000)),
+    ]
+    #expect(SessionSpanReader.span(prefix: "m", records: records)?.endMS == 7_000)
+}
+
+@Test func peerSessionSpanUsesPeerUtterancesAndKey() {
+    let records: [Record] = [
+        .session(SessionRecord(id: "p", started: 100, owner: "山田", origin: .peer, peerDevice: "watch1", peerSession: "w1")),
+        .segment(peerSegment(.watchos, start: 200, end: 900)),
+    ]
+    let span = SessionSpanReader.span(prefix: "p", records: records)
+    #expect(span?.origin == .peer)
+    #expect(span?.peerKey == "watch1/w1")
+    #expect(span?.endMS == 900)
+}

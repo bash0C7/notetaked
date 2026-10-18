@@ -65,6 +65,8 @@ public enum PeerMessage: Codable, Sendable, Equatable {
     /// Segmentのキーをそのまま（Record.segmentと同じ形、tだけ違う）
     case seg(Segment)
     case ack(seq: Int)
+    /// iPhoneが中継するWatchの状態。payloadは`status`の下に入れ子で置く
+    case watchStatus(WatchStatusSnapshot)
 
     enum CodingKeys: String, CodingKey {
         case t
@@ -73,6 +75,7 @@ public enum PeerMessage: Codable, Sendable, Equatable {
         case t1
         case t2
         case seq
+        case status
     }
 
     public init(from decoder: Decoder) throws {
@@ -98,6 +101,8 @@ public enum PeerMessage: Codable, Sendable, Equatable {
         case "ack":
             let seq = try container.decode(Int.self, forKey: .seq)
             self = .ack(seq: seq)
+        case "watch_status":
+            self = .watchStatus(try container.decode(WatchStatusSnapshot.self, forKey: .status))
         default:
             throw PeerError.unknownType(type)
         }
@@ -128,6 +133,9 @@ public enum PeerMessage: Codable, Sendable, Equatable {
         case .ack(let seq):
             try container.encode("ack", forKey: .t)
             try container.encode(seq, forKey: .seq)
+        case .watchStatus(let snapshot):
+            try container.encode("watch_status", forKey: .t)
+            try container.encode(snapshot, forKey: .status)
         }
     }
 

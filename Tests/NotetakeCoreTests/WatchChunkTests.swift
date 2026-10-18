@@ -88,95 +88,156 @@ private func fixtureMeta(
     #expect(WatchChunkMetadata(metadata: [:]) == nil)
 }
 
-// MARK: - WatchChunkSequencer
+private let legacyMetadataKeys: Set<String> = [
+    "session", "index", "start_at_ms", "sample_rate", "device", "device_name", "owner",
+]
 
-@Test func sequencerEmitsInOrderChunksImmediately() {
-    var sequencer = WatchChunkSequencer()
-    let m0 = fixtureMeta(index: 0)
-    let m1 = fixtureMeta(index: 1)
-    let m2 = fixtureMeta(index: 2)
-
-    #expect(sequencer.accept(m0) == [m0])
-    #expect(sequencer.accept(m1) == [m1])
-    #expect(sequencer.accept(m2) == [m2])
-    #expect(sequencer.nextIndex == 3)
+@Test func oldMetadataWithoutSummaryStillDecodes() {
+    let dict: [String: Any] = [
+        "session": "1700000000000",
+        "index": 0,
+        "start_at_ms": Int64(1_700_000_000_000),
+        "sample_rate": 16000.0,
+        "device": "watch-abc",
+        "device_name": "小芝のApple Watch",
+        "owner": "小芝",
+    ]
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.meanDBFS == nil)
+    #expect(restored?.batteryLevel == nil)
+    #expect(restored?.maxQueueDepth == nil)
 }
 
-@Test func sequencerBuffersOutOfOrderChunksThenReleasesInOrder() {
-    var sequencer = WatchChunkSequencer()
-    let m0 = fixtureMeta(index: 0)
-    let m1 = fixtureMeta(index: 1)
-    let m2 = fixtureMeta(index: 2)
-
-    #expect(sequencer.accept(m2) == [])
-    #expect(sequencer.accept(m1) == [])
-    #expect(sequencer.accept(m0) == [m0, m1, m2])
-    #expect(sequencer.nextIndex == 3)
+@Test func metadataWithSummaryRoundTrips() {
+    var meta = fixtureMeta()
+    meta.maxDBFS = -12.5
+    meta.meanDBFS = -40.25
+    meta.batteryLevel = 0.8
+    meta.maxQueueDepth = 3
+    let restored = WatchChunkMetadata(metadata: meta.metadata)
+    #expect(restored == meta)
 }
 
-@Test func sequencerDropsDuplicateOrOldChunks() {
-    var sequencer = WatchChunkSequencer()
-    let m0 = fixtureMeta(index: 0)
-    let m1 = fixtureMeta(index: 1)
-
-    #expect(sequencer.accept(m0) == [m0])
-    #expect(sequencer.accept(m1) == [m1])
-    // duplicate of an already-emitted chunk
-    #expect(sequencer.accept(m1) == [])
-    // older than nextIndex
-    #expect(sequencer.accept(m0) == [])
-    #expect(sequencer.nextIndex == 2)
+@Test func metadataWithoutSummaryOmitsTheNewKeys() {
+    let keys = Set(fixtureMeta().metadata.keys)
+    #expect(keys == legacyMetadataKeys)
 }
 
-@Test func sequencerSkipsAheadAfterExceedingMaxPendingAndDropsLateSkippedChunk() {
-    var sequencer = WatchChunkSequencer(maxPending: 3)
-    let m1 = fixtureMeta(index: 1)
-    let m2 = fixtureMeta(index: 2)
-    let m3 = fixtureMeta(index: 3)
-    let m6 = fixtureMeta(index: 6)
-    let m7 = fixtureMeta(index: 7)
-    let m8 = fixtureMeta(index: 8)
-    let m9 = fixtureMeta(index: 9)
-    let m4 = fixtureMeta(index: 4)
-
-    #expect(sequencer.accept(m1) == [])
-    #expect(sequencer.accept(m2) == [])
-    #expect(sequencer.accept(m3) == [])
-    // pending {1,2,3,6} exceeds maxPending(3) -> skip ahead to smallest pending (1),
-    // draining consecutively until the real gap at 4
-    #expect(sequencer.accept(m6) == [m1, m2, m3])
-    #expect(sequencer.nextIndex == 4)
-
-    #expect(sequencer.accept(m7) == [])
-    #expect(sequencer.accept(m8) == [])
-    // pending {6,7,8,9} exceeds maxPending(3) -> skip ahead past the 4/5 gap entirely
-    #expect(sequencer.accept(m9) == [m6, m7, m8, m9])
-    #expect(sequencer.nextIndex == 10)
-
-    // chunk 4 was skipped over and is now older than nextIndex -> dropped
-    #expect(sequencer.accept(m4) == [])
+@Test func summaryWithWrongTypesIsIgnoredNotRejected() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = "x"
+    dict["max_queue_depth"] = "y"
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.maxQueueDepth == nil)
 }
 
-@Test func sequencerFlushReturnsAllPendingInIndexOrder() {
-    var sequencer = WatchChunkSequencer()
-    let m1 = fixtureMeta(index: 1)
-    let m2 = fixtureMeta(index: 2)
-
-    #expect(sequencer.accept(m2) == [])
-    #expect(sequencer.accept(m1) == [])
-    #expect(sequencer.flush() == [m1, m2])
-    #expect(sequencer.flush() == [])
+@Test func summaryNumbersAcceptNSNumberAndInt() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = NSNumber(value: -20.5)
+    dict["battery_level"] = Int(1)
+    dict["max_queue_depth"] = NSNumber(value: 4)
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored?.maxDBFS == -20.5)
+    #expect(restored?.batteryLevel == 1.0)
+    #expect(restored?.maxQueueDepth == 4)
 }
 
-@Test func sequencerIgnoresChunksFromADifferentSessionAndKeepsStateUnchanged() {
-    var sequencer = WatchChunkSequencer()
-    let a0 = fixtureMeta(session: "session-a", index: 0)
-    let b0 = fixtureMeta(session: "session-b", index: 0)
+@Test func negativeQueueDepthIsIgnored() {
+    var dict = fixtureMeta().metadata
+    dict["max_queue_depth"] = -1
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxQueueDepth == nil)
 
-    #expect(sequencer.accept(a0) == [a0])
-    #expect(sequencer.accept(b0) == [])
-    #expect(sequencer.nextIndex == 1)
+    dict["max_queue_depth"] = NSNumber(value: -3)
+    #expect(WatchChunkMetadata(metadata: dict)?.maxQueueDepth == nil)
+}
 
-    // the ignored chunk must not have been buffered either
-    #expect(sequencer.flush() == [])
+@Test func boolIsNotReadAsNumber() {
+    var dict = fixtureMeta().metadata
+    dict["max_queue_depth"] = true
+    dict["battery_level"] = NSNumber(value: true)
+    dict["max_dbfs"] = false
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxQueueDepth == nil)
+    #expect(restored?.batteryLevel == nil)
+    #expect(restored?.maxDBFS == nil)
+}
+
+@Test func nonFiniteSummaryDoublesAreIgnored() {
+    var dict = fixtureMeta().metadata
+    dict["max_dbfs"] = Double.nan
+    dict["mean_dbfs"] = -Double.infinity
+    dict["battery_level"] = Double.infinity
+    let restored = WatchChunkMetadata(metadata: dict)
+    #expect(restored != nil)
+    #expect(restored?.maxDBFS == nil)
+    #expect(restored?.meanDBFS == nil)
+    #expect(restored?.batteryLevel == nil)
+}
+
+// MARK: - duration_ms / is_final / JSON
+
+@Test func metadataWithDurationAndFinalRoundTrips() {
+    var meta = fixtureMeta()
+    meta.durationMS = 20_000
+    meta.isFinal = true
+    #expect(WatchChunkMetadata(metadata: meta.metadata) == meta)
+}
+
+@Test func oldMetadataHasNoDurationOrFinal() {
+    let dict: [String: Any] = [
+        "session": "1", "index": 0, "start_at_ms": 1_700_000_000_000, "sample_rate": 16000.0,
+        "device": "d", "device_name": "n", "owner": "o",
+        "max_dbfs": -20.0, "mean_dbfs": -30.0, "battery_level": 0.5, "max_queue_depth": 1,
+    ]
+    let meta = WatchChunkMetadata(metadata: dict)
+    #expect(meta != nil)
+    #expect(meta?.durationMS == nil)
+    #expect(meta?.isFinal == nil)
+}
+
+@Test func nilDurationAndFinalAreOmitted() {
+    let keys = Set(fixtureMeta().metadata.keys)
+    #expect(!keys.contains("duration_ms"))
+    #expect(!keys.contains("is_final"))
+}
+
+@Test func finalAcceptsNSNumberBool() {
+    var dict = fixtureMeta().metadata
+    dict["is_final"] = NSNumber(value: true)
+    dict["duration_ms"] = NSNumber(value: 1234)
+    let meta = WatchChunkMetadata(metadata: dict)
+    #expect(meta?.isFinal == true)
+    #expect(meta?.durationMS == 1234)
+}
+
+private func fullMeta() -> WatchChunkMetadata {
+    WatchChunkMetadata(
+        session: "1700000000000", index: 7, startAtMS: 4_000_000_000_000, sampleRate: 48000,
+        device: "watch-abc", deviceName: "小芝のApple Watch", owner: "小芝",
+        maxDBFS: -12.5, meanDBFS: -30.25, batteryLevel: 0.75, maxQueueDepth: 2,
+        durationMS: 20_000, isFinal: true)
+}
+
+@Test func metadataRoundTripsThroughJSON() throws {
+    let meta = fullMeta()
+    #expect(WatchChunkMetadata(json: try meta.encodedJSON()) == meta)
+}
+
+@Test func legacySidecarJSONStillDecodes() throws {
+    let meta = fixtureMeta()
+    let data = try JSONSerialization.data(withJSONObject: meta.metadata)
+    #expect(WatchChunkMetadata(json: String(decoding: data, as: UTF8.self)) == meta)
+}
+
+@Test func brokenJSONIsNil() {
+    #expect(WatchChunkMetadata(json: "{not json") == nil)
+    #expect(WatchChunkMetadata(json: "[]") == nil)
+    #expect(WatchChunkMetadata(json: "{}") == nil)
 }

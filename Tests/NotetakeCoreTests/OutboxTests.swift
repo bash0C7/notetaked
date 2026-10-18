@@ -111,6 +111,176 @@ private func makeSegment(seq: Int, text: String = "hi") -> Segment {
     #expect(pendingAfterAppend.map(\.seq) == [3, 4])
 }
 
+private func lineCount(of url: URL) throws -> Int {
+    let text = try String(contentsOf: url, encoding: .utf8)
+    return text.split(separator: "\n", omittingEmptySubsequences: true).count
+}
+
+/// seq 1〜3をappendして全件ack、compactしたdirectoryを作る
+private func makeDirectoryCompactedAfterAckingEverything() async throws -> URL {
+    let dir = makeTempDirectory()
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+    try await outbox.acknowledge(upTo: 3)
+    try await outbox.compact()
+    return dir
+}
+
+@Test func reopenAfterCompactingEverythingContinuesAfterTheAckedSeq() async throws {
+    let dir = try await makeDirectoryCompactedAfterAckingEverything()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let reopened = Outbox(directory: dir)
+    #expect(await reopened.nextSeq() == 4)
+    #expect(await reopened.ackedSeq == 3)
+    let pending = try await reopened.pending()
+    #expect(pending.isEmpty)
+}
+
+@Test func reopenWithACursorAheadOfTheFileContinuesAfterTheCursor() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try "10".write(to: dir.appendingPathComponent("outbox.cursor"), atomically: true, encoding: .utf8)
+
+    let outbox = Outbox(directory: dir)
+    #expect(await outbox.nextSeq() == 11)
+}
+
+@Test func appendAssigningSeqAfterReopenNeverReusesAnAckedSeq() async throws {
+    let dir = try await makeDirectoryCompactedAfterAckingEverything()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let reopened = Outbox(directory: dir)
+    let appended = try await reopened.appendAssigningSeq(makeSegment(seq: 0))
+    #expect(appended.seq == 4)
+    let pending = try await reopened.pending()
+    #expect(pending.map(\.seq) == [4])
+}
+
+@Test func compactIfDrainedLeavesTheFileUntouchedWhileAnythingIsUnacknowledged() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+    try await outbox.acknowledge(upTo: 2)
+
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 3)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
+@Test func compactIfDrainedEmptiesTheFileAndKeepsABackupOnce() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+    try await outbox.acknowledge(upTo: 3)
+
+    #expect(try await outbox.compactIfDrained() == true)
+    #expect(try lineCount(of: outbox.outboxURL) == 0)
+    #expect(try lineCount(of: outbox.backupURL) == 3)
+
+    let appended = try await outbox.appendAssigningSeq(makeSegment(seq: 0))
+    try await outbox.acknowledge(upTo: appended.seq)
+    #expect(try await outbox.compactIfDrained() == true)
+    #expect(try lineCount(of: outbox.outboxURL) == 0)
+    #expect(try lineCount(of: outbox.backupURL) == 3) // 上書きしない
+}
+
+/// cursorのパスを中身のあるdirectoryにして、cursorを書けない状態を作る
+private func blockCursorFile(in dir: URL) throws {
+    let cursor = dir.appendingPathComponent("outbox.cursor")
+    try? FileManager.default.removeItem(at: cursor)
+    try FileManager.default.createDirectory(at: cursor, withIntermediateDirectories: true)
+    try "x".write(to: cursor.appendingPathComponent("blocker"), atomically: true, encoding: .utf8)
+}
+
+@Test func acknowledgeDoesNotAdvanceWhenTheCursorCannotBeWritten() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try blockCursorFile(in: dir)
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+
+    await #expect(throws: (any Error).self) { try await outbox.acknowledge(upTo: 3) }
+    #expect(await outbox.ackedSeq == 0)
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 3)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+
+    let reopened = Outbox(directory: dir)
+    #expect(await reopened.nextSeq() == 4)
+}
+
+@Test func compactIfDrainedDoesNothingWhenTheCursorCannotBeRead() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.acknowledge(upTo: 2)
+    try blockCursorFile(in: dir)
+
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 2)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
+@Test func compactIfDrainedDoesNothingWhenTheCursorFileIsStale() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.acknowledge(upTo: 2)
+    try "1".write(to: outbox.cursorURL, atomically: true, encoding: .utf8)
+
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(try lineCount(of: outbox.outboxURL) == 2)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
+@Test func compactIfDrainedDoesNothingOnAnEmptyFile() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    #expect(try await outbox.compactIfDrained() == false)
+    #expect(!FileManager.default.fileExists(atPath: outbox.backupURL.path))
+}
+
+@Test func unacknowledgedCountFollowsAppendAndAck() async throws {
+    let dir = makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let outbox = Outbox(directory: dir)
+    #expect(await outbox.unacknowledgedCount == 0)
+    try await outbox.append(makeSegment(seq: 1))
+    try await outbox.append(makeSegment(seq: 2))
+    try await outbox.append(makeSegment(seq: 3))
+    #expect(await outbox.unacknowledgedCount == 3)
+    try await outbox.acknowledge(upTo: 2)
+    #expect(await outbox.unacknowledgedCount == 1)
+    try await outbox.acknowledge(upTo: 3)
+    #expect(await outbox.unacknowledgedCount == 0)
+
+    let reopened = Outbox(directory: dir)
+    #expect(await reopened.unacknowledgedCount == 0)
+}
+
 @Test func appendAssigningSeqUsesNextSeqAndAdvances() async throws {
     let outbox = Outbox(directory: makeTempDirectory())
     let first = try await outbox.appendAssigningSeq(makeSegment(seq: 0, text: "a"))

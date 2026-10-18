@@ -91,7 +91,9 @@ final class AppModel {
     /// 接続中のiPhone等のpeer（device id → 表示名）。`.peer(connected: false)`で削除する。
     var connectedPeers: [String: String] = [:]
     /// device idごとの、iPhoneから直近に受信したsegの情報。収録をまたいでも、切断されても消さない
-    var lastPeerSeg: [String: PeerSegInfo] = [:]
+    var lastPeerSeg: [String: PeerSegSummary] = [:]
+    /// device idごとの、iPhoneが中継したWatchの状態。`watch_status`が来るたびに置き換える
+    private(set) var watchStatuses: [String: WatchStatusSnapshot] = [:]
 
     /// 一度でもiPhone等のpeerが接続したか。切断の警告（`peerIndicator`）の前提。戻さない
     private(set) var wasPeerConnected = false
@@ -99,12 +101,6 @@ final class AppModel {
     private(set) var clamshellClosed = false
     /// `capture-actual.json`の`updated`（epoch ms）。ライブwindowが開いている間、1秒ごとに更新する
     private(set) var captureActualUpdatedMS: Int64?
-
-    struct PeerSegInfo: Equatable {
-        var deviceName: String
-        var receivedAt: Int64
-        var outcome: PeerSegOutcome
-    }
 
     private var client: DaemonClient?
     /// `client`が起動した時刻。heartbeat監視の起動直後猶予期間の起点（起動〜資産読込〜resumeの
@@ -730,8 +726,11 @@ final class AppModel {
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
-        case .peerSeg(let device, let deviceName, let receivedAt, let outcome):
-            lastPeerSeg[device] = PeerSegInfo(deviceName: deviceName, receivedAt: receivedAt, outcome: outcome)
+        case .peerSeg(let device, let deviceName, let receivedAt, let outcome, let platform):
+            lastPeerSeg[device] = PeerSegSummary(
+                device: device, deviceName: deviceName, receivedAt: receivedAt, outcome: outcome, platform: platform)
+        case .watchStatus(let snapshot):
+            watchStatuses[snapshot.device] = snapshot
         case .inputReset:
             preferredInputDeviceUID = nil
         case .finalizeState(let state):

@@ -44,3 +44,11 @@ import Testing
     #expect(SessionMatcher.match(segmentStartMS: 10_000, sessions: sessions) == nil)
     #expect(SessionMatcher.match(segmentStartMS: 100, sessions: []) == nil)
 }
+
+@Test func peerSpansAreNeverMatchedByTime() {
+    let sessions = [
+        SessionSpan(prefix: "peer", startMS: 0, endMS: nil, origin: .peer, peerKey: "watch1/w1"),
+        SessionSpan(prefix: "peer2", startMS: 0, endMS: 10_000, origin: .peer, peerKey: "watch1/w2"),
+    ]
+    #expect(SessionMatcher.match(segmentStartMS: 5_000, sessions: sessions) == nil)
+}

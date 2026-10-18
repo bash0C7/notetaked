@@ -117,3 +117,18 @@ private func tokyoDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, 
     #expect(text.split(separator: "\n", omittingEmptySubsequences: false).count == 3)
     #expect(NDJSON.decodeAll(text).count == 2)
 }
+
+@Test func prefixRoundTripsToTheSecond() {
+    let zone = TimeZone(identifier: "Asia/Tokyo")!
+    let date = tokyoDate(year: 2026, month: 10, day: 18, hour: 9, minute: 5, second: 7)
+    let prefix = SessionStore.prefix(for: date, timeZone: zone)
+    #expect(SessionStore.date(fromPrefix: prefix, timeZone: zone) == date)
+}
+
+@Test func nonPrefixIsNil() {
+    let zone = TimeZone(identifier: "UTC")!
+    #expect(SessionStore.date(fromPrefix: "2026-10-18_090507-watch", timeZone: zone) == nil)
+    #expect(SessionStore.date(fromPrefix: "1760000000000", timeZone: zone) == nil)
+    #expect(SessionStore.date(fromPrefix: "2026-13-18_090507", timeZone: zone) == nil)
+    #expect(SessionStore.date(fromPrefix: "", timeZone: zone) == nil)
+}

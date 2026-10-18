@@ -1,12 +1,36 @@
+/// 収録の出どころ。peerは、Macが収録していない時間に届いたWatch・iPhoneの発話を、端末とsessionごとにまとめた収録
+public enum SessionOrigin: String, Codable, Sendable {
+    case mac, peer
+}
+
 public struct SessionRecord: Codable, Sendable, Equatable {
     public var id: String
     public var started: Int64
     public var owner: String
+    /// 無ければmac
+    public var origin: SessionOrigin?
+    public var peerDevice: String?    // key: peer_device
+    public var peerSession: String?   // key: peer_session
 
-    public init(id: String, started: Int64, owner: String) {
+    enum CodingKeys: String, CodingKey {
+        case id
+        case started
+        case owner
+        case origin
+        case peerDevice = "peer_device"
+        case peerSession = "peer_session"
+    }
+
+    public init(
+        id: String, started: Int64, owner: String,
+        origin: SessionOrigin? = nil, peerDevice: String? = nil, peerSession: String? = nil
+    ) {
         self.id = id
         self.started = started
         self.owner = owner
+        self.origin = origin
+        self.peerDevice = peerDevice
+        self.peerSession = peerSession
     }
 }
 

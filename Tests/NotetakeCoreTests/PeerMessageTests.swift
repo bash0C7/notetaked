@@ -75,3 +75,28 @@ private func makeSegmentFixture() -> Segment {
         try PeerMessage.decode(line: "{\"t\":\"bogus\"}")
     }
 }
+
+// MARK: - watch_status
+
+private func statusFixture() -> WatchStatusSnapshot {
+    WatchStatusSnapshot(
+        device: "iphone-1", deviceName: "bash iPhone", session: "s", state: .recording,
+        lastChunkIndex: 2, batteryLevel: 0.5, inboxPendingCount: 1, updatedAtMS: 99)
+}
+
+@Test func watchStatusRoundTripsThroughALine() throws {
+    let message = PeerMessage.watchStatus(statusFixture())
+    #expect(try PeerMessage.decode(line: message.encodedLine()) == message)
+}
+
+@Test func watchStatusLineHasFixedKeyOrder() throws {
+    let line = try PeerMessage.watchStatus(statusFixture()).encodedLine()
+    #expect(line.hasPrefix("{\"status\":{"))
+    #expect(line.hasSuffix("\"t\":\"watch_status\"}"))
+}
+
+@Test func unknownTypeStillThrows() {
+    #expect(throws: PeerError.unknownType("future")) {
+        try PeerMessage.decode(line: #"{"t":"future"}"#)
+    }
+}

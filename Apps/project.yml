@@ -22,6 +22,7 @@ targets:
     sources:
       - Notetake
       - Shared/LevelGraph.swift
+      - Shared/IndicatorSeverityColor.swift
       - ../Sources/notetaked/Audio/InputDeviceProbe.swift
       - ../Sources/notetaked/Audio/AUHALInputCapture.swift
       - ../Sources/notetaked/Capture/CaptureSink.swift
@@ -54,7 +55,7 @@ targets:
   NotetakeMobile:
     type: application
     platform: iOS
-    sources: [NotetakeMobile, Shared/LevelGraph.swift]
+    sources: [NotetakeMobile, Shared/LevelGraph.swift, Shared/IndicatorSeverityColor.swift]
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore
@@ -75,7 +76,7 @@ targets:
   NotetakeWatch:
     type: application
     platform: watchOS
-    sources: [NotetakeWatch]
+    sources: [NotetakeWatch, Shared/IndicatorSeverityColor.swift]
     dependencies:
       - package: NotetakeCore
         product: NotetakeCore
@@ -85,6 +86,7 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: io.github.bash0c7.notetake.ios
         NSMicrophoneUsageDescription: 会議の音声を文字起こしするためにマイクを使います。
+        UIBackgroundModes: [audio]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.bash0c7.notetake.ios.watchkitapp
