@@ -87,6 +87,48 @@ private func progress(
     #expect(WatchWakeResponder.finishMarginSeconds == 5)
 }
 
+// MARK: - 閉じる間に合図が来た時
+
+@Test func afterFinalizeTheSameTaskEndsWhenNothingNewHappened() {
+    var responder = WatchWakeResponder()
+    _ = responder.woke(appIsActive: false, atMS: 0)
+    let generation = responder.taskGeneration
+    #expect(responder.outcomeAfterFinalize(startedGeneration: generation, progress: progress(now: 20_000)) == .endNow)
+}
+
+@Test func aWakeDuringFinalizeKeepsTheMonitorAlive() {
+    var responder = WatchWakeResponder()
+    _ = responder.woke(appIsActive: false, atMS: 0)
+    let generation = responder.taskGeneration
+    // finishAllの間に次の合図（keepTask）。最後の動きが新しいので、settleの間は終えない
+    #expect(responder.woke(appIsActive: false, atMS: 19_000) == .keepTask)
+    #expect(
+        responder.outcomeAfterFinalize(startedGeneration: generation, progress: progress(now: 20_000))
+            == .keepMonitoring)
+    #expect(responder.outcomeAfterFinalize(startedGeneration: generation, progress: progress(now: 22_000)) == .endNow)
+}
+
+@Test func aNewTaskDuringFinalizeIsNotEndedByTheOldMonitor() {
+    var responder = WatchWakeResponder()
+    _ = responder.woke(appIsActive: false, atMS: 0)
+    let generation = responder.taskGeneration
+    // 期限切れで終え、次の合図で新しいtaskを取った
+    responder.taskEnded()
+    #expect(responder.woke(appIsActive: false, atMS: 10_000) == .beginTask)
+    #expect(responder.taskGeneration != generation)
+    #expect(
+        responder.outcomeAfterFinalize(startedGeneration: generation, progress: progress(now: 90_000))
+            == .taskReplaced)
+}
+
+@Test func aTaskEndedDuringFinalizeIsReportedAsGone() {
+    var responder = WatchWakeResponder()
+    _ = responder.woke(appIsActive: false, atMS: 0)
+    let generation = responder.taskGeneration
+    responder.taskEnded()
+    #expect(responder.outcomeAfterFinalize(startedGeneration: generation, progress: progress(now: 90_000)) == .taskReplaced)
+}
+
 // MARK: - peer
 
 @Test func waitingToRetryConnectsNow() {

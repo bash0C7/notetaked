@@ -58,10 +58,35 @@ import Testing
     #expect(ledger.streamOriginMS(session: "x", firstChunkStartAtMS: 1_500_000) == 1_500_000)
 }
 
-@Test func rebuiltStreamStartsNearTheFirstChunkInsteadOfTheSessionOrigin() {
+@Test func rebuiltStreamStartsAtTheEndOfTheLastProcessedChunk() {
     var ledger = WatchSessionLedger()
-    ledger.markProcessed(session: "1000000", index: 0, atMS: 1)
-    #expect(ledger.streamOriginMS(session: "1000000", firstChunkStartAtMS: 50_000_000) == 49_400_000)
-    // 起点はsessionの開始より前にはしない
-    #expect(ledger.streamOriginMS(session: "1000000", firstChunkStartAtMS: 1_100_000) == 1_000_000)
+    ledger.markProcessed(session: "1000000", index: 0, atMS: 1, endAtMS: 1_020_000)
+    // 最初の小片がindexで大きく先でも、起点は処理済みの終わりまで（続きの小片のoffsetが負にならない）
+    let origin = ledger.streamOriginMS(session: "1000000", firstChunkStartAtMS: 50_000_000)
+    #expect(origin == 1_018_000)
+    #expect(1_020_000 - origin >= 0)
+}
+
+@Test func rebuiltStreamOriginUsesTheLatestEnd() {
+    var ledger = WatchSessionLedger()
+    ledger.markProcessed(session: "1000000", index: 0, atMS: 1, endAtMS: 1_020_000)
+    ledger.markProcessed(session: "1000000", index: 2, atMS: 1, endAtMS: 1_060_000)
+    // 遅れて処理した古い小片は終わりを戻さない
+    ledger.markProcessed(session: "1000000", index: 1, atMS: 1, endAtMS: 1_040_000)
+    #expect(ledger.streamOriginMS(session: "1000000", firstChunkStartAtMS: 9_000_000) == 1_058_000)
+}
+
+@Test func rebuiltStreamOriginStaysWithinTheSessionAndTheFirstChunk() {
+    var ledger = WatchSessionLedger()
+    ledger.markProcessed(session: "1000000", index: 0, atMS: 1, endAtMS: 1_000_500)
+    // sessionの開始より前にはしない
+    #expect(ledger.streamOriginMS(session: "1000000", firstChunkStartAtMS: 9_000_000) == 1_000_000)
+    // 最初の小片の先頭より後にもしない
+    var later = WatchSessionLedger()
+    later.markProcessed(session: "1000000", index: 0, atMS: 1, endAtMS: 1_500_000)
+    #expect(later.streamOriginMS(session: "1000000", firstChunkStartAtMS: 1_100_000) == 1_100_000)
+    // 終わりを知らない（processedはあるがendAtMSを渡していない）時はsessionの開始
+    var legacy = WatchSessionLedger()
+    legacy.markProcessed(session: "1000000", index: 0, atMS: 1)
+    #expect(legacy.streamOriginMS(session: "1000000", firstChunkStartAtMS: 9_000_000) == 1_000_000)
 }

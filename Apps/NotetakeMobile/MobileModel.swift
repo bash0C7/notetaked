@@ -269,22 +269,34 @@ final class MobileModel {
     /// 1秒ごと。仕事が済んだか期限が近ければtaskを終える。終えたらtrue
     private func endWakeTaskIfDone() async -> Bool {
         guard wakeResponder.holdsTask else { return true }
-        let progress = WatchWakeResponder.Progress(
-            intakeBacklog: watchIntake?.backlog ?? 0,
-            unackedSegments: await outbox.unacknowledgedCount,
-            peerConnected: isPeerConnected,
-            remainingSeconds: UIApplication.shared.backgroundTimeRemaining,
-            nowMS: Self.currentMS())
+        let progress = await wakeProgress()
         guard wakeResponder.shouldEnd(progress) else { return false }
         // 台帳に処理済みと記録した小片の末尾の音声は、次の合図までanalyzerの中で確定せずに残る。
         // suspendの間に落とされると失われるので、期限に余裕がある時は、閉じて確定させてから終える。
         // 閉じて出たsegはoutboxに残り、接続中なら送られ、ackが間に合わなければ次の接続で再送される
         if progress.remainingSeconds > Self.finishStreamsMinRemainingSeconds {
+            let generation = wakeResponder.taskGeneration
             await watchRelay?.finishAll()
+            // finishAllの間に次の合図が来て、taskを取り直したり新しい小片を受けたりしうる。
+            // 新しい進み具合で判定し直し、古い監視が新しいtaskを終えない
+            switch wakeResponder.outcomeAfterFinalize(startedGeneration: generation, progress: await wakeProgress()) {
+            case .endNow: break
+            case .keepMonitoring: return false
+            case .taskReplaced: return true
+            }
         }
         guard wakeResponder.holdsTask else { return true }
         finishWakeTask(event: .taskEnded)
         return true
+    }
+
+    private func wakeProgress() async -> WatchWakeResponder.Progress {
+        WatchWakeResponder.Progress(
+            intakeBacklog: watchIntake?.backlog ?? 0,
+            unackedSegments: await outbox.unacknowledgedCount,
+            peerConnected: isPeerConnected,
+            remainingSeconds: UIApplication.shared.backgroundTimeRemaining,
+            nowMS: Self.currentMS())
     }
 
     private func wakeTaskExpired() {
@@ -374,7 +386,8 @@ final class MobileModel {
 
     private func handleWatchObs(_ records: [WatchObsRecord], device: String) {
         // 小片より先に記録が届いても（開始に失敗した時など）、snapshotを作って反映する
-        let name = watchDeviceNames[device] ?? watchTracker.snapshot?.deviceName ?? device
+        let name = watchDeviceNames[device]
+            ?? watchTracker.snapshot.flatMap { $0.device == device ? $0.deviceName : nil } ?? device
         watchTracker.obsReceived(records, device: device, deviceName: name)
         watchStatusChanged()
     }

@@ -10,6 +10,9 @@ public final class AsyncGate: @unchecked Sendable {
 
     public init() {}
 
+    /// 取るのを待っている数（テストで到着順を決めるため）
+    public var waiterCount: Int { lock.withLock { waiters.count } }
+
     public func acquire() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let immediate: Bool = lock.withLock {

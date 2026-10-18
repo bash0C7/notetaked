@@ -34,15 +34,14 @@ private final class Probe: @unchecked Sendable {
 @Test func gateServesWaitersInArrivalOrder() async {
     let gate = AsyncGate()
     let probe = Probe()
-    // 先頭が取っている間に、順に待ちへ入れる
+    // 先頭が取っている間に、1つずつ待ちへ入れる。待ちに入ったことは`waiterCount`で確かめて順を固定する
     await gate.acquire()
     var tasks: [Task<Void, Never>] = []
     for id in 0..<5 {
         tasks.append(Task {
             await gate.run { probe.enter(); probe.leave(id) }
         })
-        // 待ちに入るまで譲る
-        for _ in 0..<20 { await Task.yield() }
+        while gate.waiterCount < id + 1 { await Task.yield() }
     }
     gate.release()
     for task in tasks { await task.value }

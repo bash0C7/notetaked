@@ -35,6 +35,8 @@ public struct WatchWakeResponder: Sendable, Equatable {
     }
 
     public private(set) var holdsTask = false
+    /// background taskを取るたびに増える。finishを`await`している間に別のtaskへ替わったかを見分ける
+    public private(set) var taskGeneration = 0
     private var wokeAtMS: Int64 = 0
     private var lastActivityAtMS: Int64 = 0
 
@@ -46,6 +48,7 @@ public struct WatchWakeResponder: Sendable, Equatable {
         if appIsActive { return .foreground }
         if holdsTask { return .keepTask }
         holdsTask = true
+        taskGeneration += 1
         return .beginTask
     }
 
@@ -63,6 +66,23 @@ public struct WatchWakeResponder: Sendable, Equatable {
             if progress.nowMS - wokeAtMS < Self.peerGiveUpMS { return false }
         }
         return true
+    }
+
+    public enum FinalizeOutcome: Sendable, Equatable {
+        /// 同じtaskのまま、新しい進み具合でも終えてよい
+        case endNow
+        /// finishの間に合図が来た。この監視は生かして、新しい仕事を待つ
+        case keepMonitoring
+        /// finishの間にtaskが終わった・別のtaskに替わった。この監視は新しいtaskを終えずに退く
+        case taskReplaced
+    }
+
+    /// streamを閉じる（`await`で数秒〜十数秒かかる）前に`shouldEnd`が真になった監視が、戻った後に何をするか。
+    /// 古い監視が、その間に取り直した新しいtaskと新しい小片の処理を終えてしまわないための判定。
+    /// `startedGeneration`は閉じる前の`taskGeneration`、`progress`は戻った後に作り直したもの
+    public func outcomeAfterFinalize(startedGeneration: Int, progress: Progress) -> FinalizeOutcome {
+        guard holdsTask, taskGeneration == startedGeneration else { return .taskReplaced }
+        return shouldEnd(progress) ? .endNow : .keepMonitoring
     }
 
     /// 終えた時と期限切れの時

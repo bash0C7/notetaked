@@ -552,7 +552,14 @@ actor WatchRelay: WatchChunkFeeding {
             let converter = try AudioConverter(from: file.processingFormat, to: transcriber.inputFormat)
             let converted = try converter.convert(raw)
             await transcriber.feed(converted, at: 0)
-            try await transcriber.finish()
+            do {
+                try await transcriber.finish()
+            } catch {
+                // 環境の事情。試行に数えず受け取り箱に残す
+                collector.cancel()
+                logError("late chunk \(meta.session)/\(meta.index): transcriber finish failed: \(error)")
+                return
+            }
             let finals = await collector.value
             for piece in finals {
                 await onSegment(Self.segment(from: piece, session: meta.session, seq: 0, meta: stream.firstMeta))
@@ -583,7 +590,9 @@ actor WatchRelay: WatchChunkFeeding {
     }
 
     private func markDone(chunk: WatchChunkMetadata, entry: WatchInboxEntry) {
-        ledger.markProcessed(session: chunk.session, index: chunk.index, atMS: Self.nowMS())
+        ledger.markProcessed(
+            session: chunk.session, index: chunk.index, atMS: Self.nowMS(),
+            endAtMS: chunk.startAtMS + (chunk.durationMS ?? 0))
         saveLedger()
         store.remove(id: entry.id)
         onInboxChange()

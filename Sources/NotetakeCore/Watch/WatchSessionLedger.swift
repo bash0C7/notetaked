@@ -7,6 +7,8 @@ public struct WatchSessionLedger: Codable, Sendable, Equatable {
     private struct Record: Codable, Sendable, Equatable {
         var processed: Set<Int> = []
         var finished = false
+        /// 処理済みの小片の終わり（`startAtMS + durationMS`）の最大。streamを作り直す時の起点に使う
+        var maxEndAtMS: Int64?
         var updatedAtMS: Int64
     }
 
@@ -21,9 +23,10 @@ public struct WatchSessionLedger: Codable, Sendable, Equatable {
         sessions[session]?.processed.contains(index) ?? false
     }
 
-    public mutating func markProcessed(session: String, index: Int, atMS: Int64) {
+    public mutating func markProcessed(session: String, index: Int, atMS: Int64, endAtMS: Int64? = nil) {
         var record = sessions[session] ?? Record(updatedAtMS: atMS)
         record.processed.insert(index)
+        if let endAtMS { record.maxEndAtMS = max(record.maxEndAtMS ?? endAtMS, endAtMS) }
         record.updatedAtMS = max(record.updatedAtMS, atMS)
         sessions[session] = record
     }
@@ -43,17 +46,18 @@ public struct WatchSessionLedger: Codable, Sendable, Equatable {
         return (0...last).filter { !record.processed.contains($0) }
     }
 
-    /// 作り直したstreamの起点を、最初の小片の先頭からさかのぼる量（ms）。
-    /// 順不同で先に届いた小片より前の小片が、起点より前にならないための余裕
-    public static let rebuildLeadMS: Int64 = 600_000
+    /// 作り直したstreamの起点を、処理済みの終わりからさかのぼる量（ms）。小片の長さ・時計の丸めの余裕
+    public static let rebuildToleranceMS: Int64 = 2_000
 
     /// streamのTranscriberの起点。新しいsessionはsession文字列（録音の開始ms）から決める。
     /// 台帳に処理済みがある（streamを閉じて作り直す）時は、feedの時刻が録音の経過時間ぶん大きくならないよう
-    /// 最初の小片の少し前にする（sessionの開始より前にはしない）
+    /// 処理済みの小片の終わりの少し前にする。続きの小片は終わり以後に始まるのでoffsetが負にならず、
+    /// 複数の小片が同じ時刻に丸められない。sessionの開始より前にも、最初の小片の先頭より後にもしない
     public func streamOriginMS(session: String, firstChunkStartAtMS: Int64) -> Int64 {
         guard let sessionOrigin = originMS(session: session) else { return firstChunkStartAtMS }
-        guard sessions[session]?.processed.isEmpty == false else { return sessionOrigin }
-        return max(sessionOrigin, firstChunkStartAtMS - Self.rebuildLeadMS)
+        guard let record = sessions[session], !record.processed.isEmpty else { return sessionOrigin }
+        guard let maxEnd = record.maxEndAtMS else { return sessionOrigin }
+        return min(max(sessionOrigin, maxEnd - Self.rebuildToleranceMS), firstChunkStartAtMS)
     }
 
     /// 次に流すindex（最大の処理済みindex + 1。無ければ0）。sequencerを台帳の続きから始める時に使う
