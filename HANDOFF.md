@@ -1,8 +1,11 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-10-18 夜）— Watch継続収録: 並行4streamの実装が統合branch`watch-continuous`に揃った（`make verify`通過）。実機への入れ替えと実機gateは未実施（最優先で読む）
+## 状態（2026-10-18 夜）— Watch継続収録はPR #24で`main`へmerge済み（merge commit `588e751`）。Mac・iPhone・Watchへ入れ替え済み。実機の結果とζの採用は下記（最優先で読む）
 
-- **branch** `watch-continuous`（`watch-1a-obs-outbox-color`の先端から切った統合branch。`main`へは**未merge**。PR・mergeはuserが切り出すまでしない）。順に: contracts `7cd9c5d` → C(Mac) `eaa19a7` → A(Watch) `dfab9c1` → B(iPhone) `771cf57`・`b505e08` → 統合reviewの修正 `d9bf139`(A)・`ad597c7`(B) → 実機で分かった再接続の逐次化 `0670790`・ζ（Watch受信モード）`7b5597f`。統合先で`make verify`通過（Core 660テスト・Swift警告ゼロ・iOS/watchOSコンパイル）。stream別のworktreeは`.claude/worktrees/watch-{contracts,app,iphone,mac}`（`.git/info/exclude`済み。不要になれば`git worktree remove`）
+- **merge済み**: PR #24で`main`へmerge。`watch-continuous`・`watch-1a-obs-outbox-color`とstream別のbranch・worktreeはローカルもoriginも削除済み。`docs/superpowers/`と`.superpowers/sdd/`はgit管理外なので消さない。userは「いったん区切り。このまま使い続けたい」とした（2026-10-18）
+- **保留**: M-unit（Macが収録していない時間のWatch / iPhoneのsegを収録として取り込むか）は**issue #23**。現状はorphans.jsonlに残る。userが電池の測定・中断・2時間・8時間の試験は「日頃の利用から、また問い合わせる」とした（Watchの電池は約30分で10%減を見たが、画面の点灯を含みうる）
+- **使い続ける時の注意**: iPhoneの「Watch受信モード」を入にしておく（12時間で自動off。1日1回、前面で入れ直す。切れると手首を下げている間はiPhoneを起こせない）/ タイマー・通話・Siriなどの中断でWatchの収録が止まると手動で開始し直す / iPhoneのmic収録中はζの無音再生が止まり、終わると再開する
+- **コミット**: contracts `7cd9c5d` → C(Mac) `eaa19a7` → A(Watch) `dfab9c1` → B(iPhone) `771cf57`・`b505e08` → 統合reviewの修正 `d9bf139`(A)・`ad597c7`(B) → 再接続の逐次化 `0670790`・ζ `7b5597f`。`make verify`は通過（Core 660テスト・Swift警告ゼロ・iOS/watchOSコンパイル）
 - **背面受信の方式（2026-10-18採択、α'）**: iPhoneが背面でWatchの小片を処理しない原因は、`transferFile`がiPhone appを起こさないこと。Watchが小片を閉じるたびに`sendMessage`の合図（`WatchWakeMessage`）を送ってiPhoneを背面で起こし、iPhoneは`didReceiveMessage`でbackground taskを取って受信→文字起こし→Mac送信まで済ませる（`PeerClient`は起きたら即再接続）。Watchが背面で`isReachable`をtrueにできない時だけ、iPhoneが無音再生で生き続けるζ（B Task 7c）を入れる。Macで文字起こし（β）とWatch→Mac直送は採らない。根拠: `docs/superpowers/specs/2026-10-18-watch-relay-research.md`
 - **実装した範囲**: contracts全部 / A: 合図とisReachableの記録、小片の永続と起動時の再送、待ち行列の上限、最後の小片の`is_final`、10時間の自動停止、止まった通知（dead-man）、Watchの最小の表示 / B: 受け取り箱の耐久化と回収、受信列の直列化（AsyncGate）、台帳、Watch状態の組み立てと表示とMacへの`watch_status`、起こされた時のbackground task、背面で止まる前の状態送信 / C: 終端の連鎖を断つ、`PeerRecordingRouter`（純粋な型。serveへ未配線）、`watch_status`の受信とWatch行。review（Sonnet / Opus）で、データ消失・競合の欠陥を計15件以上直した
 - **未着手・保留**: ①**C Task 3（serveの振り分け）・Task 4（救済）= M-unit。userの了承待ち**（設計書§0④「orphansに留める」と§8のM-unitが食い違う。了承が無い間は今の動き＝orphans） ②A Task 7（T-tune: 小片の長さの計測）は実機計測 ③B Task 7c（ζ）は実機gateのR1が不合格の時だけ ④C Task 7（β）はR4が不合格の時だけ
@@ -16,7 +19,7 @@
   - **未検証のまま**: R3（20秒ごとの起こしを1時間）/ R4（背面でSpeechAnalyzerが確定結果を出すか。ζの版で発話は確定して届いているが、語の切れ方は未評価）/ R6 / R7（無音再生の1時間・中断からの再開・電池）/ R8 / 中断（通話・Siri・AirPods・アラーム）でMacのWatch行がalertになるまで / 2時間・8時間
 - **既知の残り**: 台帳への「処理済み」はfeed時点で記録するため、背面でappが落とされると末尾の数秒の文字が戻らない（音声は`finish`成功まで受け取り箱に残すが、再feedはしない）/ `auto_stopped`はiPhone・Macに出ない（specどおり）/ 1aが受け取り箱に残したsidecar無しの`.m4a`は、新しいiPhoneが`failed/`へ移し7日後に消す
 - **⚠ 実機への入れ替え（userの収録が無い時だけ、userの了承を得て）**: 順序は**Mac → iPhone → Watch**。**iPhoneを更新する前に、旧版のiPhoneを前面にして受け取り箱を空にする**（旧版は新Watchの合図でも背面で起き、背面ではTranscriberを作れず小片を削除しうる。iPhoneはWatchと同じか新しい版が必須）。更新後は`Documents/watch-inbox`の`failed/`に`.m4a`が入っていないか確かめる。旧Macは`watch_status`を「malformed peer line」としてstderrに出すので、Macを先に。**2026-10-18 21:19〜22:00にMac・iPhone・Watchを入れ替え済み**（Mac: `make install-app`、iPhone・Watch: `.claude/skills/device/scripts/install.sh`。iPhoneは`make project`で`Apps/Notetake.xcodeproj`を作り直してからでないと、新しいfileが入らずbuildが落ちる）。現在のinstall: Mac・Watchは`d9bf139`相当、iPhoneは`7b5597f`
-- **次**: ①userの収録が止まったら入れ替えて実機gate（R1〜R8）。R1とR2が方式の分かれ目 ②M-unitの了承 ③userの装着が要る試験（段階A 2時間・中断・電池・8時間） ④`watch-continuous`のPR・mergeはuserが切り出してから
+- **次**: userの日頃の利用から問い合わせを受けて、電池・中断（通話・Siri・AirPods・アラーム）・2時間・8時間の連続を確かめる。M-unitはissue #23。T-tune（小片の長さの計測）は実機計測のため未着手
 
 ## 状態（2026-10-18 朝、以前）— Watchの入力レベル表示と継続収録: phase 1a実装 + G1合格。残りを並行実行する計画を作成中（未レビュー）
 
