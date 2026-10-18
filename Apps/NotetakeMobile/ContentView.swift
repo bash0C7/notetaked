@@ -13,6 +13,10 @@ struct ContentView: View {
                     LabeledContent("Watch", value: "\(model.watchStreams) stream")
                 }
 
+                Section("Watch") {
+                    WatchStatusSection(model: model)
+                }
+
                 Section("取り込み") {
                     Button(model.isRecording ? "取り込み中（タップで終了）" : "取り込み開始") {
                         if model.isRecording {

@@ -19,8 +19,8 @@ actor PeerClient {
     private let pairingCode: String
     private let outbox: Outbox
     private let onState: @Sendable (PeerClientState) -> Void
-    /// ackの後に未送信の件数を数え直すため
-    private let onAck: @Sendable () -> Void
+    /// ackの後に未送信の件数を数え直すため。ackされたseqを渡す
+    private let onAck: @Sendable (Int) -> Void
     private let queue = DispatchQueue(label: "io.github.bash0c7.notetake.peer")
 
     private var browser: NWBrowser?
@@ -29,6 +29,8 @@ actor PeerClient {
     private var reconnectTask: Task<Void, Never>?
     private var backoffSeconds: Double = 1
     private var stopped = true
+    /// 再接続のbackoffを待っている間。`wake()`が待ちを取り消して今すぐ探すかを決めるのに使う
+    private var waitingToRetry = false
 
     /// `.waiting`が連続何回観測されたか。ネットワーク変更で到達不能になった接続は
     /// `.failed`ではなく`.waiting`のまま留まることが多いため、これが閾値に達したら
@@ -57,7 +59,7 @@ actor PeerClient {
         pairingCode: String,
         outbox: Outbox,
         onState: @escaping @Sendable (PeerClientState) -> Void,
-        onAck: @escaping @Sendable () -> Void
+        onAck: @escaping @Sendable (Int) -> Void
     ) {
         self.hello = hello
         self.pairingCode = pairingCode
@@ -79,6 +81,7 @@ actor PeerClient {
         stopped = true
         reconnectTask?.cancel()
         reconnectTask = nil
+        waitingToRetry = false
         watchdogTask?.cancel()
         watchdogTask = nil
         browser?.cancel()
@@ -91,16 +94,60 @@ actor PeerClient {
 
     /// outbox全体のseqを採番してappendし（`Outbox.appendAssigningSeq`、actor内で原子的）、
     /// 接続中ならそのまま`.seg`として送る。呼び出し側の`segment.seq`は無視される
-    func enqueue(_ segment: Segment) async {
+    /// 採番したseqを返す（appendに失敗したらnil）
+    @discardableResult
+    func enqueue(_ segment: Segment) async -> Int? {
         let sequenced: Segment
         do {
             sequenced = try await outbox.appendAssigningSeq(segment)
         } catch {
-            return
+            return nil
         }
         if case .connected = state {
             send(.seg(sequenced))
         }
+        return sequenced.seq
+    }
+
+    /// Watchの状態をMacへ送る。接続中だけ送る（間引きは呼び出し側）
+    func sendWatchStatus(_ snapshot: WatchStatusSnapshot) {
+        guard case .connected = state else { return }
+        send(.watchStatus(snapshot))
+    }
+
+    /// Watchの合図で背面に起こされた時に呼ぶ。suspendの間は再接続のbackoff（最大30秒）とwatchdogの時計が
+    /// 止まっているので、待たずにつなぎ直す。判断は`PeerWakePolicy`
+    func wake() {
+        let link: PeerWakePolicy.Link
+        if stopped {
+            link = .stopped
+        } else if connection != nil, case .connected = state {
+            link = .connected(lastActivityAgeMS: Int64(Date().timeIntervalSince(lastActivityAt) * 1000))
+        } else if waitingToRetry {
+            link = .waitingToRetry
+        } else {
+            link = .browsingOrConnecting
+        }
+        switch PeerWakePolicy.onWake(link) {
+        case .none:
+            break
+        case .connectNow:
+            connectNowResettingBackoff()
+        case .reconnectNow:
+            handleDisconnect(reason: "stale connection on wake")
+            connectNowResettingBackoff()
+        }
+    }
+
+    /// backoffの待ちを取り消し、backoffを初期値へ戻して今すぐ探す
+    private func connectNowResettingBackoff() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        waitingToRetry = false
+        backoffSeconds = 1
+        browser?.cancel()
+        browser = nil
+        startBrowsing()
     }
 
     // MARK: - Browsing
@@ -179,12 +226,17 @@ actor PeerClient {
         self.connection = connection
         connection.stateUpdateHandler = { [weak self] newState in
             guard let self else { return }
-            Task { await self.handleConnectionState(newState, description: description) }
+            Task { await self.handleConnectionState(newState, on: connection, description: description) }
         }
         connection.start(queue: queue)
     }
 
-    private func handleConnectionState(_ newState: NWConnection.State, description: String) async {
+    private func handleConnectionState(
+        _ newState: NWConnection.State, on connection: NWConnection, description: String
+    ) async {
+        // 既に別の接続に切り替わっている（古いconnectionのcallback。`wake()`で捨てた接続の`.cancelled`など）
+        // 場合は無視する。さもないと新しい接続を切ってしまう
+        guard self.connection === connection else { return }
         switch newState {
         case .ready:
             consecutiveWaitingCount = 0
@@ -234,6 +286,7 @@ actor PeerClient {
 
     private func scheduleReconnect() {
         reconnectTask?.cancel()
+        waitingToRetry = true
         let delay = backoffSeconds
         backoffSeconds = min(backoffSeconds * 2, 30)
         reconnectTask = Task { [weak self] in
@@ -244,6 +297,7 @@ actor PeerClient {
     }
 
     private func restartAfterBackoff() {
+        waitingToRetry = false
         guard !stopped else { return }
         startBrowsing()
     }
@@ -325,7 +379,7 @@ actor PeerClient {
         case .ack(let seq):
             try? await outbox.acknowledge(upTo: seq)
             _ = try? await outbox.compactIfDrained()
-            onAck()
+            onAck(seq)
         default:
             break
         }

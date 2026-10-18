@@ -1,5 +1,6 @@
 import Foundation
 import NotetakeCore
+import UIKit
 import WatchConnectivity
 
 /// `self`（`@MainActor`だがSendable宣言はしていないクラス）を、actor（`PeerClient`/`Recorder`）から
@@ -30,6 +31,8 @@ final class MobileModel {
     private(set) var levelHistory = LevelHistory()
     /// 最後に確定した文字が出た時刻（epoch ms）。取り込みの開始で`nil`へ戻る
     private(set) var lastTextAtMS: Int64?
+    /// iPhoneが組み立てたWatchの状態。小片の受領・記録・文字起こし・受け取り箱の件数で更新し、Macへも送る
+    private(set) var watchStatus: WatchStatusSnapshot?
 
     private let outbox: Outbox
     private let recorder = Recorder()
@@ -43,15 +46,49 @@ final class MobileModel {
     private var watchRelay: WatchRelay?
     // `WCSession.delegate`はweak参照のため、こちらで強参照を保持し続ける必要がある
     private var watchSessionDelegate: WatchSessionDelegate?
+    private let inboxStore = WatchInboxStore.standard()
+    /// Watchの小片を1本の列で処理する。`connectWatch`で作る
+    private var watchIntake: WatchIntakeQueue?
+
+    // 合図で起こされた時のbackground task（1本だけ）
+    private var wakeResponder = WatchWakeResponder()
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    private var wakeMonitorTask: Task<Void, Never>?
+
+    // Watchの状態の組み立てとMacへの送信（間引き）
+    private var watchTracker = WatchStatusTracker()
+    private var lastSentStatus: WatchStatusSnapshot?
+    private var lastStatusSentAtMS: Int64 = 0
+    private var statusSendTask: Task<Void, Never>?
+    private static let statusMinIntervalMS: Int64 = 5_000
+    /// background taskを終える前にstreamを閉じる（`finishAll`は最大で数秒かかる）のに必要な残り時間
+    private static let finishStreamsMinRemainingSeconds: Double = 10
+    private var watchDeviceNames: [String: String] = [:]
+    private static let retentionDefaultsKey = "watchRetentionLastRunMS"
+    private static let retentionIntervalMS: Int64 = 86_400_000
 
     init() {
         outbox = Outbox(directory: Self.applicationSupportDirectory())
         // ペアリングコード未設定でもPeerClientは作っておく（`enqueue`がoutboxへのappendを
         // 兼ねるため、録音がペアリング前でも蓄積転送できるようにする）。browsingはコードが
         // あるときだけ始める
+        if let data = try? Data(contentsOf: Self.watchStatusURL()),
+            let json = String(data: data, encoding: .utf8),
+            let saved = try? WatchStatusSnapshot.decode(json: json)
+        {
+            watchTracker = WatchStatusTracker(snapshot: saved)
+            watchStatus = saved
+        }
         connectPeer()
         connectWatch()
         Task { await self.refreshPendingCount() }
+        didBecomeActive()
+    }
+
+    /// `Documents/watch-status.json`。更新のたびに保存し、起動時に読み戻す
+    private static func watchStatusURL() -> URL {
+        let base: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("watch-status.json")
     }
 
     private static func applicationSupportDirectory() -> URL {
@@ -80,13 +117,20 @@ final class MobileModel {
                 Task { @MainActor in
                     guard let model = box.value else { return }
                     model.peerState = state
-                    if case .connected = state { model.hasEverConnected = true }
+                    if case .connected = state {
+                        model.hasEverConnected = true
+                        RelayTrace.record(.peerConnected)
+                        // 接続の直後に1回、今のWatchの状態を送る
+                        model.sendWatchStatusIfNeeded(force: true)
+                    }
                     await model.refreshPendingCount()
                 }
             },
-            onAck: {
+            onAck: { seq in
                 Task { @MainActor in
                     guard let model = box.value else { return }
+                    model.wakeResponder.activity(atMS: Self.currentMS())
+                    RelayTrace.record(.segAcked, seq: seq)
                     await model.refreshPendingCount()
                 }
             }
@@ -116,6 +160,8 @@ final class MobileModel {
         let box = WeakBox(self)
         let relay = WatchRelay(
             locale: Self.locale,
+            store: inboxStore,
+            ledgerURL: Self.applicationSupportDirectory().appendingPathComponent("watch-ledger.json"),
             onSegment: { segment in
                 // WatchRelay側のpieceTaskはこのclosureの完了をawaitしてから次のpieceへ進む
                 // （WatchRelay.init参照）。ここで内側のTaskを`await`せず`Task { @MainActor in }`
@@ -132,14 +178,247 @@ final class MobileModel {
                 Task { @MainActor in
                     box.value?.watchStreams = count
                 }
+            },
+            onChunkFed: { meta in
+                RelayTrace.record(.chunkFed, device: meta.device, session: meta.session, index: meta.index)
+                Task { @MainActor in
+                    box.value?.wakeResponder.activity(atMS: Self.currentMS())
+                }
+            },
+            onInboxChange: {
+                Task { @MainActor in
+                    box.value?.refreshInboxCount()
+                }
             }
         )
         watchRelay = relay
+        // 列は`relay`をfeederに作る。`relay`は列の未処理件数を後から受け取る
+        let intake = WatchIntakeQueue(feeder: relay)
+        watchIntake = intake
+        Task { await relay.attach(backlog: { intake.backlog }) }
         guard WCSession.isSupported() else { return }
-        let delegate = WatchSessionDelegate(relay: relay)
+        let delegate = WatchSessionDelegate(
+            store: inboxStore,
+            intake: intake,
+            onReceipt: { receipt, deviceName in
+                Task { @MainActor in
+                    guard let model = box.value else { return }
+                    model.wakeResponder.activity(atMS: Self.currentMS())
+                    model.watchDeviceNames[receipt.device] = deviceName
+                    model.watchTracker.chunkReceived(receipt, deviceName: deviceName)
+                    model.refreshInboxCount()
+                    model.watchStatusChanged()
+                }
+            },
+            onObs: { records, device in
+                Task { @MainActor in
+                    box.value?.handleWatchObs(records, device: device)
+                }
+            },
+            onWake: { wake in
+                // `box.value`は合図の時点で生きている。いなければ受領時刻だけ返す
+                box.value?.watchWoke(wake) ?? Self.currentMS()
+            }
+        )
         watchSessionDelegate = delegate
         WCSession.default.delegate = delegate
         WCSession.default.activate()
+    }
+
+    // MARK: - Watchに起こされた時
+
+    /// Watchの合図（`didReceiveMessage`）で呼ばれる。背面ならbackground taskを取り、起きている約30秒のうちに
+    /// 受信→文字起こし→Macへの送信を済ませる。返す受領時刻は合図への返事に載る
+    /// （background taskを取った後に返すので、返事の前にsuspendされない）
+    func watchWoke(_ wake: WatchWakeMessage) -> Int64 {
+        let nowMS = Self.currentMS()
+        let application = UIApplication.shared
+        let state = application.applicationState
+        RelayTrace.record(
+            .wakeMessage, appState: Self.appStateName(state), remainingSeconds: Self.remainingSeconds(application),
+            device: wake.device, session: wake.session, index: wake.index)
+        switch wakeResponder.woke(appIsActive: state == .active, atMS: nowMS) {
+        case .beginTask:
+            beginWakeTask(application)
+        case .keepTask, .foreground:
+            break
+        }
+        Task { await self.peerClient?.wake() }
+        recoverInbox()
+        return nowMS
+    }
+
+    private func beginWakeTask(_ application: UIApplication) {
+        backgroundTaskID = application.beginBackgroundTask(withName: "watch-relay") { [weak self] in
+            // 期限。重い処理はせず、taskを終えて記録するだけ
+            MainActor.assumeIsolated { self?.wakeTaskExpired() }
+        }
+        RelayTrace.record(
+            .taskBegan, appState: Self.appStateName(application.applicationState),
+            remainingSeconds: Self.remainingSeconds(application))
+        wakeMonitorTask?.cancel()
+        wakeMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                if await self.endWakeTaskIfDone() { return }
+            }
+        }
+    }
+
+    /// 1秒ごと。仕事が済んだか期限が近ければtaskを終える。終えたらtrue
+    private func endWakeTaskIfDone() async -> Bool {
+        guard wakeResponder.holdsTask else { return true }
+        let progress = WatchWakeResponder.Progress(
+            intakeBacklog: watchIntake?.backlog ?? 0,
+            unackedSegments: await outbox.unacknowledgedCount,
+            peerConnected: isPeerConnected,
+            remainingSeconds: UIApplication.shared.backgroundTimeRemaining,
+            nowMS: Self.currentMS())
+        guard wakeResponder.shouldEnd(progress) else { return false }
+        // 台帳に処理済みと記録した小片の末尾の音声は、次の合図までanalyzerの中で確定せずに残る。
+        // suspendの間に落とされると失われるので、期限に余裕がある時は、閉じて確定させてから終える。
+        // 閉じて出たsegはoutboxに残り、接続中なら送られ、ackが間に合わなければ次の接続で再送される
+        if progress.remainingSeconds > Self.finishStreamsMinRemainingSeconds {
+            await watchRelay?.finishAll()
+        }
+        guard wakeResponder.holdsTask else { return true }
+        finishWakeTask(event: .taskEnded)
+        return true
+    }
+
+    private func wakeTaskExpired() {
+        guard wakeResponder.holdsTask else { return }
+        finishWakeTask(event: .taskExpired)
+    }
+
+    /// taskを終える（取り残すとiOSにappを殺される）。止まった小片は受け取り箱に残り、
+    /// 次の合図か前面化の`recover`で続きから処理される
+    private func finishWakeTask(event: RelayTraceEvent) {
+        wakeMonitorTask?.cancel()
+        wakeMonitorTask = nil
+        let identifier = backgroundTaskID
+        backgroundTaskID = .invalid
+        wakeResponder.taskEnded()
+        let application = UIApplication.shared
+        RelayTrace.record(
+            event, appState: Self.appStateName(application.applicationState),
+            remainingSeconds: Self.remainingSeconds(application))
+        if identifier != .invalid { application.endBackgroundTask(identifier) }
+    }
+
+    private static func appStateName(_ state: UIApplication.State) -> String {
+        switch state {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// 前面の時は残り時間が無限大に近いので記録しない
+    private static func remainingSeconds(_ application: UIApplication) -> Double? {
+        let remaining = application.backgroundTimeRemaining
+        return remaining < 100_000 ? remaining : nil
+    }
+
+    // MARK: - 受け取り箱の回収と保持期間
+
+    /// 起動時と前面になった時に呼ぶ。受け取り箱の小片を回収し、保持期間を過ぎたものを消す
+    func didBecomeActive() {
+        recoverInbox()
+        applyRetentionIfDue()
+    }
+
+    private func recoverInbox() {
+        guard let intake = watchIntake else { return }
+        let store = inboxStore
+        let nowMS = Self.currentMS()
+        Task.detached {
+            _ = store.recover(into: intake, nowMS: nowMS)
+        }
+        refreshInboxCount()
+    }
+
+    /// 受け取り箱の未処理件数をWatchの状態へ反映する
+    private func refreshInboxCount() {
+        watchTracker.inboxChanged(pendingCount: inboxStore.pendingCount(), atMS: Self.currentMS())
+        watchStatusChanged()
+    }
+
+    /// 1日1回まで。`Documents/watch-obs`の記録と受領記録・`Documents/relay-trace`の計測の記録で30日を、
+    /// `watch-inbox/failed`で7日を過ぎたものを消し、台帳の30日より古いsessionを消す
+    private func applyRetentionIfDue() {
+        let nowMS = Self.currentMS()
+        let last = Int64(UserDefaults.standard.double(forKey: Self.retentionDefaultsKey))
+        guard nowMS - last >= Self.retentionIntervalMS else { return }
+        UserDefaults.standard.set(Double(nowMS), forKey: Self.retentionDefaultsKey)
+        let store = inboxStore
+        let relay = watchRelay
+        let dayMS: Int64 = 86_400_000
+        Task.detached {
+            WatchInboxStore.prune(
+                directory: WatchSessionDelegate.watchObsDirectory(), days: RetentionPolicy.receiptDays,
+                nowMS: nowMS, matching: { $0.hasPrefix("receipts-") })
+            WatchInboxStore.prune(
+                directory: WatchSessionDelegate.watchObsDirectory(), days: RetentionPolicy.obsDays,
+                nowMS: nowMS, matching: { !$0.hasPrefix("receipts-") })
+            WatchInboxStore.prune(
+                directory: RelayTrace.directory(), days: RetentionPolicy.obsDays, nowMS: nowMS)
+            store.pruneFailed(nowMS: nowMS)
+            await relay?.pruneLedger(olderThanMS: nowMS - Int64(RetentionPolicy.obsDays) * dayMS)
+        }
+    }
+
+    // MARK: - Watchの状態
+
+    private func handleWatchObs(_ records: [WatchObsRecord], device: String) {
+        // 小片より先に記録が届いても（開始に失敗した時など）、snapshotを作って反映する
+        let name = watchDeviceNames[device] ?? watchTracker.snapshot?.deviceName ?? device
+        watchTracker.obsReceived(records, device: device, deviceName: name)
+        watchStatusChanged()
+    }
+
+    /// trackerの結果を画面・ファイルへ反映し、Macへ送る
+    private func watchStatusChanged() {
+        watchStatus = watchTracker.snapshot
+        if let snapshot = watchStatus, let json = try? snapshot.encodedJSON() {
+            try? Data(json.utf8).write(to: Self.watchStatusURL(), options: .atomic)
+        }
+        sendWatchStatusIfNeeded(force: false)
+    }
+
+    /// 変化があった時、最短5秒あけて送る。`force`は接続の直後の1回（間隔と変化の確認を飛ばす）。
+    /// 間に合わなかった変化は、5秒たった時に最新の状態を1回送る
+    private func sendWatchStatusIfNeeded(force: Bool) {
+        guard let snapshot = watchStatus, case .connected = peerState else { return }
+        if !force, let last = lastSentStatus {
+            var normalized = snapshot
+            normalized.updatedAtMS = last.updatedAtMS
+            if normalized == last { return }
+        }
+        let nowMS = Self.currentMS()
+        let wait = Self.statusMinIntervalMS - (nowMS - lastStatusSentAtMS)
+        if force || wait <= 0 {
+            statusSendTask?.cancel()
+            statusSendTask = nil
+            transmit(snapshot, atMS: nowMS)
+            return
+        }
+        guard statusSendTask == nil else { return }
+        statusSendTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(wait))
+            guard let self, !Task.isCancelled else { return }
+            self.statusSendTask = nil
+            if let latest = self.watchStatus { self.transmit(latest, atMS: Self.currentMS()) }
+        }
+    }
+
+    private func transmit(_ snapshot: WatchStatusSnapshot, atMS: Int64) {
+        lastSentStatus = snapshot
+        lastStatusSentAtMS = atMS
+        let client = peerClient
+        Task { await client?.sendWatchStatus(snapshot) }
     }
 
     /// WatchRelayから届いたSegmentをoutboxへ積む。
@@ -156,7 +435,11 @@ final class MobileModel {
     /// cursorの前進は壊れない。
     private func handleWatchSegment(_ segment: Segment) async {
         // seqの採番は`PeerClient.enqueue`→`Outbox.appendAssigningSeq`が原子的に行う
-        await peerClient?.enqueue(segment)
+        wakeResponder.activity(atMS: Self.currentMS())
+        let seq = await peerClient?.enqueue(segment)
+        RelayTrace.record(.segEnqueued, device: segment.device, seq: seq, endAtMS: segment.end)
+        watchTracker.textEmitted(segment.text, atMS: Self.currentMS())
+        watchStatusChanged()
         await refreshPendingCount()
     }
 
@@ -172,6 +455,11 @@ final class MobileModel {
             lastTextAtMS: lastTextAtMS,
             nowMS: nowMS
         ))
+    }
+
+    private var isPeerConnected: Bool {
+        if case .connected = peerState { return true }
+        return false
     }
 
     var peerIndicator: IndicatorMessage? {
