@@ -228,23 +228,32 @@ public actor SessionArchive {
 
 public enum SessionSpanReader {
     /// 先頭の`session`の記録の`started`が開始。終了は`session_end`の`ended`で、無い収録（従来の収録と、
-    /// 終了の記録を書く前に止まった収録）は全発話の`end + clock_offset_ms`の最大値、それも無ければ開始。
+    /// 終了の記録を書く前に止まった収録）はMacの発話（`platform == .mac`）の`end + clock_offset_ms`の最大値、
+    /// それも無ければ開始。追記されたpeerの発話では伸ばさない（伸ばすと、終端の+5秒以内に届くpeerのsegが
+    /// 次のsegの照合を伸ばし続ける）。peerの収録は、peerの発話の最大値。
     /// `session`の記録が無ければnil
     public static func span(prefix: String, records: [Record]) -> SessionSpan? {
         guard
-            let startMS = records.lazy.compactMap({ record -> Int64? in
-                if case .session(let session) = record { return session.started }
+            let session = records.lazy.compactMap({ record -> SessionRecord? in
+                if case .session(let session) = record { return session }
                 return nil
             }).first
         else { return nil }
+        let origin = session.origin ?? .mac
         let ended = records.compactMap { record -> Int64? in
             if case .sessionEnd(let end) = record { return end.ended }
             return nil
         }.max()
         let segmentEnd = records.compactMap { record -> Int64? in
-            if case .segment(let segment) = record { return segment.end + segment.clockOffsetMS }
-            return nil
+            guard case .segment(let segment) = record, origin == .peer || segment.platform == .mac else { return nil }
+            return segment.end + segment.clockOffsetMS
         }.max()
-        return SessionSpan(prefix: prefix, startMS: startMS, endMS: ended ?? segmentEnd ?? startMS)
+        var peerKey: String?
+        if origin == .peer, let device = session.peerDevice, let peerSession = session.peerSession {
+            peerKey = "\(device)/\(peerSession)"
+        }
+        return SessionSpan(
+            prefix: prefix, startMS: session.started, endMS: ended ?? segmentEnd ?? session.started,
+            origin: origin, peerKey: peerKey)
     }
 }

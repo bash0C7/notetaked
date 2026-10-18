@@ -10,6 +10,17 @@ public actor SessionStore {
         return formatter.string(from: date)
     }
 
+    /// `prefix(for:timeZone:)`の逆。"yyyy-MM-dd_HHmmss"ちょうどの形だけ読み、接尾辞付きや数字だけはnil
+    public static func date(fromPrefix prefix: String, timeZone: TimeZone) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+        guard prefix.utf8.count == 17, let date = formatter.date(from: prefix) else { return nil }
+        // 寛容な解釈（13月など）を、書き戻して同じになるものだけに絞る
+        return formatter.string(from: date) == prefix ? date : nil
+    }
+
     public nonisolated let prefix: String
     public nonisolated let liveURL: URL
     public nonisolated let timedURL: URL

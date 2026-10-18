@@ -587,7 +587,9 @@ actor ServeSession {
             await handlePong(pingID: pingID, t0: t0, t1: t1, t2: t2, from: connectionID)
         case .seg(let segment):
             await handleSeg(segment, from: connectionID)
-        case .helloAck, .ping, .ack, .watchStatus:
+        case .watchStatus(let snapshot):
+            await control.send(.watchStatus(snapshot))
+        case .helloAck, .ping, .ack:
             // Macはserver側でこれらは送るだけなので、届いても無視する
             break
         }
