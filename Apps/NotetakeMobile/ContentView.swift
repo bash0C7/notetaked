@@ -17,6 +17,17 @@ struct ContentView: View {
                     WatchStatusSection(model: model)
                 }
 
+                Section("Watch受信モード") {
+                    Toggle(
+                        "Watch受信モード",
+                        isOn: Binding(
+                            get: { model.listeningMode.enabled },
+                            set: { model.setListeningMode(enabled: $0) }))
+                    Text("無音を流して背面で待ち受けます。電池を使います（12時間で自動で切れます）。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("取り込み") {
                     Button(model.isRecording ? "取り込み中（タップで終了）" : "取り込み開始") {
                         if model.isRecording {

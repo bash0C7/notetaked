@@ -34,6 +34,20 @@ final class MobileModel {
     /// iPhoneが組み立てたWatchの状態。小片の受領・記録・文字起こし・受け取り箱の件数で更新し、Macへも送る
     private(set) var watchStatus: WatchStatusSnapshot?
 
+    /// Watch受信モード（無音再生で背面に生き、Watchの小片を随時受け取る）。入切は`UserDefaults`へ保存する
+    private(set) var listeningMode: WatchListeningMode = {
+        guard let data = UserDefaults.standard.data(forKey: "watchListeningMode"),
+            let mode = try? JSONDecoder().decode(WatchListeningMode.self, from: data)
+        else { return WatchListeningMode() }
+        return mode
+    }()
+    private var watchListener: WatchListener?
+    /// 無音再生で背面に生き続けるので、12時間の自動offは期限まで待つタスクで見張る
+    private var listeningExpiryTask: Task<Void, Never>?
+    /// マイクが閉じ終わるまで真（`isRecording`は停止の押下で偽になるが、`recorder.stop()`はその後に終わる）。
+    /// 無音再生の判定にはこちらを渡し、`AVCaptureSession`が生きている間にaudio sessionを触らない
+    private var isMicBusy = false
+
     private let outbox: Outbox
     private let recorder = Recorder()
     private var peerClient: PeerClient?
@@ -367,6 +381,7 @@ final class MobileModel {
 
     /// 起動時と前面になった時に呼ぶ。受け取り箱の小片を回収し、保持期間を過ぎたものを消す
     func didBecomeActive() {
+        applyListeningDecision()
         // 前面に戻った時も、背面で止まっていた再接続を作り直す（起動直後は停止中なので何もしない）
         Task { await self.peerClient?.wake() }
         recoverInbox()
@@ -522,12 +537,59 @@ final class MobileModel {
         Int64((Date().timeIntervalSince1970 * 1000).rounded())
     }
 
+    // MARK: - Watch受信モード
+
+    func setListeningMode(enabled: Bool) {
+        if enabled {
+            listeningMode.enable(atMS: Self.currentMS())
+        } else {
+            listeningMode.disable()
+        }
+        applyListeningDecision()
+    }
+
+    /// 入切・mic収録の開始と停止・中断の終わり・前面化のたびに呼ぶ
+    func applyListeningDecision() {
+        let nowMS = Self.currentMS()
+        listeningExpiryTask?.cancel()
+        listeningExpiryTask = nil
+        switch listeningMode.decide(nowMS: nowMS, isMicRecording: isMicBusy) {
+        case .play:
+            ensureListener().play()
+        case .stop:
+            watchListener?.stop()
+        case .stopAndDisable:
+            watchListener?.stop()
+            listeningMode.disable()
+        }
+        if let remaining = listeningMode.remainingUntilAutoOffMS(nowMS: nowMS) {
+            listeningExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(remaining))
+                if Task.isCancelled { return }
+                self?.applyListeningDecision()
+            }
+        }
+        if let data = try? JSONEncoder().encode(listeningMode) {
+            UserDefaults.standard.set(data, forKey: "watchListeningMode")
+        }
+    }
+
+    private func ensureListener() -> WatchListener {
+        if let watchListener { return watchListener }
+        let listener = WatchListener(onInterruptionEnded: { [weak self] in self?.applyListeningDecision() })
+        watchListener = listener
+        return listener
+    }
+
     // MARK: - Recording
 
     func startRecording() {
         guard !isRecording else { return }
         lastError = nil
         isRecording = true
+        isMicBusy = true
+        // mic収録のaudio sessionと奪い合わないよう、先に無音再生を止める
+        applyListeningDecision()
         let previous = lifecycleTask
         lifecycleTask = Task {
             await previous?.value
@@ -565,6 +627,8 @@ final class MobileModel {
                 self.levelHistory = LevelHistory()
                 self.recordingStartedAtMS = nil
                 self.lastError = "録音の開始に失敗しました: \(error.localizedDescription)"
+                self.isMicBusy = false
+                self.applyListeningDecision()
             }
         }
     }
@@ -583,6 +647,9 @@ final class MobileModel {
             } catch {
                 self.lastError = "録音の停止に失敗しました: \(error.localizedDescription)"
             }
+            // マイクを閉じ終えてから、無音再生を再開する（audio sessionを奪い合わない）
+            self.isMicBusy = false
+            self.applyListeningDecision()
         }
     }
 
