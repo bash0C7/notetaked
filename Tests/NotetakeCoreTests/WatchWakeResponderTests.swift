@@ -3,9 +3,12 @@ import Testing
 @testable import NotetakeCore
 
 private func progress(
-    backlog: Int = 0, unacked: Int = 0, connected: Bool = true, remaining: Double = 25, now: Int64
+    backlog: Int = 0, unacked: Int = 0, connected: Bool = true, connecting: Bool = false,
+    remaining: Double = 25, now: Int64
 ) -> WatchWakeResponder.Progress {
-    .init(intakeBacklog: backlog, unackedSegments: unacked, peerConnected: connected, remainingSeconds: remaining, nowMS: now)
+    .init(
+        intakeBacklog: backlog, unackedSegments: unacked, peerConnected: connected, remainingSeconds: remaining,
+        nowMS: now, peerConnecting: connecting)
 }
 
 // MARK: - responder
@@ -144,12 +147,125 @@ private func progress(
     #expect(PeerWakePolicy.onWake(.connected(lastActivityAgeMS: 1_000)) == .none)
 }
 
-@Test func browsingIsLeftAlone() {
-    #expect(PeerWakePolicy.onWake(.browsingOrConnecting) == .none)
+@Test func youngBrowsingIsLeftAlone() {
+    #expect(PeerWakePolicy.onWake(.attempting(ageMS: 2_000, crossedSuspend: false)) == .none)
+    #expect(PeerWakePolicy.onWake(.attempting(ageMS: 5_000, crossedSuspend: false)) == .none)
+}
+
+@Test func longBrowsingOrConnectingIsRestarted() {
+    #expect(PeerWakePolicy.onWake(.attempting(ageMS: 10_000, crossedSuspend: false)) == .reconnectNow)
+    #expect(PeerWakePolicy.onWake(.attempting(ageMS: 5_001, crossedSuspend: false)) == .reconnectNow)
+}
+
+@Test func attemptThatCrossedSuspendIsRestarted() {
+    #expect(PeerWakePolicy.onWake(.attempting(ageMS: 100, crossedSuspend: true)) == .reconnectNow)
+}
+
+@Test func connectingKeepsTaskUntilItsOwnLimit() {
+    // 15秒を過ぎても、つなぎ中なら20秒まで終えない
+    #expect(!responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: true, remaining: 14, now: 19_999)))
+    #expect(responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: true, remaining: 14, now: 20_000)))
+    // つなぎ中でなければ従来どおり15秒で諦める
+    #expect(responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: false, remaining: 14, now: 20_000)))
+}
+
+@Test func connectingHoldStopsWhileStreamsCanStillBeFinished() {
+    // 保持を打ち切る残りの閾値は、1秒刻みの監視を挟んでも、まだ`finishAll`できる残りより大きい
+    #expect(
+        WatchWakeResponder.connectingHoldMinRemainingSeconds - 1
+            > WatchWakeResponder.finishStreamsMinRemainingSeconds)
+    let threshold = WatchWakeResponder.connectingHoldMinRemainingSeconds
+    // 閾値を超える間は保持、閾値以下になった監視で終える（その時点の残りは閾値の1秒下まで）
+    #expect(!responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: true, remaining: threshold + 0.5, now: 16_000)))
+    #expect(responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: true, remaining: threshold, now: 16_000)))
+    #expect(!responderWoken().shouldEnd(progress(unacked: 1, connected: false, connecting: true, remaining: threshold, now: 14_000)))
+}
+
+private func responderWoken() -> WatchWakeResponder {
+    var responder = WatchWakeResponder()
+    _ = responder.woke(appIsActive: false, atMS: 0)
+    return responder
 }
 
 @Test func stoppedDoesNothing() {
     #expect(PeerWakePolicy.onWake(.stopped) == .none)
+}
+
+// MARK: - 逐次の再接続
+
+@Test func reconnectGoesDirectThenBrowse() {
+    var r = PeerReconnect()
+    r.endpointSaved()
+    #expect(r.start(allowDirect: true) == .connectDirect)
+    #expect(r.phase == .direct)
+    #expect(r.directFailed() == .startBrowse)
+    #expect(r.phase == .browsing)
+    #expect(!r.hasSavedEndpoint)
+    #expect(r.browseFound() == .connectBrowsed)
+    #expect(r.browseFound() == .ignore)
+    r.ready()
+    #expect(r.phase == .connected)
+}
+
+@Test func reconnectWithoutSavedEndpointBrowses() {
+    var r = PeerReconnect()
+    #expect(r.start(allowDirect: true) == .startBrowse)
+    #expect(r.start(allowDirect: false) == .startBrowse)
+}
+
+@Test func directFailureCallbacksAreIgnoredOutsideDirect() {
+    var r = PeerReconnect()
+    r.endpointSaved()
+    _ = r.start(allowDirect: false)
+    #expect(r.directFailed() == .ignore)
+    #expect(r.phase == .browsing)
+    #expect(r.hasSavedEndpoint)
+}
+
+@Test func browseResultDuringDirectIsIgnored() {
+    var r = PeerReconnect()
+    r.endpointSaved()
+    _ = r.start(allowDirect: true)
+    #expect(r.browseFound() == .ignore)
+    #expect(r.phase == .direct)
+}
+
+@Test func wakeDuringBrowseRestartsSequence() {
+    var r = PeerReconnect()
+    r.endpointSaved()
+    _ = r.start(allowDirect: true)
+    _ = r.directFailed()
+    // 保存した端点は捨てたので、browse中のwakeはbrowseからやり直す
+    #expect(r.start(allowDirect: true) == .startBrowse)
+    #expect(r.phase == .browsing)
+}
+
+@Test func connectionFailureWhileDirectFallsToBrowseNotBackoff() {
+    var r = PeerReconnect()
+    r.endpointSaved()
+    _ = r.start(allowDirect: true)
+    #expect(r.connectionFailed() == .startBrowse)
+}
+
+@Test func connectionFailureAfterBrowseOrReadyBacksOff() {
+    var r = PeerReconnect()
+    _ = r.start(allowDirect: true)
+    _ = r.browseFound()
+    #expect(r.connectionFailed() == .scheduleBackoff)
+    #expect(r.phase == .idle)
+    #expect(r.connectionFailed() == .ignore)
+    _ = r.start(allowDirect: false)
+    _ = r.browseFound()
+    r.ready()
+    #expect(r.connectionFailed() == .scheduleBackoff)
+}
+
+@Test func stopIdlesTheSequence() {
+    var r = PeerReconnect()
+    _ = r.start(allowDirect: false)
+    r.stop()
+    #expect(r.phase == .idle)
+    #expect(r.browseFound() == .ignore)
 }
 
 // MARK: - trace
@@ -182,6 +298,33 @@ private func progress(
     #expect(line.contains("\"end_at_ms\""))
     #expect(line.contains("\"app_state\""))
     #expect(line.contains("\"seg_enqueued\""))
+}
+
+@Test func peerTraceEventsHaveStableNames() throws {
+    let cases: [(RelayTraceEvent, String)] = [
+        (.peerState, "peer_state"), (.wakeDecision, "wake_decision"), (.browseResult, "browse_result"),
+        (.connectStarted, "connect_started"), (.connectReady, "connect_ready"),
+    ]
+    for (event, name) in cases {
+        #expect(try RelayTraceRecord(atMS: 1, event: event).encodedLine() == "{\"at_ms\":1,\"event\":\"\(name)\"}")
+    }
+}
+
+@Test func peerTraceDetailsAreFixed() {
+    #expect(RelayTraceRecord.peerStateDetail(from: "browsing", to: "failed", reason: "timeout") == "browsing->failed reason=timeout")
+    #expect(RelayTraceRecord.peerStateDetail(from: "idle", to: "browsing", reason: nil) == "idle->browsing")
+    #expect(
+        RelayTraceRecord.wakeDecisionDetail(.attempting(ageMS: 7_000, crossedSuspend: true), .reconnectNow)
+            == "link=attempting age_ms=7000 crossed_suspend=true decision=reconnectNow")
+    #expect(
+        RelayTraceRecord.wakeDecisionDetail(.connected(lastActivityAgeMS: 10), PeerWakePolicy.Decision.none)
+            == "link=connected age_ms=10 decision=none")
+    #expect(RelayTraceRecord.wakeDecisionDetail(.waitingToRetry, .connectNow) == "link=waitingToRetry decision=connectNow")
+    #expect(RelayTraceRecord.wakeDecisionDetail(.stopped, .none) == "link=stopped decision=none")
+    #expect(RelayTraceRecord.browseResultDetail(count: 2, chosen: "svc") == "count=2 chosen=svc")
+    #expect(RelayTraceRecord.connectStartedDetail(endpoint: "e", kind: "direct") == "endpoint=e kind=direct")
+    #expect(RelayTraceRecord.connectReadyDetail(elapsedMS: 1200, interface: "en0", kind: "browse") == "elapsed_ms=1200 interface=en0 kind=browse")
+    #expect(RelayTraceRecord.connectReadyDetail(elapsedMS: 5, interface: nil, kind: "direct") == "elapsed_ms=5 interface=none kind=direct")
 }
 
 // MARK: - 終える前の未送信status

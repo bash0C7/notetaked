@@ -9,6 +9,13 @@ public struct WatchWakeResponder: Sendable, Equatable {
     /// Macへつながらない時、起きてからこの時間で送信を諦める。
     /// Macが寝ている・圏外の時に毎回30秒起き続けて電池を使わないため
     public static let peerGiveUpMS: Int64 = 15_000
+    /// つなぎ中（`.connecting`）は、起きてからこの時間まで待つ。Macが寝ている・圏外でも、毎回25秒taskを持たない
+    public static let connectingGiveUpMS: Int64 = 20_000
+    /// 残りがこれを超える間だけ、つなぎ中のtaskを持つ。streamを閉じて確定させる余裕を残すため
+    public static let finishStreamsMinRemainingSeconds: Double = 10
+    /// つなぎ中の保持を打ち切る残り。監視は1秒刻みなので、`finishStreamsMinRemainingSeconds`に余裕を足し、
+    /// 打ち切って終える時点でもstreamを閉じて確定させられる（`finishAll`が飛ばされない）ようにする
+    public static let connectingHoldMinRemainingSeconds: Double = finishStreamsMinRemainingSeconds + 3
     /// `backgroundTimeRemaining`がこれ以下なら、仕事が残っていても終える
     public static let finishMarginSeconds: Double = 5
 
@@ -22,10 +29,14 @@ public struct WatchWakeResponder: Sendable, Equatable {
         public var peerConnected: Bool
         public var remainingSeconds: Double
         public var nowMS: Int64
+        /// Macへ接続を試している最中（`.connecting`）。つなぎ中は諦めずに、期限の余裕まで待つ
+        public var peerConnecting: Bool
 
         public init(
-            intakeBacklog: Int, unackedSegments: Int, peerConnected: Bool, remainingSeconds: Double, nowMS: Int64
+            intakeBacklog: Int, unackedSegments: Int, peerConnected: Bool, remainingSeconds: Double, nowMS: Int64,
+            peerConnecting: Bool = false
         ) {
+            self.peerConnecting = peerConnecting
             self.intakeBacklog = intakeBacklog
             self.unackedSegments = unackedSegments
             self.peerConnected = peerConnected
@@ -63,7 +74,10 @@ public struct WatchWakeResponder: Sendable, Equatable {
         if progress.nowMS - lastActivityAtMS < Self.settleMS { return false }
         if progress.unackedSegments > 0 {
             if progress.peerConnected { return false }
-            if progress.nowMS - wokeAtMS < Self.peerGiveUpMS { return false }
+            let holdMS =
+                progress.peerConnecting && progress.remainingSeconds > Self.connectingHoldMinRemainingSeconds
+                ? Self.connectingGiveUpMS : Self.peerGiveUpMS
+            if progress.nowMS - wokeAtMS < holdMS { return false }
         }
         return true
     }
@@ -110,9 +124,14 @@ public enum PeerWakePolicy {
     public static let staleAfterMS: Int64 = 75_000
 
     public enum Link: Sendable, Equatable {
-        case stopped, browsingOrConnecting, waitingToRetry
+        case stopped, waitingToRetry
+        /// browsing / connecting。その状態に入ってからの経過と、入った後にappが背面へ回った（suspendをまたいだ）か
+        case attempting(ageMS: Int64, crossedSuspend: Bool)
         case connected(lastActivityAgeMS: Int64)
     }
+
+    /// browsing / connectingがこれを超えて続いたら、止まっているものとして作り直す
+    public static let attemptStaleAfterMS: Int64 = 5_000
 
     public enum Decision: Sendable, Equatable {
         case none, connectNow, reconnectNow
@@ -120,7 +139,9 @@ public enum PeerWakePolicy {
 
     public static func onWake(_ link: Link) -> Decision {
         switch link {
-        case .stopped, .browsingOrConnecting: return .none
+        case .stopped: return .none
+        case .attempting(let age, let crossed):
+            return crossed || age > attemptStaleAfterMS ? .reconnectNow : .none
         case .waitingToRetry: return .connectNow
         case .connected(let age): return age > staleAfterMS ? .reconnectNow : .none
         }
@@ -139,6 +160,11 @@ public enum RelayTraceEvent: String, Codable, Sendable {
     case segAcked = "seg_acked"
     case listeningStarted = "listening_started"
     case listeningStopped = "listening_stopped"
+    case peerState = "peer_state"
+    case wakeDecision = "wake_decision"
+    case browseResult = "browse_result"
+    case connectStarted = "connect_started"
+    case connectReady = "connect_ready"
 }
 
 /// 実機gate（R1〜R8）の計測の1行（JSON Lines）。`nil`の項目は出さない
@@ -196,5 +222,102 @@ public struct RelayTraceRecord: Codable, Sendable, Equatable {
             if bytes.last == 0x0D { bytes.removeLast() }
             return try? decoder.decode(RelayTraceRecord.self, from: bytes)
         }
+    }
+}
+
+/// Mac再接続の計測（`detail`の書式）。実機のrelay-traceを機械で読むため、書式はここで固定する
+extension RelayTraceRecord {
+    public static func peerStateDetail(from: String, to: String, reason: String?) -> String {
+        "\(from)->\(to)" + (reason.map { " reason=\($0)" } ?? "")
+    }
+
+    public static func wakeDecisionDetail(_ link: PeerWakePolicy.Link, _ decision: PeerWakePolicy.Decision) -> String {
+        let linkText: String
+        switch link {
+        case .stopped: linkText = "link=stopped"
+        case .waitingToRetry: linkText = "link=waitingToRetry"
+        case .attempting(let age, let crossed):
+            linkText = "link=attempting age_ms=\(age) crossed_suspend=\(crossed)"
+        case .connected(let age): linkText = "link=connected age_ms=\(age)"
+        }
+        return "\(linkText) decision=\(decision)"
+    }
+
+    public static func browseResultDetail(count: Int, chosen: String?) -> String {
+        "count=\(count) chosen=\(chosen ?? "none")"
+    }
+
+    /// `kind`は`browse`（発見した端点）か`direct`（前回つながった端点）
+    public static func connectStartedDetail(endpoint: String, kind: String) -> String {
+        "endpoint=\(endpoint) kind=\(kind)"
+    }
+
+    public static func connectReadyDetail(elapsedMS: Int64, interface: String?, kind: String) -> String {
+        "elapsed_ms=\(elapsedMS) interface=\(interface ?? "none") kind=\(kind)"
+    }
+}
+
+/// 再接続の逐次の手順。同時に2本の接続を持たない。
+/// 保存した直前の端点があればそこへ直接つなぎ（時間制限つき）、失敗・時間切れならbrowseへ進む
+public struct PeerReconnect: Sendable, Equatable {
+    public enum Phase: Sendable, Equatable {
+        case idle, direct, browsing, browseConnecting, connected
+    }
+
+    public enum Step: Sendable, Equatable {
+        case connectDirect, startBrowse, connectBrowsed, scheduleBackoff, ignore
+    }
+
+    public private(set) var phase: Phase = .idle
+    /// 直前に`.ready`になった端点を持っているか。直接接続が失敗したら捨てる（Macのport等が変わりうる）
+    public private(set) var hasSavedEndpoint = false
+
+    public init() {}
+
+    public mutating func endpointSaved() { hasSavedEndpoint = true }
+
+    /// 最初の探索・wakeの作り直し・backoff明けのすべて。進行中のものは呼び出し側が先にcancelする
+    public mutating func start(allowDirect: Bool) -> Step {
+        if allowDirect && hasSavedEndpoint {
+            phase = .direct
+            return .connectDirect
+        }
+        phase = .browsing
+        return .startBrowse
+    }
+
+    /// 直接接続の失敗・時間切れ。直接接続中の時だけbrowseへ進む（古いcallbackは無視）
+    public mutating func directFailed() -> Step {
+        guard phase == .direct else { return .ignore }
+        hasSavedEndpoint = false
+        phase = .browsing
+        return .startBrowse
+    }
+
+    /// browseが端点を見つけた。browse中の最初の1回だけつなぐ
+    public mutating func browseFound() -> Step {
+        guard phase == .browsing else { return .ignore }
+        phase = .browseConnecting
+        return .connectBrowsed
+    }
+
+    /// 直接・browse経由どちらでも`.ready`。以後の失敗は切断として扱う
+    public mutating func ready() {
+        phase = .connected
+    }
+
+    /// 接続の失敗・切断。直接接続中ならbrowseへ、それ以外はbackoffして作り直す
+    public mutating func connectionFailed() -> Step {
+        switch phase {
+        case .direct: return directFailed()
+        case .idle: return .ignore
+        case .browsing, .browseConnecting, .connected:
+            phase = .idle
+            return .scheduleBackoff
+        }
+    }
+
+    public mutating func stop() {
+        phase = .idle
     }
 }

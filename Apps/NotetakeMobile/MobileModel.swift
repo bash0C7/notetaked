@@ -61,8 +61,6 @@ final class MobileModel {
     private var lastStatusSentAtMS: Int64 = 0
     private var statusSendTask: Task<Void, Never>?
     private static let statusMinIntervalMS: Int64 = 5_000
-    /// background taskを終える前にstreamを閉じる（`finishAll`は最大で数秒かかる）のに必要な残り時間
-    private static let finishStreamsMinRemainingSeconds: Double = 10
     private var watchDeviceNames: [String: String] = [:]
     private static let retentionDefaultsKey = "watchRetentionLastRunMS"
     private static let retentionIntervalMS: Int64 = 86_400_000
@@ -275,7 +273,7 @@ final class MobileModel {
         // suspendの間に落とされると失われるので、期限に余裕がある時は、閉じて確定させてから終える。
         // 閉じて出たsegはoutboxに残り、接続中なら送られ、ackが間に合わなければ次の接続で再送される
         let generation = wakeResponder.taskGeneration
-        if progress.remainingSeconds > Self.finishStreamsMinRemainingSeconds {
+        if progress.remainingSeconds > WatchWakeResponder.finishStreamsMinRemainingSeconds {
             await watchRelay?.finishAll()
             // finishAllの間に次の合図が来て、taskを取り直したり新しい小片を受けたりしうる。
             // 新しい進み具合で判定し直し、古い監視が新しいtaskを終えない
@@ -306,13 +304,19 @@ final class MobileModel {
         await peerClient?.sendWatchStatus(snapshot)
     }
 
+    func didEnterBackground() {
+        Task { await self.peerClient?.noteBackgrounded() }
+    }
+
     private func wakeProgress() async -> WatchWakeResponder.Progress {
-        WatchWakeResponder.Progress(
+        var connecting = false
+        if case .connecting = peerState { connecting = true }
+        return WatchWakeResponder.Progress(
             intakeBacklog: watchIntake?.backlog ?? 0,
             unackedSegments: await outbox.unacknowledgedCount,
             peerConnected: isPeerConnected,
             remainingSeconds: UIApplication.shared.backgroundTimeRemaining,
-            nowMS: Self.currentMS())
+            nowMS: Self.currentMS(), peerConnecting: connecting)
     }
 
     private func wakeTaskExpired() {
@@ -363,6 +367,8 @@ final class MobileModel {
 
     /// 起動時と前面になった時に呼ぶ。受け取り箱の小片を回収し、保持期間を過ぎたものを消す
     func didBecomeActive() {
+        // 前面に戻った時も、背面で止まっていた再接続を作り直す（起動直後は停止中なので何もしない）
+        Task { await self.peerClient?.wake() }
         recoverInbox()
         applyRetentionIfDue()
     }
