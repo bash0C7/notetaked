@@ -85,6 +85,18 @@ public struct WatchWakeResponder: Sendable, Equatable {
         return shouldEnd(progress) ? .endNow : .keepMonitoring
     }
 
+    /// background taskを終える前に、5秒間引きを無視して`watch_status`を送る必要があるか。
+    /// 間引きの待ちTaskはtaskを終えるとsuspendされ、Macに古い状態（未処理の件数など）が残るため。
+    /// `updatedAtMS`だけの違いは変化と見なさない（送信側の変化判定と同じ）
+    public static func shouldFlushStatus(
+        current: WatchStatusSnapshot?, lastSent: WatchStatusSnapshot?, peerConnected: Bool
+    ) -> Bool {
+        guard peerConnected, let current else { return false }
+        guard var normalized = Optional(current), let lastSent else { return true }
+        normalized.updatedAtMS = lastSent.updatedAtMS
+        return normalized != lastSent
+    }
+
     /// 終えた時と期限切れの時
     public mutating func taskEnded() {
         holdsTask = false

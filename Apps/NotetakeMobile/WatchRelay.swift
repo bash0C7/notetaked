@@ -243,6 +243,8 @@ actor WatchRelay: WatchChunkFeeding {
     /// idleのloopや背面の終了処理と、列からの`handle`が重ならないようにする
     private let gate = AsyncGate()
     private var ledger: WatchSessionLedger
+    /// feed済みでstreamを閉じるまで受け取り箱に残す音声
+    private var fedHold = WatchFedAudioHold()
     private var streams: [String: WatchStream] = [:]
     /// session生成中（Transcriber起動待ち）のTask。完了したら`buildStream`が`streams`へ登録し、ここから消す。
     /// `WatchStream`は可変なclassでSendableでないため、Taskの結果としてactor外へ出さない
@@ -506,7 +508,7 @@ actor WatchRelay: WatchChunkFeeding {
             await stream.transcriber.feed(converted, at: sampleTime)
             stream.lastChunkAt = Date()
             onChunkFed(chunk)
-            markDone(chunk: chunk, entry: entry)
+            markDone(chunk: chunk, entry: entry, holdAudioUntilStreamFinished: true)
             if chunk.isFinal == true {
                 await finishStream(session: chunk.session)
             }
@@ -589,12 +591,21 @@ actor WatchRelay: WatchChunkFeeding {
         stream.converterSourceFormat = nil
     }
 
-    private func markDone(chunk: WatchChunkMetadata, entry: WatchInboxEntry) {
+    /// 台帳には処理済みと記録する。`holdAudioUntilStreamFinished`の時は、analyzerの中に末尾が残っている間
+    /// 音声を消さず、streamを閉じ終えてから消す（途中でappが落とされても音声が受け取り箱に残る。
+    /// 台帳は処理済みなので、次の回収では二重にfeedされず片付く）
+    private func markDone(
+        chunk: WatchChunkMetadata, entry: WatchInboxEntry, holdAudioUntilStreamFinished: Bool = false
+    ) {
         ledger.markProcessed(
             session: chunk.session, index: chunk.index, atMS: Self.nowMS(),
             endAtMS: chunk.startAtMS + (chunk.durationMS ?? 0))
         saveLedger()
-        store.remove(id: entry.id)
+        if holdAudioUntilStreamFinished {
+            fedHold.hold(session: chunk.session, id: entry.id)
+        } else {
+            store.remove(id: entry.id)
+        }
         onInboxChange()
     }
 
@@ -678,12 +689,23 @@ actor WatchRelay: WatchChunkFeeding {
             await process(chunk: chunk, entry: entry, stream: stream)
         }
 
-        try? await stream.transcriber.finish()
+        var finishSucceeded = true
+        do {
+            try await stream.transcriber.finish()
+        } catch {
+            logError("session \(session): transcriber finish failed: \(error)")
+            finishSucceeded = false
+        }
         await stream.pieceTask?.value
 
         streams.removeValue(forKey: session)
         ledger.markFinished(session: session, atMS: Self.nowMS())
         saveLedger()
+        // 末尾が確定して出た後で、feed済みの音声を消す
+        for id in fedHold.release(session: session, finishSucceeded: finishSucceeded) {
+            store.remove(id: id)
+        }
+        onInboxChange()
         onStreamCount(streams.count)
     }
 

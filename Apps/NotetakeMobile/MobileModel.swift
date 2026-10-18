@@ -274,8 +274,8 @@ final class MobileModel {
         // 台帳に処理済みと記録した小片の末尾の音声は、次の合図までanalyzerの中で確定せずに残る。
         // suspendの間に落とされると失われるので、期限に余裕がある時は、閉じて確定させてから終える。
         // 閉じて出たsegはoutboxに残り、接続中なら送られ、ackが間に合わなければ次の接続で再送される
+        let generation = wakeResponder.taskGeneration
         if progress.remainingSeconds > Self.finishStreamsMinRemainingSeconds {
-            let generation = wakeResponder.taskGeneration
             await watchRelay?.finishAll()
             // finishAllの間に次の合図が来て、taskを取り直したり新しい小片を受けたりしうる。
             // 新しい進み具合で判定し直し、古い監視が新しいtaskを終えない
@@ -286,8 +286,24 @@ final class MobileModel {
             }
         }
         guard wakeResponder.holdsTask else { return true }
+        // 5秒間引きの待ちTaskはtaskを終えるとsuspendされ、Macに古い状態（未処理の件数など）が残る。
+        // 未送信の状態は間引きを無視して、送り終えてからtaskを終える
+        await flushWatchStatusBeforeEnding()
+        guard wakeResponder.holdsTask, wakeResponder.taskGeneration == generation else { return true }
         finishWakeTask(event: .taskEnded)
         return true
+    }
+
+    private func flushWatchStatusBeforeEnding() async {
+        guard let snapshot = watchStatus,
+            WatchWakeResponder.shouldFlushStatus(
+                current: snapshot, lastSent: lastSentStatus, peerConnected: isPeerConnected)
+        else { return }
+        statusSendTask?.cancel()
+        statusSendTask = nil
+        lastSentStatus = snapshot
+        lastStatusSentAtMS = Self.currentMS()
+        await peerClient?.sendWatchStatus(snapshot)
     }
 
     private func wakeProgress() async -> WatchWakeResponder.Progress {
@@ -301,6 +317,15 @@ final class MobileModel {
 
     private func wakeTaskExpired() {
         guard wakeResponder.holdsTask else { return }
+        // 期限では待てないので、未送信の状態は間引きを無視して送り始めてから終える
+        if let snapshot = watchStatus,
+            WatchWakeResponder.shouldFlushStatus(
+                current: snapshot, lastSent: lastSentStatus, peerConnected: isPeerConnected)
+        {
+            statusSendTask?.cancel()
+            statusSendTask = nil
+            transmit(snapshot, atMS: Self.currentMS())
+        }
         finishWakeTask(event: .taskExpired)
     }
 

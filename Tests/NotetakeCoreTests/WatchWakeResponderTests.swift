@@ -183,3 +183,33 @@ private func progress(
     #expect(line.contains("\"app_state\""))
     #expect(line.contains("\"seg_enqueued\""))
 }
+
+// MARK: - 終える前の未送信status
+
+private func statusSnapshot(pending: Int, updatedAtMS: Int64 = 0) -> WatchStatusSnapshot {
+    var snapshot = WatchStatusSnapshot(device: "w", deviceName: "Watch", state: .recording, updatedAtMS: updatedAtMS)
+    snapshot.inboxPendingCount = pending
+    return snapshot
+}
+
+@Test func unsentChangedStatusIsFlushedBeforeEnding() {
+    let last = statusSnapshot(pending: 1, updatedAtMS: 100)
+    let current = statusSnapshot(pending: 0, updatedAtMS: 200)
+    #expect(WatchWakeResponder.shouldFlushStatus(current: current, lastSent: last, peerConnected: true))
+}
+
+@Test func neverSentStatusIsFlushedBeforeEnding() {
+    #expect(WatchWakeResponder.shouldFlushStatus(current: statusSnapshot(pending: 0), lastSent: nil, peerConnected: true))
+}
+
+@Test func statusDifferingOnlyInUpdatedAtIsNotFlushed() {
+    let last = statusSnapshot(pending: 1, updatedAtMS: 100)
+    let current = statusSnapshot(pending: 1, updatedAtMS: 900)
+    #expect(!WatchWakeResponder.shouldFlushStatus(current: current, lastSent: last, peerConnected: true))
+}
+
+@Test func statusIsNotFlushedWithoutPeerOrWithoutStatus() {
+    let current = statusSnapshot(pending: 0)
+    #expect(!WatchWakeResponder.shouldFlushStatus(current: current, lastSent: nil, peerConnected: false))
+    #expect(!WatchWakeResponder.shouldFlushStatus(current: nil, lastSent: nil, peerConnected: true))
+}
