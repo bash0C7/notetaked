@@ -105,3 +105,21 @@ private typealias Reducer = WatchRecordingReducer
     let recording = WatchRecordingPhase.recording(startedAtMS: 100, lastBufferAtMS: 500)
     #expect(Reducer.reduce(recording, .started(atMS: 200)) == recording)
 }
+
+@Test func autoStopHaltsWithItsReason() {
+    let phase = Reducer.reduce(.recording(startedAtMS: 0, lastBufferAtMS: 1_000), .autoStopped(atMS: 36_000_000))
+    #expect(phase == .halted(reason: .autoStopped, atMS: 36_000_000, detail: nil))
+}
+
+@Test func autoStopWhileIdleIsIgnored() {
+    #expect(Reducer.reduce(.idle, .autoStopped(atMS: 1_000)) == .idle)
+    let halted = WatchRecordingPhase.halted(reason: .interrupted, atMS: 500, detail: nil)
+    #expect(Reducer.reduce(halted, .autoStopped(atMS: 1_000)) == halted)
+}
+
+@Test func autoStopDisplaysItsReason() {
+    let phase = Reducer.reduce(.recording(startedAtMS: 0, lastBufferAtMS: 1_000), .autoStopped(atMS: 2_000))
+    let display = Reducer.display(phase, nowMS: 2_000)
+    #expect(display.isActive == false)
+    #expect(display.message.text == "止まりました: 連続録音の上限で自動停止")
+}

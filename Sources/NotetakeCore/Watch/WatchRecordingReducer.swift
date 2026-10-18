@@ -17,6 +17,8 @@ public enum WatchRecordingEvent: Sendable, Equatable {
     case mediaServicesReset(atMS: Int64)
     case writeFailed(atMS: Int64, message: String)
     case becameActive(atMS: Int64)
+    /// 連続録音の上限に達した。録音中だけ`.halted(.autoStopped)`へ移す
+    case autoStopped(atMS: Int64)
 }
 
 public struct WatchRecordingDisplay: Sendable, Equatable {
@@ -64,6 +66,8 @@ public enum WatchRecordingReducer {
                 return .halted(reason: .mediaServicesReset, atMS: atMS, detail: nil)
             case .writeFailed(let atMS, let message):
                 return .halted(reason: .writeFailed, atMS: atMS, detail: message)
+            case .autoStopped(let atMS):
+                return .halted(reason: .autoStopped, atMS: atMS, detail: nil)
             case .becameActive(let atMS):
                 return isStale(phase, nowMS: atMS, queueDepth: queueDepth) ? .halted(reason: .noAudio, atMS: atMS, detail: nil) : phase
             default:
