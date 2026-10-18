@@ -96,3 +96,44 @@ import Testing
     }
     #expect(gate.consecutiveFailures == 0)
 }
+
+@Test func finalIgnoresTheMinimumInterval() {
+    var gate = WatchWakeGate()
+    _ = gate.decide(isReachable: true, nowMS: 0)
+    _ = gate.replied(attempt: 1, atMS: 100)
+    #expect(gate.decide(isReachable: true, nowMS: 3_000).decision == .skipTooSoon)
+    #expect(gate.decideFinal(isReachable: true, nowMS: 3_000).decision == .send(attempt: 2))
+}
+
+@Test func finalIsSentEvenWhileAnEarlierWakeIsInFlight() {
+    var gate = WatchWakeGate()
+    _ = gate.decide(isReachable: true, nowMS: 0)
+    #expect(gate.decideFinal(isReachable: true, nowMS: 3_000).decision == .send(attempt: 2))
+    // 古い合図のerrorは二重に数えず、新しい合図の返事待ちを解かない
+    #expect(gate.failed(attempt: 1, atMS: 3_500, detail: "old") == .none)
+    #expect(gate.replied(attempt: 2, atMS: 3_600) == .none)
+}
+
+@Test func finalIsSentWhenNoWakeWasSentBefore() {
+    var gate = WatchWakeGate()
+    #expect(gate.decideFinal(isReachable: true, nowMS: 500).decision == .send(attempt: 1))
+}
+
+@Test func finalIsSkippedWhenUnreachable() {
+    var gate = WatchWakeGate()
+    #expect(gate.decideFinal(isReachable: false, nowMS: 500).decision == .skipUnreachable)
+}
+
+@Test func finalStillCountsATimedOutWake() {
+    var gate = WatchWakeGate()
+    _ = gate.decide(isReachable: true, nowMS: 0)
+    let result = gate.decideFinal(isReachable: true, nowMS: 30_000)
+    #expect(result.note == .firstFailure(detail: "reply timeout"))
+    #expect(result.decision == .send(attempt: 2))
+}
+
+@Test func finalAfterFinalIsAlsoSent() {
+    var gate = WatchWakeGate()
+    _ = gate.decideFinal(isReachable: true, nowMS: 0)
+    #expect(gate.decideFinal(isReachable: true, nowMS: 1_000).decision == .send(attempt: 2))
+}

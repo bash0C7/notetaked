@@ -39,15 +39,29 @@ public struct WatchWakeGate: Sendable, Equatable {
     }
 
     public mutating func decide(isReachable: Bool, nowMS: Int64) -> (decision: Decision, note: Note) {
+        decide(isReachable: isReachable, nowMS: nowMS, isFinal: false)
+    }
+
+    /// 停止・halt・auto_stoppedの後始末の、最後の合図。小片ごとの合図が`skipTooSoon` / `skipInFlight`で
+    /// 捨てられていても、止まった記録とis_finalの小片をiPhoneに処理させるため、間隔と返事待ちを無視して送る。
+    /// 返事待ちの古い合図があっても送る（古い合図は最後の小片が積まれる前かもしれない）。古い合図のerrorは
+    /// 返事待ちが新しい`attempt`に替わるので数えない。届かない時（`skipUnreachable`）だけ送らない
+    public mutating func decideFinal(isReachable: Bool, nowMS: Int64) -> (decision: Decision, note: Note) {
+        decide(isReachable: isReachable, nowMS: nowMS, isFinal: true)
+    }
+
+    private mutating func decide(isReachable: Bool, nowMS: Int64, isFinal: Bool) -> (decision: Decision, note: Note) {
         var note: Note = .none
         if let pending = inFlight, nowMS - pending.sentAtMS >= Self.replyTimeoutMS {
             inFlight = nil
             note = countFailure(detail: "reply timeout")
         }
         guard isReachable else { return (.skipUnreachable, note) }
-        guard inFlight == nil else { return (.skipInFlight, note) }
-        if let lastSentAtMS, nowMS - lastSentAtMS < Self.minIntervalMS {
-            return (.skipTooSoon, note)
+        if !isFinal {
+            guard inFlight == nil else { return (.skipInFlight, note) }
+            if let lastSentAtMS, nowMS - lastSentAtMS < Self.minIntervalMS {
+                return (.skipTooSoon, note)
+            }
         }
         lastAttempt += 1
         inFlight = (lastAttempt, nowMS)

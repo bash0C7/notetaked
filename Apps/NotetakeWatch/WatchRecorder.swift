@@ -288,6 +288,9 @@ final class WatchRecorder: NSObject {
             self?.drainingSessionID = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
             self?.obsLog.ship(nowMS: Self.currentMS())
+            // 止まった記録をshipした後に、最後の合図を1回送る。最後の小片が空で小片ごとの合図が
+            // 0回でも、小片ごとの合図が間隔で捨てられていても、iPhoneを起こして止まりを処理させる
+            self?.sendFinalWake()
             self?.recoverChunks()
             self?.tearDownTask = nil
         }
@@ -648,9 +651,12 @@ final class WatchRecorder: NSObject {
 
     /// 小片を閉じたiPhoneを起こす合図（`sendMessage`）。届かない・返事が無い合図で録音・転送を止めず、
     /// 失敗を`lastError`にも出さない
-    private func sendWake(device: String, session: String, index: Int, isReachable: Bool) {
+    private func sendWake(device: String, session: String, index: Int, isReachable: Bool, isFinal: Bool = false) {
         let nowMS = Self.currentMS()
-        let result = wakeGate.decide(isReachable: isReachable, nowMS: nowMS)
+        let result =
+            isFinal
+            ? wakeGate.decideFinal(isReachable: isReachable, nowMS: nowMS)
+            : wakeGate.decide(isReachable: isReachable, nowMS: nowMS)
         recordWakeNote(result.note, session: session, index: index, atMS: nowMS)
         guard case .send(let attempt) = result.decision else { return }
         let message = WatchWakeMessage(device: device, session: session, index: index, sentAtMS: nowMS).message
@@ -669,6 +675,14 @@ final class WatchRecorder: NSObject {
                     self?.wakeFailed(attempt: attempt, session: session, index: index, detail: detail)
                 }
             })
+    }
+
+    /// 後始末の最後の合図。間隔・返事待ちを無視する（`WatchWakeGate.decideFinal`）。
+    /// 小片が一度も閉じていない時も、起こすことが目的なので送る（`session`・`index`は参考値）
+    private func sendFinalWake() {
+        let last = lastClosedChunk ?? (WatchIdentity.deviceID(), "", 0)
+        sendWake(
+            device: last.0, session: last.1, index: last.2, isReachable: isReachableNow(), isFinal: true)
     }
 
     private func wakeReplied(attempt: Int, session: String, index: Int) {
