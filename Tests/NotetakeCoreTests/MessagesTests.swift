@@ -202,3 +202,46 @@ import Testing
         #expect(try event.encodedLine(atMS: 5).contains("\"t\":5"))
     }
 }
+
+// MARK: - platform / peer_recording / watch_status
+
+@Test func peerSegWithPlatformRoundTrips() throws {
+    let event = Event.peerSeg(
+        device: "w", deviceName: "n", receivedAt: 1, outcome: .current, platform: .watchos)
+    let line = try event.encodedLine()
+    #expect(line.contains("\"platform\":\"watchos\""))
+    #expect(try Event.decode(line: line) == event)
+}
+
+@Test func peerSegWithoutPlatformDecodesAsNil() throws {
+    let line = #"{"device":"w","device_name":"n","ev":"peer_seg","outcome":"orphan","received_at":1}"#
+    #expect(try Event.decode(line: line) == .peerSeg(device: "w", deviceName: "n", receivedAt: 1, outcome: .orphan))
+}
+
+@Test func peerSegWithoutPlatformOmitsTheKey() throws {
+    let line = try Event.peerSeg(device: "w", deviceName: "n", receivedAt: 1, outcome: .current).encodedLine()
+    #expect(!line.contains("\"platform\""))
+}
+
+@Test func peerRecordingOutcomeRoundTrips() throws {
+    let event = Event.peerSeg(device: "w", deviceName: "n", receivedAt: 1, outcome: .peerRecording)
+    let line = try event.encodedLine()
+    #expect(line.contains("\"peer_recording\""))
+    #expect(try Event.decode(line: line) == event)
+}
+
+private func watchStatusSample() -> WatchStatusSnapshot {
+    WatchStatusSnapshot(device: "d", deviceName: "n", state: .stopped, updatedAtMS: 7)
+}
+
+@Test func watchStatusEventRoundTrips() throws {
+    let event = Event.watchStatus(watchStatusSample())
+    let line = try event.encodedLine()
+    #expect(line.contains("\"ev\":\"watch_status\""))
+    #expect(try Event.decode(line: line) == event)
+}
+
+@Test func watchStatusEventWithSentTimeStillDecodes() throws {
+    let event = Event.watchStatus(watchStatusSample())
+    #expect(try Event.decode(line: event.encodedLine(atMS: 123)) == event)
+}

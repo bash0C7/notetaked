@@ -1,15 +1,5 @@
 import Foundation
 
-/// Watchの録音が止まった理由。rawValueはsnake_case
-public enum WatchHaltReason: String, Sendable, Equatable {
-    case startFailed = "start_failed"
-    case interrupted
-    case routeChanged = "route_changed"
-    case mediaServicesReset = "media_services_reset"
-    case writeFailed = "write_failed"
-    case noAudio = "no_audio"
-}
-
 public enum WatchRecordingPhase: Sendable, Equatable {
     case idle
     case recording(startedAtMS: Int64, lastBufferAtMS: Int64?)
@@ -99,7 +89,7 @@ public enum WatchRecordingReducer {
         case .halted(let reason, _, _):
             return WatchRecordingDisplay(
                 isActive: false,
-                message: IndicatorMessage(severity: .alert, text: "止まりました: \(reasonText(reason))")
+                message: IndicatorMessage(severity: .alert, text: "止まりました: \(reason.displayText)")
             )
         }
     }
@@ -108,16 +98,5 @@ public enum WatchRecordingReducer {
         guard queueDepth <= 0 else { return false }
         guard case .recording(let startedAtMS, let lastBufferAtMS) = phase else { return false }
         return nowMS - (lastBufferAtMS ?? startedAtMS) > noAudioHaltMS
-    }
-
-    private static func reasonText(_ reason: WatchHaltReason) -> String {
-        switch reason {
-        case .startFailed: return "開始に失敗"
-        case .interrupted: return "割り込み（通話・Siriなど）"
-        case .routeChanged: return "音声の経路が変わった"
-        case .mediaServicesReset: return "音声サービスの再起動"
-        case .writeFailed: return "書き込みに失敗"
-        case .noAudio: return "音声が途切れた"
-        }
     }
 }

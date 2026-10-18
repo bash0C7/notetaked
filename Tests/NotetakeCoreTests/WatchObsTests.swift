@@ -144,3 +144,57 @@ private func legacyChunkMetadata() -> [String: Any] {
         owner: "owner"
     ).metadata
 }
+
+// MARK: - 追加項目（battery / halt_reason / is_reachable）
+
+@Test func recordWithBatteryAndHaltReasonRoundTrips() throws {
+    let record = WatchObsRecord(
+        atMS: 1, event: .halted, session: "s", batteryLevel: 0.42, haltReason: .interrupted)
+    #expect(WatchObsRecord.decodeLines(try record.encodedLine()) == [record])
+}
+
+@Test func recordWithReachabilityRoundTrips() throws {
+    for reachable in [true, false] {
+        let record = WatchObsRecord(atMS: 1, event: .chunkClosed, isReachable: reachable)
+        let decoded = WatchObsRecord.decodeLines(try record.encodedLine())
+        #expect(decoded == [record])
+        #expect(decoded.first?.isReachable == reachable)
+    }
+}
+
+@Test func unknownHaltReasonBecomesNilAndKeepsTheLine() {
+    let line = #"{"at_ms":5,"event":"halted","halt_reason":"future"}"#
+    let records = WatchObsRecord.decodeLines(line)
+    #expect(records.count == 1)
+    #expect(records.first?.haltReason == nil)
+    #expect(records.first?.atMS == 5)
+    #expect(records.first?.event == .halted)
+}
+
+@Test func oldRecordLineStillDecodes() {
+    let line = #"{"at_ms":9,"event":"chunk_closed","index":2,"session":"s","value":0.5}"#
+    let record = WatchObsRecord.decodeLines(line).first
+    #expect(record?.index == 2)
+    #expect(record?.batteryLevel == nil)
+    #expect(record?.haltReason == nil)
+    #expect(record?.isReachable == nil)
+}
+
+@Test func newEventsUseSnakeCase() throws {
+    let pairs: [(WatchObsEvent, String)] = [
+        (.queueOverflow, "queue_overflow"), (.chunkDropped, "chunk_dropped"),
+        (.autoStopped, "auto_stopped"), (.wakeFailed, "wake_failed"), (.wakeRecovered, "wake_recovered"),
+    ]
+    for (event, raw) in pairs {
+        let line = try WatchObsRecord(atMS: 1, event: event).encodedLine()
+        #expect(line.contains("\"\(raw)\""))
+        #expect(WatchObsRecord.decodeLines(line).first?.event == event)
+    }
+}
+
+@Test func nilBatteryAndHaltReasonAreOmitted() throws {
+    let line = try WatchObsRecord(atMS: 1, event: .started).encodedLine()
+    #expect(!line.contains("battery_level"))
+    #expect(!line.contains("halt_reason"))
+    #expect(!line.contains("is_reachable"))
+}

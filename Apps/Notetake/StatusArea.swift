@@ -184,6 +184,7 @@ private struct PeerRow: View {
         case .current: return "今の収録に入りました"
         case .other: return "別の収録に追記しました"
         case .orphan: return "どの収録にも入らず orphans.jsonl へ"
+        case .peerRecording: return "端末の収録に入りました"
         }
     }
 

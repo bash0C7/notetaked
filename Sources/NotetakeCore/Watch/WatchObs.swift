@@ -17,6 +17,14 @@ public enum WatchObsEvent: String, Codable, Sendable {
     case transferFinished = "transfer_finished"
     case transferFailed = "transfer_failed"
     case tapQueue = "tap_queue"
+    case queueOverflow = "queue_overflow"
+    case chunkDropped = "chunk_dropped"
+    /// 連続録音の上限で自動停止した。`haltReason: .autoStopped`の1行だけを書き、同じ時刻の`halted`は書かない。
+    /// iPhoneは「停止（理由は自動停止）」として読む
+    case autoStopped = "auto_stopped"
+    /// iPhoneを起こす合図の失敗の連続の最初。Watchが書き、iPhoneは読むだけで状態を変えない
+    case wakeFailed = "wake_failed"
+    case wakeRecovered = "wake_recovered"
 }
 
 /// Watchの記録の1行（JSON Lines）。`nil`の項目は出さない
@@ -29,6 +37,12 @@ public struct WatchObsRecord: Codable, Sendable, Equatable {
     public var value: Double?
     /// 待ち行列の遅れ（ms）。`tapQueue`では深さを`value`、遅れをこれに載せる
     public var lagMS: Int64?
+    /// 小片を閉じた時点などの電池残量（0...1）
+    public var batteryLevel: Double?
+    /// 未知の値は読み込みでnilにする（行は捨てない）
+    public var haltReason: WatchHaltReason?
+    /// `chunkClosed`の時の`WCSession.isReachable`
+    public var isReachable: Bool?
 
     public init(
         atMS: Int64,
@@ -37,7 +51,10 @@ public struct WatchObsRecord: Codable, Sendable, Equatable {
         index: Int? = nil,
         detail: String? = nil,
         value: Double? = nil,
-        lagMS: Int64? = nil
+        lagMS: Int64? = nil,
+        batteryLevel: Double? = nil,
+        haltReason: WatchHaltReason? = nil,
+        isReachable: Bool? = nil
     ) {
         self.atMS = atMS
         self.event = event
@@ -46,6 +63,23 @@ public struct WatchObsRecord: Codable, Sendable, Equatable {
         self.detail = detail
         self.value = value
         self.lagMS = lagMS
+        self.batteryLevel = batteryLevel
+        self.haltReason = haltReason
+        self.isReachable = isReachable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        atMS = try c.decode(Int64.self, forKey: .atMS)
+        event = try c.decode(WatchObsEvent.self, forKey: .event)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
+        index = try c.decodeIfPresent(Int.self, forKey: .index)
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+        value = try c.decodeIfPresent(Double.self, forKey: .value)
+        lagMS = try c.decodeIfPresent(Int64.self, forKey: .lagMS)
+        batteryLevel = try c.decodeIfPresent(Double.self, forKey: .batteryLevel)
+        haltReason = (try c.decodeIfPresent(String.self, forKey: .haltReason)).flatMap(WatchHaltReason.init(rawValue:))
+        isReachable = try c.decodeIfPresent(Bool.self, forKey: .isReachable)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -56,6 +90,9 @@ public struct WatchObsRecord: Codable, Sendable, Equatable {
         case detail
         case value
         case lagMS = "lag_ms"
+        case batteryLevel = "battery_level"
+        case haltReason = "halt_reason"
+        case isReachable = "is_reachable"
     }
 
     /// 改行なしの1行。keyの並びは固定

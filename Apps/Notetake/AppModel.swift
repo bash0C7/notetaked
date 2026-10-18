@@ -730,8 +730,10 @@ final class AppModel {
             } else {
                 connectedPeers.removeValue(forKey: device)
             }
-        case .peerSeg(let device, let deviceName, let receivedAt, let outcome):
+        case .peerSeg(let device, let deviceName, let receivedAt, let outcome, _):
             lastPeerSeg[device] = PeerSegInfo(deviceName: deviceName, receivedAt: receivedAt, outcome: outcome)
+        case .watchStatus:
+            break
         case .inputReset:
             preferredInputDeviceUID = nil
         case .finalizeState(let state):
