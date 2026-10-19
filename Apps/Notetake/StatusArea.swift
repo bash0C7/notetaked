@@ -29,7 +29,7 @@ struct StatusArea: View {
                 label: "mic",
                 history: appModel.micHistory,
                 message: appModel.indicator(for: .mic, nowMS: nowMS),
-                secondsSinceText: secondsSinceText(for: .mic, nowMS: nowMS),
+                lastTextAtMS: appModel.lastTextAtMS(for: .mic),
                 idleNote: appModel.isRecording ? nil : appModel.micLevelMonitor.unavailableReason,
                 isRecording: appModel.isRecording,
                 nowMS: nowMS,
@@ -39,7 +39,7 @@ struct StatusArea: View {
                     label: "system",
                     history: appModel.systemHistory,
                     message: appModel.indicator(for: .system, nowMS: nowMS),
-                    secondsSinceText: secondsSinceText(for: .system, nowMS: nowMS),
+                    lastTextAtMS: appModel.lastTextAtMS(for: .system),
                     idleNote: nil,
                     isRecording: true,
                     nowMS: nowMS,
@@ -60,12 +60,6 @@ struct StatusArea: View {
         .font(.callout)
         .padding(.horizontal)
         .padding(.vertical, 8)
-    }
-
-    /// 指定sourceの最新の確定文字からの経過秒。確定文字が無ければnil
-    private func secondsSinceText(for source: Source, nowMS: Int64) -> Int? {
-        guard let lastEnd = appModel.lastTextAtMS(for: source) else { return nil }
-        return max(0, Int((nowMS - lastEnd) / 1000))
     }
 
     /// Watch行の材料。Watchのsegもsnapshotも一度も無ければnil（行を出さない）
@@ -97,7 +91,7 @@ private struct SourceLevelRow: View {
     let label: String
     let history: LevelHistory
     let message: IndicatorMessage
-    let secondsSinceText: Int?
+    let lastTextAtMS: Int64?
     let idleNote: String?
     let isRecording: Bool
     let nowMS: Int64
@@ -109,8 +103,7 @@ private struct SourceLevelRow: View {
     }
 
     private var sinceText: String {
-        guard let seconds = secondsSinceText else { return "文字: —" }
-        return "文字: \(seconds)秒前"
+        "文字: \(StatusClockText.text(atMS: lastTextAtMS))"
     }
 
     /// 判定の文言が空なら、停止中のモニターが使えない理由を出す
@@ -174,9 +167,7 @@ private struct PeerRow: View {
     }
 
     private var lastSegText: String {
-        guard let seg = lastSeg else { return "最終受信 —" }
-        let seconds: Int = max(0, Int((nowMS - seg.receivedAt) / 1000))
-        return "最終受信 \(seconds)秒前"
+        "最終受信 \(StatusClockText.text(atMS: lastSeg?.receivedAt))"
     }
 
     /// 取り込み先。診断の要なので、第1行から外して省略されない専用の行に出す
@@ -235,8 +226,7 @@ private struct WatchRow: View {
 
     /// 最終受信。snapshotの小片の受信時刻を優先し、無ければ`peerSeg`の受信時刻
     private var lastReceivedText: String {
-        guard let receivedAt = snapshot?.lastChunkReceivedAtMS ?? lastSeg?.receivedAt else { return "最終受信 —" }
-        return "最終受信 \(max(0, Int((nowMS - receivedAt) / 1000)))秒前"
+        "最終受信 \(StatusClockText.text(atMS: snapshot?.lastChunkReceivedAtMS ?? lastSeg?.receivedAt))"
     }
 
     private var batteryText: String? {

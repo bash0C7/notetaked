@@ -46,7 +46,7 @@ struct WatchStatusSection: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                     if let atMS = snapshot.lastTextAtMS {
-                        Text("文字: \(max(0, Int((nowMS - atMS) / 1000)))秒前")
+                        Text("文字: \(StatusClockText.text(atMS: atMS))")
                             .font(.footnote)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
@@ -76,8 +76,7 @@ struct WatchStatusSection: View {
     }
 
     private func receivedText(_ snapshot: WatchStatusSnapshot, nowMS: Int64) -> String {
-        guard let atMS = snapshot.lastChunkReceivedAtMS else { return "—" }
-        return "\(max(0, Int((nowMS - atMS) / 1000)))秒前"
+        StatusClockText.text(atMS: snapshot.lastChunkReceivedAtMS)
     }
 
     private func batteryText(_ snapshot: WatchStatusSnapshot) -> String {
