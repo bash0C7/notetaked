@@ -68,9 +68,7 @@ struct StatusArea: View {
     }
 
     private func sinceText(nowMS: Int64) -> String {
-        guard let lastTextAtMS = model.lastTextAtMS else { return "文字: —" }
-        let seconds: Int = max(0, Int((nowMS - lastTextAtMS) / 1000))
-        return "文字: \(seconds)秒前"
+        "文字: \(StatusClockText.text(atMS: model.lastTextAtMS))"
     }
 
     /// 左に項目名、右に値。狭い画面では値を折り返して切らさない
