@@ -22,6 +22,9 @@ struct StatusArea: View {
 
     private func content(nowMS: Int64) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let serve = appModel.serveIndicator {
+                DaemonBannerRow(message: serve)
+            }
             if let daemon = appModel.daemonIndicator(nowMS: nowMS) {
                 DaemonBannerRow(message: daemon)
             }

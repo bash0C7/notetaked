@@ -12,14 +12,15 @@ final class DaemonClient {
     /// 終了したclient自身を第一引数で渡す。呼び出し側（AppModel）が「自分が現在保持しているclientか」を
     /// 識別してexitを取り扱うかどうか判断できるようにするため（置き換え済み/意図的終了させたclientのexitと、
     /// 現在稼働中clientの予期せぬexitを取り違えないようにする）。
-    private let onExit: @MainActor (DaemonClient, Int32) -> Void
+    private let onExit: @MainActor (DaemonClient, Int32, Process.TerminationReason) -> Void
     private var stdoutBuffer = Data()
+    private var startedAt: Date?
 
     init(
         executable: URL,
         arguments: [String],
         onEvent: @escaping @MainActor (Event) -> Void,
-        onExit: @escaping @MainActor (DaemonClient, Int32) -> Void
+        onExit: @escaping @MainActor (DaemonClient, Int32, Process.TerminationReason) -> Void
     ) {
         self.onEvent = onEvent
         self.onExit = onExit
@@ -30,12 +31,19 @@ final class DaemonClient {
         process.standardError = stderrPipe
     }
 
+    /// 起動したserveのpid。孤児serveの掃除で自分のprocessを除外するために使う
+    var processIdentifier: Int32 { process.processIdentifier }
+
     func start() throws {
         process.terminationHandler = { [weak self] finishedProcess in
             let status = finishedProcess.terminationStatus
+            let reason = finishedProcess.terminationReason
             Task { @MainActor in
                 guard let self else { return }
-                self.onExit(self, status)
+                let ranForSeconds = Int(Date().timeIntervalSince(self.startedAt ?? Date()))
+                let reasonText = reason == .uncaughtSignal ? "signal" : "exit"
+                ServeLog.write("serve終了 (\(reasonText) \(status), 生存\(ranForSeconds)秒)")
+                self.onExit(self, status, reason)
             }
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -55,8 +63,11 @@ final class DaemonClient {
                 return
             }
             FileHandle.standardError.write(data)
+            ServeLog.writeStderr(data)
         }
         try process.run()
+        startedAt = Date()
+        ServeLog.write("serve起動 (\((process.arguments ?? []).joined(separator: " ")))")
     }
 
     private func consumeStdout(_ data: Data) {

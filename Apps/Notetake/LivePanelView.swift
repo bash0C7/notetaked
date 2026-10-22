@@ -41,6 +41,7 @@ struct LivePanelView: View {
                     .disabled(!appModel.recordingControls.canStop)
                 Button("区切る") { appModel.rotateRecording() }
                     .disabled(!appModel.recordingControls.canRotate)
+                Button(appModel.daemonRunning ? "serveを再起動" : "serveを起動") { appModel.restartServe() }
                 Button("整形") { appModel.polishLastRecording() }
                     .disabled(!appModel.recordingControls.canPolish)
                 if let polishNote = appModel.recordingControls.polishNote {
