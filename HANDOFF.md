@@ -5,7 +5,7 @@
 - **事象**: 2026-10-22 21:39にserveが落ち、app（3日稼働）は再起動せず、約1時間45分気づかなかった（capture-daemonは収録を続けていたが文字にならない）。最初に落ちた理由は**不明**（stderrの行き先が無く、crash reportも無い）
 - **原因（コードから確認）**: `scheduleRestart`が60秒に5回で諦め、再試行の契機は「serveの終了」だけ。heartbeat監視は`daemonRunning == true`の時だけ働くため、一度諦めると誰も再起動しない。上限に達したことが実際に起きたかは未確認
 - **直したこと（`make verify`通過: 668テスト・警告0・iOS/watchOSコンパイル）**: ①再起動を諦めず、1→2→4→…最大30秒の間隔で予約し続ける（serveが30秒以上生きたら数え直す。`ServeRestartPolicy`） ②5秒の監視がserve不在も拾う ③serveの起動・終了（code / signal / 生存秒）・stderrを`~/Library/Logs/Notetake/serve.log`へ追記（1MBで`serve.log.1`へ退避） ④serve不在の間、ライブパネルのStatusAreaに赤い帯、メニューに赤い文言 ⑤メニューとライブパネルに`serveを起動` / `serveを再起動`（実行中のserveと、このappのbundleの孤児serveを`SIGKILL`して起動し直す。`quit`は送らないので収録は引き継ぐ）
-- **実機では未検証**: 実際にserveを落として自動復帰するか / 手動ボタンの動作 / 赤い帯の見え方 / `serve.log`の内容。`/Applications`のNotetake.appは**まだ入れ替えていない**（収録が無い時にuserの了承を得てから`make install-app`）
+- **実機では未検証**: 実際にserveを落として自動復帰するか / 手動ボタンの動作 / 赤い帯の見え方 / `serve.log`の内容。`/Applications`のNotetake.appは2026-10-23 00:03に`make install-app`で入れ替え済み（userの了承あり）。入れ替え直後に新serveが17:15の収録を引き継ぎ（`resumed 2026-10-22_171512`）、`serve.log`が書かれることは確認した。**起動の3秒後にsignal 9で終了し、すぐ起動し直された記録が1回あり、誰が止めたかは未調査**（appの起動直後の再起動処理が疑わしいが未確認）
 - **最初に落ちた理由を調べる**: 入れ替えた後は`serve.log`に終了理由が残る。次に落ちたらまずそこを見る
 - plan: `docs/superpowers/plans/2026-10-22-serve-recovery.md`（git管理外）
 
