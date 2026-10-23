@@ -1,11 +1,12 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-10-22 夜）— serveが落ちたまま戻らない問題の修正（branch `serve-recovery`）。`make verify`は通過、実機は未検証
+## 状態（2026-10-23 朝）— serveが落ちたまま戻らない問題の修正（branch `serve-recovery`）。`make verify`通過、実機で確認済み
 
 - **事象**: 2026-10-22 21:39にserveが落ち、app（3日稼働）は再起動せず、約1時間45分気づかなかった（capture-daemonは収録を続けていたが文字にならない）。最初に落ちた理由は**不明**（stderrの行き先が無く、crash reportも無い）
 - **原因（コードから確認）**: `scheduleRestart`が60秒に5回で諦め、再試行の契機は「serveの終了」だけ。heartbeat監視は`daemonRunning == true`の時だけ働くため、一度諦めると誰も再起動しない。上限に達したことが実際に起きたかは未確認
 - **直したこと（`make verify`通過: 668テスト・警告0・iOS/watchOSコンパイル）**: ①再起動を諦めず、1→2→4→…最大30秒の間隔で予約し続ける（serveが30秒以上生きたら数え直す。`ServeRestartPolicy`） ②5秒の監視がserve不在も拾う ③serveの起動・終了（code / signal / 生存秒）・stderrを`~/Library/Logs/Notetake/serve.log`へ追記（1MBで`serve.log.1`へ退避） ④serve不在の間、ライブパネルのStatusAreaに赤い帯、メニューに赤い文言 ⑤メニューとライブパネルに`serveを起動` / `serveを再起動`（実行中のserveと、このappのbundleの孤児serveを`SIGKILL`して起動し直す。`quit`は送らないので収録は引き継ぐ）
-- **実機では未検証**: 実際にserveを落として自動復帰するか / 手動ボタンの動作 / 赤い帯の見え方 / `serve.log`の内容。`/Applications`のNotetake.appは2026-10-23 00:03に`make install-app`で入れ替え済み（userの了承あり）。入れ替え直後に新serveが17:15の収録を引き継ぎ（`resumed 2026-10-22_171512`）、`serve.log`が書かれることは確認した。**起動の3秒後にsignal 9で終了し、すぐ起動し直された記録が1回あり、誰が止めたかは未調査**（appの起動直後の再起動処理が疑わしいが未確認）
+- **実機で確認済み（2026-10-23 09:00〜09:05、入れ替え後、収録中）**: `kill -9`で落とすと1秒後に自動で戻る / 連続で落とすと待ち時間が1→2→4→8→16→30秒（頭打ち）になる / serve不在の間、ライブパネルに赤い帯「serveが動いていません（signal 9）。N秒後に再起動します」が出る / `serve.log`に起動・終了（signal・生存秒）・stderrが残る / `serveを再起動`が、正常なserveも、`SIGSTOP`で固まったserveも強制終了して起動し直す / 自動再起動の待機中に`serveを起動`で即起動する。いずれもcapture-daemonは落ちず、17:15の収録は続いた
+- **未確認**: 孤児のserve（このappのclientが持たないprocess）の`SIGKILL` / serve不在の間はパネルが「セッション開始」を押せる状態になり、文字の一覧が消える（既存の`handleExit`の挙動で、復帰後は収録を引き継ぐ。押した時の挙動は未確認）。`/Applications`のNotetake.appは2026-10-23 00:03に`make install-app`で入れ替え済み（userの了承あり）。入れ替え直後に新serveが17:15の収録を引き継ぎ（`resumed 2026-10-22_171512`）、`serve.log`が書かれることは確認した。**起動の3秒後にsignal 9で終了し、すぐ起動し直された記録が1回あり、誰が止めたかは未調査**（appの起動直後の再起動処理が疑わしいが未確認）
 - **最初に落ちた理由を調べる**: 入れ替えた後は`serve.log`に終了理由が残る。次に落ちたらまずそこを見る
 - plan: `docs/superpowers/plans/2026-10-22-serve-recovery.md`（git管理外）
 
