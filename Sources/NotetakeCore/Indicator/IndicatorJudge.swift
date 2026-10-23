@@ -113,6 +113,15 @@ public enum IndicatorJudge {
         return nil
     }
 
+    /// serveが動いていなければ赤。lastExitは終了理由の表示用で、nilなら文言に含めない
+    public static func serveMessage(running: Bool, restartInSeconds: Int?, lastExit: String?) -> IndicatorMessage? {
+        guard !running else { return nil }
+        var text = "serveが動いていません"
+        if let lastExit { text += "（\(lastExit)）" }
+        if let restartInSeconds { text += "。\(restartInSeconds)秒後に再起動します" }
+        return IndicatorMessage(severity: .alert, text: text)
+    }
+
     /// peerNameは切れた相手の呼び名。Macから見れば「iPhone」、iPhoneから見れば「Mac」
     public static func judgePeer(wasConnected: Bool, connected: Bool, peerName: String = "iPhone") -> IndicatorMessage? {
         guard wasConnected, !connected else { return nil }

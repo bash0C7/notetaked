@@ -215,4 +215,20 @@ struct IndicatorJudgeTests {
         let message = IndicatorJudge.judgePeer(wasConnected: true, connected: false, peerName: "Mac")
         #expect(message?.text == "Macとの接続が切れました")
     }
+
+    @Test func serveMessageIsNilWhileRunning() {
+        #expect(IndicatorJudge.serveMessage(running: true, restartInSeconds: 4, lastExit: "code 1") == nil)
+    }
+
+    @Test func serveMessageAlertsWithRestartCountdownAndLastExit() {
+        let message = IndicatorJudge.serveMessage(running: false, restartInSeconds: 4, lastExit: "code 1")
+        #expect(message?.severity == .alert)
+        #expect(message?.text == "serveが動いていません（code 1）。4秒後に再起動します")
+    }
+
+    @Test func serveMessageOmitsWhatIsUnknown() {
+        let message = IndicatorJudge.serveMessage(running: false, restartInSeconds: nil, lastExit: nil)
+        #expect(message?.severity == .alert)
+        #expect(message?.text == "serveが動いていません")
+    }
 }

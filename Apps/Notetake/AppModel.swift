@@ -15,9 +15,6 @@ final class AppModel {
         static let preferredInputDeviceUID = "preferredInputDeviceUID"
     }
 
-    private static let maxRestartsPerWindow = 5
-    private static let restartWindow: TimeInterval = 60
-    private static let restartDelay: TimeInterval = 1
     private static let wakeGrace: TimeInterval = 30
 
     var outputDirectory: URL? {
@@ -117,7 +114,14 @@ final class AppModel {
     /// 自動区切りを待機している`Task`。設定変更・収録状態の変化のたびに取り消して張り直す。
     private var rotationTask: Task<Void, Never>?
     private var launchedArguments: [String]?
-    private var restartTimestamps: [Date] = []
+    /// serveが続けて短命に終わった回数。`ServeRestartPolicy`が再起動の待ち時間の伸ばし方を決める
+    private var consecutiveServeFailures = 0
+    /// 予約中の再起動。あるあいだは重複して予約しない
+    private var restartScheduledTask: Task<Void, Never>?
+    /// 再起動の予約が実行されるまでの残り秒数（予約が無ければnil）
+    private(set) var restartScheduledInSeconds: Int?
+    /// 直近のserveの終了理由（"code 1" / "signal 9"）
+    private(set) var lastServeExit: String?
     /// 録音中である、または再起動処理が進行中であるために延期している再起動要求がある状態。
     private var restartPending = false
     /// 旧daemonの`terminate()`待ち〜新daemon起動までの間、再起動処理が同時に2つ走らないようにする排他フラグ。
@@ -193,6 +197,11 @@ final class AppModel {
                 if let lastWakeAt = self.lastWakeAt, Date().timeIntervalSince(lastWakeAt) < Self.wakeGrace {
                     continue
                 }
+                // 再起動の予約が途切れてserveが戻らないままになるのを防ぐ最後の網
+                if !self.daemonRunning, !self.restartInFlight, self.restartScheduledTask == nil,
+                   self.outputDirectory != nil {
+                    self.scheduleRestart()
+                }
                 if let captureSupervisor = self.captureSupervisor, !captureSupervisor.isHealthy {
                     await captureSupervisor.gracefulRestart()
                 }
@@ -206,6 +215,7 @@ final class AppModel {
                     // daemonRunning==trueのままだと再起動をブロックし続けるため）。
                     self.client = nil
                     self.daemonRunning = false
+                    self.recordServeFailure()
                     self.scheduleRestart()
                 }
             }
@@ -322,7 +332,7 @@ final class AppModel {
             executable: executable,
             arguments: arguments,
             onEvent: { [weak self] event in self?.handle(event) },
-            onExit: { [weak self] exitedClient, code in self?.handleExit(exitedClient, code) }
+            onExit: { [weak self] exitedClient, code, reason in self?.handleExit(exitedClient, code, reason) }
         )
         do {
             try newClient.start()
@@ -333,6 +343,8 @@ final class AppModel {
         } catch {
             lastError = "daemonの起動に失敗しました: \(error.localizedDescription)"
             daemonRunning = false
+            // 起動できなかった場合も待ち時間を伸ばす（生存秒は無いので数え上げるだけ）
+            consecutiveServeFailures += 1
         }
     }
 
@@ -340,12 +352,23 @@ final class AppModel {
     /// 置き換え済み（`performRestart()`で`client = nil`にした後の旧client）や意図的に終了させた
     /// （`shutdownDaemon()`で`client = nil`にした後の）clientのexitは、その時点で既に`self.client`と
     /// 一致しなくなっているため自動的に無視され、誤った再起動カウントやクラッシュ扱いを防げる。
-    private func handleExit(_ exitedClient: DaemonClient, _ code: Int32) {
+    private func handleExit(_ exitedClient: DaemonClient, _ code: Int32, _ reason: Process.TerminationReason) {
         guard exitedClient === client else { return }
         client = nil
         daemonRunning = false
-        // 予期せぬ終了でdaemonが持っていた録音状態は失われるため、UI側もリセットする。
-        // これをしないと、録音中を理由に再起動が永久に延期されてしまう。
+        let exitText = reason == .uncaughtSignal ? "signal \(code)" : "code \(code)"
+        lastServeExit = exitText
+        recordServeFailure()
+        resetRecordingUIState()
+        if code != 0 || reason == .uncaughtSignal {
+            lastError = "daemonが予期せず終了しました (\(exitText))"
+        }
+        scheduleRestart()
+    }
+
+    /// serveが居なくなった時に、serveが持っていた録音状態のUI側の写しをリセットする。
+    /// これをしないと、録音中を理由に再起動が永久に延期されてしまう。
+    private func resetRecordingUIState() {
         isRecording = false
         clearStartPending()
         updateMicMonitor()
@@ -356,23 +379,100 @@ final class AppModel {
         connectedPeers = [:]
         finalizeStates = [:]
         clearRotation()
-        if code != 0 {
-            lastError = "daemonが予期せず終了しました (code \(code))"
-        }
-        scheduleRestart()
     }
 
-    private func scheduleRestart() {
-        let now = Date()
-        restartTimestamps.removeAll { now.timeIntervalSince($0) >= Self.restartWindow }
-        guard restartTimestamps.count < Self.maxRestartsPerWindow else {
-            lastError = "daemonの再起動回数が上限（\(Int(Self.restartWindow))秒間に\(Self.maxRestartsPerWindow)回）に達したため停止しました"
+    /// 手動の起動 / 再起動。応答しないserveや孤児を`SIGKILL`し、予約中の再起動を取り消して即起動する。
+    /// quitは送らない（望む状態が残り、起動し直したserveが同じ収録を引き継ぐ）。復旧用の操作のため確認は出さない
+    func restartServe() {
+        guard !isShuttingDown else { return }
+        restartScheduledTask?.cancel()
+        restartScheduledTask = nil
+        restartScheduledInSeconds = nil
+        consecutiveServeFailures = 0
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.restartTask?.value
+            guard !self.isShuttingDown else { return }
+            if let oldClient = self.client {
+                self.client = nil
+                self.daemonRunning = false
+                await oldClient.forceKill()
+            }
+            self.killOrphanServes()
+            self.resetRecordingUIState()
+            // 古い終了・起動失敗の文言を残さない。起動に失敗すれば`startClient`が改めて書く
+            if let error = self.lastError,
+               error.hasPrefix("daemonが予期せず終了") || error.hasPrefix("daemonの起動に失敗")
+            {
+                self.lastError = nil
+            }
+            self.ensureDaemon()
+        }
+    }
+
+    /// このappのbundle内`notetaked serve`のうち、自分のclientでないもの（前のapp instanceが残した孤児やゾンビ）を`SIGKILL`する。
+    /// pgrepが該当なし（終了コード1）を返すのは正常
+    private func killOrphanServes() {
+        guard let executable = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("notetaked")
+        else { return }
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-f", "\(executable.path) serve"]
+        let pipe = Pipe()
+        pgrep.standardOutput = pipe
+        pgrep.standardError = FileHandle.nullDevice
+        do {
+            try pgrep.run()
+        } catch {
+            ServeLog.write("孤児serveの検索に失敗 (\(error.localizedDescription))")
             return
         }
-        restartTimestamps.append(now)
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.restartDelay * 1_000_000_000))
-            self?.ensureDaemon()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        pgrep.waitUntilExit()
+        let ownPid = client?.processIdentifier
+        let pids = (String(data: output, encoding: .utf8) ?? "")
+            .split(separator: "\n")
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 != ownPid && $0 != getpid() }
+        for pid in pids {
+            ServeLog.write("孤児serveをSIGKILL (pid \(pid))")
+            kill(pid, SIGKILL)
+        }
+    }
+
+    /// serveの生存秒から連続失敗回数を更新する。長く動いていたなら起動できていたとみなして数え直す
+    private func recordServeFailure() {
+        let ranForSeconds = Int(Date().timeIntervalSince(daemonStartedAt ?? Date()))
+        consecutiveServeFailures = ServeRestartPolicy.consecutiveFailures(
+            previous: consecutiveServeFailures, ranForSeconds: ranForSeconds)
+    }
+
+    /// serveが動いていない時のUI向け表示。動いていればnil
+    var serveIndicator: IndicatorMessage? {
+        IndicatorJudge.serveMessage(
+            running: daemonRunning, restartInSeconds: restartScheduledInSeconds, lastExit: lastServeExit)
+    }
+
+    /// 回数で諦めず、連続失敗が続くほど待ち時間を伸ばして再起動を予約し続ける。
+    /// serveが戻らないままだと収録が止まったままになるため。予約中は重複して予約しない
+    private func scheduleRestart() {
+        guard restartScheduledTask == nil else { return }
+        let delay = ServeRestartPolicy.delaySeconds(afterFailures: consecutiveServeFailures)
+        restartScheduledInSeconds = delay
+        restartScheduledTask = Task { @MainActor [weak self] in
+            var remaining = delay
+            while remaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                remaining -= 1
+                self.restartScheduledInSeconds = remaining
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.restartScheduledTask = nil
+            self.restartScheduledInSeconds = nil
+            self.ensureDaemon()
         }
     }
 
@@ -385,6 +485,9 @@ final class AppModel {
         clearRotation()
         isShuttingDown = true
         heartbeatMonitorTask?.cancel()
+        restartScheduledTask?.cancel()
+        restartScheduledTask = nil
+        restartScheduledInSeconds = nil
         await captureSupervisor?.stop()
         await restartTask?.value
         restartInFlight = false

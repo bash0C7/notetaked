@@ -33,6 +33,10 @@ struct MenuContent: View {
             Text(lastLog)
                 .foregroundStyle(.secondary)
         }
+        if let serve = appModel.serveIndicator {
+            Text(serve.text)
+                .foregroundStyle(.red)
+        }
         if let lastError = appModel.lastError {
             Text(lastError)
                 .foregroundStyle(.red)
@@ -41,6 +45,7 @@ struct MenuContent: View {
             Text(line)
                 .foregroundStyle(.secondary)
         }
+        Button(appModel.daemonRunning ? "serveを再起動" : "serveを起動") { appModel.restartServe() }
         Divider()
         Button("収録開始") { appModel.startRecording() }
             .disabled(!appModel.recordingControls.canStart)
