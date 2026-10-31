@@ -15,6 +15,7 @@ XCODEBUILD_ERROR := '^xcodebuild: error:'
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eo pipefail -c
+export PATH := /usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
 
 .PHONY: test daemon project app install-app register-login-item verify clean
 
