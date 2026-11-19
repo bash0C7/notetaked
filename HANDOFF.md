@@ -1,5 +1,15 @@
 # HANDOFF — Notetake / notetaked
 
+## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`）。`make verify`通過、実機は未確認
+
+- **発端**: メニューの赤字（`10:01 system: 生音声を書けません: … No space left on device`）が長い英語の1行で読めず、ディスクの空きが戻っても消えなかった
+- **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`not recording`など）は10秒の一時表示。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
+- **作り（`make verify`通過: 703テスト・Swift警告0・iOS/watchOSコンパイル）**: Coreの`ErrorBook`（keyごと、最初の時刻を保つ、一時表示は10秒）/ `AppErrorRules`（eventからErrorBookへの規則）/ `ServeOperation`・`ServeErrorReporter`（serveの操作とkey、エラー中の時だけ`resolved`を送る）。`CaptureStatus.lastError`でcaptureのエラーを実状態として運び、capture-daemonは生音声を書けたら消す。`Event.error`に`key`、新しい`Event.resolved`。appはアイコン（`exclamationmark.triangle` / `waveform`）・メニューの1行「エラーあり — ライブパネルで確認」・ライブパネルの赤い帯（要約・開始時刻・灰色の詳細）。ENOSPCは「ディスクの空きがありません」と言い換える
+- **テストで固定していないこと**: ServeSession・AppModelの呼び出し箇所（どの操作として報告するか、回復をどこで呼ぶか）。ServeSessionを組み立てるテストが無いため、reviewで全箇所を目視確認した
+- **既知の挙動**: 確定を諦めた収録が生音声ごと残っている間は、確定し直すまでアイコンが警告のまま（回復していないため）/ serveが動いていない間（初回起動・出力先未設定を含む）もアイコンは警告
+- **実機で未確認**: アイコンの切り替え（plan Task 7。`make install-app`はuserの了承待ち）。ディスク満杯からの回復は実機で再現していない
+- spec: `docs/superpowers/specs/2026-11-19-error-indicator-design.md`、plan: `docs/superpowers/plans/2026-11-19-error-indicator.md`（git管理外）
+
 ## 状態（2026-10-23 朝）— serveが落ちたまま戻らない問題の修正（branch `serve-recovery`）。`make verify`通過、実機で確認済み
 
 - **事象**: 2026-10-22 21:39にserveが落ち、app（3日稼働）は再起動せず、約1時間45分気づかなかった（capture-daemonは収録を続けていたが文字にならない）。最初に落ちた理由は**不明**（stderrの行き先が無く、crash reportも無い）
