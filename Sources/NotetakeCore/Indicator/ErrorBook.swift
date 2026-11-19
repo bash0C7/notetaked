@@ -55,11 +55,11 @@ public struct ErrorBook: Equatable, Sendable {
         entries.removeAll { entry in entry.expiresAtMS.map { $0 <= nowMS } ?? false }
     }
 
-    /// 期限内のものだけ、出た時刻の昇順。pruneを待たずに期限切れを隠す
+    /// 期限内のものだけ、出た時刻の昇順（同時刻はkey順で並びを安定させる）。pruneを待たずに期限切れを隠す
     public func active(nowMS: Int64) -> [ErrorEntry] {
         entries
             .filter { entry in entry.expiresAtMS.map { $0 > nowMS } ?? true }
-            .sorted { $0.sinceMS < $1.sinceMS }
+            .sorted { ($0.sinceMS, $0.key) < ($1.sinceMS, $1.key) }
     }
 
     public var nextExpiryMS: Int64? {
@@ -72,7 +72,7 @@ public enum ErrorText {
     public static func summary(_ message: String) -> String {
         guard let range = message.range(of: ": Error Domain=") else { return message }
         var text = String(message[..<range.lowerBound])
-        if message.contains("No space left on device") || message.contains("NSPOSIXErrorDomain Code=28") {
+        if message.contains("No space left on device") || message.contains("Code=640") {
             text += "（ディスクの空きがありません）"
         }
         return text

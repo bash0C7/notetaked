@@ -124,3 +124,32 @@ private func actual(
     #expect(watcher.observe(old(18_000), prefix: "newer", sources: [.mic], nowMS: 18_000).snapshot == nil)
     #expect(watcher.observe(old(19_000), prefix: "newer", sources: [.mic], nowMS: 19_000).snapshot != nil)
 }
+
+@Test func actualWatcherKeepsTheErrorWhileTheStateIsUnresponsive() {
+    var watcher = CaptureActualWatcher()
+    let failing = actual(updated: 10_000, mic: .init(source: .mic, state: .recording, lastError: "生音声を書けません"))
+    _ = watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_000)
+
+    let stale = watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 16_000)
+    #expect(stale.snapshot?.statuses == [
+        CaptureStatus(
+            source: .mic, state: .retrying, reason: CaptureActualWatcher.unresponsiveReason,
+            lastError: "生音声を書けません")
+    ])
+}
+
+@Test func actualWatcherKeepsTheErrorWhileTheDaemonDoesNotSwitch() {
+    var watcher = CaptureActualWatcher()
+    let failing = { (updated: Int64) in
+        actual(prefix: "old", updated: updated, mic: .init(source: .mic, state: .recording, lastError: "生音声を書けません"))
+    }
+    _ = watcher.observe(failing(10_000), prefix: "old", sources: [.mic], nowMS: 10_000)
+    #expect(watcher.observe(failing(11_000), prefix: "new", sources: [.mic], nowMS: 11_000).snapshot == nil)
+
+    let stuck = watcher.observe(failing(16_000), prefix: "new", sources: [.mic], nowMS: 16_000)
+    #expect(stuck.snapshot?.statuses == [
+        CaptureStatus(
+            source: .mic, state: .retrying, reason: CaptureActualWatcher.notSwitchedReason,
+            lastError: "生音声を書けません")
+    ])
+}

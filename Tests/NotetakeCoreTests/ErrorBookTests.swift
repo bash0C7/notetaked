@@ -13,6 +13,12 @@ private let enospc = #"system: 生音声を書けません: Error Domain=NSCocoa
     #expect(ErrorText.summary(#"mic: 生音声を書けません: Error Domain=NSCocoaErrorDomain Code=4 "x""#) == "mic: 生音声を書けません")
 }
 
+@Test func summaryNamesTheCauseFromTheCocoaCodeAlone() {
+    #expect(
+        ErrorText.summary(#"mic: 生音声を書けません: Error Domain=NSCocoaErrorDomain Code=640 "The file couldn’t be saved.""#)
+            == "mic: 生音声を書けません（ディスクの空きがありません）")
+}
+
 @Test func setKeepsTheFirstTime() {
     var book = ErrorBook()
     book.set(key: "capture.system", message: enospc, nowMS: 1_000)
@@ -42,6 +48,13 @@ private let enospc = #"system: 生音声を書けません: Error Domain=NSCocoa
     book.set(key: "late", message: "x", nowMS: 5_000)
     book.set(key: "early", message: "y", nowMS: 1_000)
     #expect(book.active(nowMS: 5_000).map(\.key) == ["early", "late"])
+}
+
+@Test func activeOrdersEqualTimesByKey() {
+    var book = ErrorBook()
+    book.set(key: "b", message: "x", nowMS: 1_000)
+    book.set(key: "a", message: "y", nowMS: 1_000)
+    #expect(book.active(nowMS: 1_000).map(\.key) == ["a", "b"])
 }
 
 @Test func resolveRemovesOnlyThatKey() {

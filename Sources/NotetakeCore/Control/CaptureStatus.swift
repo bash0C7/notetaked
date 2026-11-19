@@ -78,7 +78,9 @@ public struct CaptureActualWatcher: Sendable {
                 return onlyChanges(
                     replacing: Snapshot(
                         statuses: sources.map {
-                            CaptureStatus(source: $0, state: .retrying, reason: Self.notSwitchedReason)
+                            CaptureStatus(
+                                source: $0, state: .retrying, reason: Self.notSwitchedReason,
+                                lastError: lastError(of: $0))
                         },
                         micInput: last?.micInput))
             }
@@ -99,7 +101,8 @@ public struct CaptureActualWatcher: Sendable {
             mismatchSince = nil
             snapshot = Snapshot(
                 statuses: sources.map {
-                    CaptureStatus(source: $0, state: .retrying, reason: Self.unresponsiveReason)
+                    CaptureStatus(
+                        source: $0, state: .retrying, reason: Self.unresponsiveReason, lastError: lastError(of: $0))
                 },
                 micInput: last?.micInput)
         }
@@ -108,6 +111,11 @@ public struct CaptureActualWatcher: Sendable {
             last = snapshot
         }
         return changes
+    }
+
+    /// 実状態が読めない間は、失敗が治ったのか分からない。治ったと見せないよう前回の失敗を残す
+    private func lastError(of source: Source) -> String? {
+        last?.statuses.first { $0.source == source }?.lastError
     }
 
     private mutating func onlyChanges(replacing snapshot: Snapshot) -> Changes {

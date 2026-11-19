@@ -42,6 +42,16 @@ private func status(recording: Bool = true, capture: [CaptureStatus]? = nil) -> 
     #expect(book.active(nowMS: 2_000).isEmpty)
 }
 
+@Test func captureErrorOfASourceMissingFromTheStatusIsResolved() {
+    var book = ErrorBook()
+    let failing = status(capture: [CaptureStatus(source: .system, state: .recording, lastError: "x")])
+    AppErrorRules.apply(event: failing, to: &book, nowMS: 0)
+    #expect(book.active(nowMS: 0).map(\.key) == [AppErrorKey.capture(.system)])
+
+    AppErrorRules.apply(event: status(capture: [CaptureStatus(source: .mic, state: .recording)]), to: &book, nowMS: 1)
+    #expect(book.active(nowMS: 1).isEmpty)
+}
+
 @Test func captureErrorsClearWhenRecordingStops() {
     var book = ErrorBook()
     let failing = status(capture: [
