@@ -1,15 +1,19 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`）。`make verify`通過、アイコンの切り替えは実機で確認済み
+## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`、未merge）。`make verify`通過（733テスト）。`/Applications`のappは`31996c0`より前の版
 
 - **発端**: メニューの赤字（`10:01 system: 生音声を書けません: … No space left on device`）が長い英語の1行で読めず、ディスクの空きが戻っても消えなかった
-- **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`not recording`など）は10秒の一時表示。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
-- **作り（`make verify`通過: 703テスト・Swift警告0・iOS/watchOSコンパイル）**: Coreの`ErrorBook`（keyごと、最初の時刻を保つ、一時表示は10秒）/ `AppErrorRules`（eventからErrorBookへの規則）/ `ServeOperation`・`ServeErrorReporter`（serveの操作とkey、エラー中の時だけ`resolved`を送る）。`CaptureStatus.lastError`でcaptureのエラーを実状態として運び、capture-daemonは生音声を書けたら消す。`Event.error`に`key`、新しい`Event.resolved`。appはアイコン（`exclamationmark.triangle` / `waveform`）・メニューの1行「エラーあり — ライブパネルで確認」・ライブパネルの赤い帯（要約・開始時刻・灰色の詳細）。ENOSPCは「ディスクの空きがありません」と言い換える
-- **テストで固定していないこと**: ServeSession・AppModelの呼び出し箇所（どの操作として報告するか、回復をどこで呼ぶか）。ServeSessionを組み立てるテストが無いため、reviewで全箇所を目視確認した
-- **serveの帯とdaemonの帯を1本に（userの指示）**: serveが落ちている間は「serveが動いていません…N秒後に再起動します」の帯1本にし、daemonの失敗（応答しない・予期せず終了など）はその2行目に灰色で畳む（`AppErrorRules.banners`、テストで固定。`make verify`通過: 706テスト）。**実機で確認済み（2026-11-20 00:44、`make install-app`後）**: serveを5回落とすと、ライブパネルに赤い帯が1本だけ出て、1行目「serveが動いていません（signal 9）。14秒後に再起動します」、2行目に灰色で「daemonが予期せず終了しました (signal 9)」。serveが戻ると帯は消えた
-- **既知の挙動**: 確定を諦めた収録が生音声ごと残っている間は、確定し直すまでアイコンが警告のまま（回復していないため）/ serveが動いていない間（初回起動・出力先未設定を含む）もアイコンは警告
-- **実機で確認済み（2026-11-20 00:29、`make install-app`後、userの了承あり）**: 平常時のアイコンは`waveform`で、旧版の10:01の赤字は消えた / serveを`kill -9`で5回続けて落として再起動の待ちを伸ばすと、アイコンが`exclamationmark.triangle`になり、メニューに「エラーあり — ライブパネルで確認」が出た / serveが戻ると`waveform`に戻り、その行も消えた。**未確認**: ErrorBookの帯（capture・serveのkey付き・一時表示）の見た目、ディスク満杯からの回復（実機で再現していない）
-- spec: `docs/superpowers/specs/2026-11-19-error-indicator-design.md`、plan: `docs/superpowers/plans/2026-11-19-error-indicator.md`（git管理外）
+- **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`収録していません`など）は10秒の一時表示。収録を止めたら、その収録の処理のエラー（ライブの文字起こし・収録の記録）は消す。serveのエラーはkeyごとの日本語の要約を出し、英語の原文は詳細に回す。serveが落ちている間の帯は1本にまとめる。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
+- **作り（`make verify`通過: 733テスト・Swift警告0・iOS/watchOSコンパイル）**:
+  - Core: `ErrorBook`（keyごと、最初の時刻を保つ、serveの再起動で消したkeyが60秒以内に戻れば時刻を引き継ぐ、一時表示は10秒）/ `AppErrorRules`（eventからErrorBookへの規則、serveの帯へのまとめ）/ `ServeOperation`・`ServeErrorReporter`（serveの操作とkey・日本語の要約・停止で消す操作、エラー中の時だけ`resolved`を送る）/ `ServeMessage`（keyの無い日本語の文言）
+  - capture: 失敗を種類ごと（生音声・開けない・時刻情報・16kHz変換）に持ち、それぞれ自分の成功で消す（`CaptureStatus.lastError`）。1回きりの通知（既定入力へ戻った等）は時刻付き（`notice_at_ms`）で運び、serveが一時表示として送る。時刻情報の書き込みに失敗したらanchorを書き直す
+  - 収録中にcaptureの情報が無いstatusは「分からない」としてエラーを消さない。capture-daemonの無応答・切り替え待ち（`captureDaemon`）もアイコンの警告に数える
+  - app: アイコン（`exclamationmark.triangle` / `waveform`）・メニューの1行「エラーあり — ライブパネルで確認」・ライブパネルの赤い帯（要約（HH:mmから）・灰色の詳細）。ENOSPCは「ディスクの空きがありません」
+- **テストで固定していないこと**: ServeSession・AppModelの呼び出し箇所（どの操作として報告するか、回復・停止での解消・通知の送出をどこで呼ぶか）、整形とログイン項目の回復（AppModelにだけある）。ServeSessionを組み立てるテストが無いため、Opusの全体reviewと修正後のreviewで目視確認した
+- **既知の挙動・見送り**: 確定を諦めた収録が生音声ごと残っている間は、確定し直すまでアイコンが警告のまま / serveが動いていない間（初回起動・出力先未設定を含む）もアイコンは警告 / 置き換えたserveのeventはエラー以外も捨てる / 手動の確定し直しの失敗はserveの再起動で消える / 1秒以内に別の通知が2件出ると先の1件を失う
+- **実機で確認済み（2026-11-20 00:29〜00:45、`make install-app`後、userの了承あり。`5fd8ac1`の版）**: 平常時は`waveform` / serveを`kill -9`で5回続けて落とすと`exclamationmark.triangle`とメニューの「エラーあり — ライブパネルで確認」、ライブパネルに赤い帯1本（1行目「serveが動いていません（signal 9）。14秒後に再起動します」、2行目に灰色で「daemonが予期せず終了しました (signal 9)」）/ serveが戻るとすべて消えた
+- **実機で未確認**: `31996c0`の修正（全体reviewの後の修正）は未install / ErrorBookの帯（capture・serveのkey付き・一時表示）の見た目 / ディスク満杯からの回復（実機で再現していない）
+- spec: `docs/superpowers/specs/2026-11-19-error-indicator-design.md`（末尾に実装で決めたこと）、plan: `docs/superpowers/plans/2026-11-19-error-indicator.md`（git管理外。planのTask 5の記述は古く、specの追記が正）、ledger: `.superpowers/sdd/2026-11-19-error-indicator/progress.md`
 
 ## 状態（2026-10-23 朝）— serveが落ちたまま戻らない問題の修正（branch `serve-recovery`）。`make verify`通過、実機で確認済み
 
