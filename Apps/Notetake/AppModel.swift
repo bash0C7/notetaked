@@ -76,7 +76,9 @@ final class AppModel {
     /// 原因ごとのエラーの集まり。出し入れの規則はNotetakeCoreの`AppErrorRules`に置き、ここでは
     /// 失敗・成功の地点で`AppErrorKey`のkeyを`set` / `resolve`するだけにする。変わるたびに期限切れの予約を張り直す
     private(set) var errorBook = ErrorBook() {
-        didSet { scheduleErrorExpiry() }
+        didSet {
+            if oldValue != errorBook { scheduleErrorExpiry() }
+        }
     }
     /// 自動区切りの予定時刻。表示用。自動区切りが無効（間隔0、または未収録）ならnil。
     var nextRotationAt: Date?
@@ -275,7 +277,7 @@ final class AppModel {
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
     /// 引数が変わっていれば旧daemonを終了して新daemonを起動するが、次のいずれかの場合は延期し、
     /// `restartPending`を立てて後で再度`ensureDaemon()`が呼ばれた時に適用する:
-    /// - 録音中（`handle(_:)`の`.status`で`recording == false`を受け取った時に自動適用）
+    /// - 録音中（`handle(_:from:)`の`.status`で`recording == false`を受け取った時に自動適用）
     /// - 既に再起動処理が進行中（`performRestart()`完了時に自動適用）
     /// 再起動が実際に走る時点の設定を反映するため、引数は要求時ではなく起動直前（`launchLatest()`内）で
     /// 都度計算し直す。
@@ -342,7 +344,7 @@ final class AppModel {
         let newClient = DaemonClient(
             executable: executable,
             arguments: arguments,
-            onEvent: { [weak self] event in self?.handle(event) },
+            onEvent: { [weak self] eventClient, event in self?.handle(event, from: eventClient) },
             onExit: { [weak self] exitedClient, code, reason in self?.handleExit(exitedClient, code, reason) }
         )
         do {
@@ -518,7 +520,7 @@ final class AppModel {
         !errorBook.active(nowMS: Self.currentMS()).isEmpty || serveIndicator != nil
     }
 
-    /// 一時表示の期限に`prune`する。`prune`も`errorBook`を変えて再び呼ばれるので、残りがあれば次の期限へ張り直る
+    /// 一時表示の期限に`prune`する。`prune`で消えれば`errorBook`の変化で再び呼ばれ、残りがあれば次の期限へ張り直る
     private func scheduleErrorExpiry() {
         errorExpiryTask?.cancel()
         errorExpiryTask = nil
@@ -528,6 +530,8 @@ final class AppModel {
             try? await Task.sleep(nanoseconds: UInt64(delayMS) * 1_000_000)
             guard !Task.isCancelled, let self else { return }
             self.errorBook.prune(nowMS: Self.currentMS())
+            // sleepが早く戻って何も消えなかった時は`errorBook`が変わらずdidSetが走らないので、ここで張り直す
+            self.scheduleErrorExpiry()
         }
     }
 
@@ -829,7 +833,10 @@ final class AppModel {
 
     // MARK: - Event handling
 
-    private func handle(_ event: Event) {
+    /// 置き換え済み・強制終了済みのserveが最後に出したeventは捨てる。受け取ると、そのserveの失敗で立てた
+    /// `daemon`のエラーを、生きている証拠として誤って消してしまう（`handleExit`と同じ識別）
+    private func handle(_ event: Event, from eventClient: DaemonClient) {
+        guard eventClient === client else { return }
         AppErrorRules.apply(event: event, to: &errorBook, nowMS: Self.currentMS())
         switch event {
         case .status(let status):

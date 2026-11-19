@@ -98,7 +98,7 @@ private struct ErrorEntryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(entry.summary) \(StatusClockText.text(atMS: entry.sinceMS))から")
+            Text("\(entry.summary)（\(StatusClockText.text(atMS: entry.sinceMS))から）")
                 .fontWeight(.semibold)
                 .foregroundStyle(Color.white)
             if let detail = entry.detail {

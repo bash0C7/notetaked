@@ -29,6 +29,7 @@ struct NotetakeApp: App {
             MenuContent(appModel: appDelegate.appModel)
         } label: {
             Image(systemName: appDelegate.appModel.hasError ? "exclamationmark.triangle" : "waveform")
+                .accessibilityLabel("Notetake")
         }
         Settings {
             SettingsView(appModel: appDelegate.appModel)
