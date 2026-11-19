@@ -816,9 +816,12 @@ final class AppModel {
             utterances.sort { $0.start < $1.start }
         case .volatile(let source, let text):
             volatile[source] = text
-        case .error(let message):
+        case .error(let message, _):
             lastError = "\(Date().formatted(date: .omitted, time: .shortened)) \(message)"
             FileHandle.standardError.write(Data("notetaked error: \(message)\n".utf8))
+        case .resolved:
+            // Task 6でErrorBookへ繋ぐまでの、コンパイルを通すだけの受け皿
+            break
         case .log(let message):
             lastLog = message
             FileHandle.standardError.write(Data("notetaked log: \(message)\n".utf8))

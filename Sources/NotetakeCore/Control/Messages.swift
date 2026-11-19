@@ -158,7 +158,10 @@ public enum Event: Codable, Sendable, Equatable {
     case status(StatusEvent)
     case utterance(Utterance)
     case volatile(source: Source, text: String)
-    case error(String)
+    /// `key`はappが「同じ原因のエラー」を1件にまとめ、`resolved`で消すための印。無い（旧形式）なら一時表示になる
+    case error(String, key: String? = nil)
+    /// `key`のエラーの原因が治った
+    case resolved(key: String)
     case log(String)
     case peer(device: String, deviceName: String, connected: Bool)
     /// iPhoneのsegを受信した（受信時刻はepochのミリ秒）
@@ -175,6 +178,7 @@ public enum Event: Codable, Sendable, Equatable {
         case source
         case text
         case message
+        case key
         case device
         case deviceName = "device_name"
         case connected
@@ -198,7 +202,9 @@ public enum Event: Codable, Sendable, Equatable {
             self = .volatile(source: source, text: text)
         case "error":
             let message = try container.decode(String.self, forKey: .message)
-            self = .error(message)
+            self = .error(message, key: try container.decodeIfPresent(String.self, forKey: .key))
+        case "resolved":
+            self = .resolved(key: try container.decode(String.self, forKey: .key))
         case "log":
             let message = try container.decode(String.self, forKey: .message)
             self = .log(message)
@@ -241,9 +247,13 @@ public enum Event: Codable, Sendable, Equatable {
             try container.encode("volatile", forKey: .ev)
             try container.encode(source, forKey: .source)
             try container.encode(text, forKey: .text)
-        case .error(let message):
+        case .error(let message, let key):
             try container.encode("error", forKey: .ev)
             try container.encode(message, forKey: .message)
+            try container.encodeIfPresent(key, forKey: .key)
+        case .resolved(let key):
+            try container.encode("resolved", forKey: .ev)
+            try container.encode(key, forKey: .key)
         case .log(let message):
             try container.encode("log", forKey: .ev)
             try container.encode(message, forKey: .message)

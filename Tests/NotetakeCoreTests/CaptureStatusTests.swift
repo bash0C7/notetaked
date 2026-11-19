@@ -36,11 +36,20 @@ private func actual(
     #expect(watcher.observe(fellBack, prefix: "p", sources: [.mic], nowMS: 10_700).inputReset)
 }
 
-@Test func actualWatcherReportsEachNewErrorOnce() {
+@Test func actualWatcherCarriesTheErrorInTheSnapshotUntilItClears() {
     var watcher = CaptureActualWatcher()
     let failing = actual(mic: .init(source: .mic, state: .recording, lastError: "生音声を書けません"))
-    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_000).errors == ["mic: 生音声を書けません"])
-    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_500).errors == [])
+    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_000).snapshot?.statuses
+        == [CaptureStatus(source: .mic, state: .recording, lastError: "生音声を書けません")])
+    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_500).snapshot == nil)
+    let cleared = actual(mic: .init(source: .mic, state: .recording))
+    #expect(watcher.observe(cleared, prefix: "p", sources: [.mic], nowMS: 11_000).snapshot?.statuses
+        == [CaptureStatus(source: .mic, state: .recording)])
+}
+
+@Test func captureStatusDecodesWithoutLastError() throws {
+    let status = try JSONDecoder().decode(CaptureStatus.self, from: Data(#"{"source":"mic","state":"recording"}"#.utf8))
+    #expect(status.lastError == nil)
 }
 
 @Test func actualWatcherTreatsStaleOrMissingStateAsUnresponsive() {
@@ -67,16 +76,6 @@ private func actual(
 
     let next = actual(prefix: "q", mic: .init(source: .mic, state: .recording, fellBackFromPinned: true))
     #expect(watcher.observe(next, prefix: "q", sources: [.mic], nowMS: 10_500).inputReset == false)
-}
-
-@Test func beginRecordingForgetsReportedErrors() {
-    var watcher = CaptureActualWatcher()
-    let failing = actual(mic: .init(source: .mic, state: .recording, lastError: "生音声を書けません"))
-    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_000).errors == ["mic: 生音声を書けません"])
-
-    watcher.beginRecording(keepingSnapshot: true)
-
-    #expect(watcher.observe(failing, prefix: "p", sources: [.mic], nowMS: 10_500).errors == ["mic: 生音声を書けません"])
 }
 
 @Test func beginRecordingDecidesWhetherTheFirstSnapshotIsSentAgain() {

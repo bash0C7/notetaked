@@ -402,9 +402,6 @@ actor ServeSession {
         if changes.inputReset {
             await control.send(.inputReset)
         }
-        for message in changes.errors {
-            await control.send(.error(message))
-        }
     }
 
     private func statusEvent() -> StatusEvent {

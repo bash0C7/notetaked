@@ -55,7 +55,7 @@ private final class Log: @unchecked Sendable {
 
     func errors() -> [String] {
         events.compactMap { event in
-            if case .error(let message) = event { return message }
+            if case .error(let message, _) = event { return message }
             return nil
         }
     }
