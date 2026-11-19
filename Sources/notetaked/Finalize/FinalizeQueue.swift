@@ -4,7 +4,6 @@ import NotetakeCore
 enum FinalizeQueueError: Error, CustomStringConvertible {
     case rawAudioMissing(String)
     case resultMismatch(expected: Int, actual: Int?)
-    case alreadyQueued(String)
 
     var description: String {
         switch self {
@@ -12,8 +11,6 @@ enum FinalizeQueueError: Error, CustomStringConvertible {
             return "\(prefix)の生音声が残っていません"
         case .resultMismatch(let expected, let actual):
             return "確定処理の結果の回が合いません（期待 \(expected)、結果 \(actual.map(String.init) ?? "なし")）"
-        case .alreadyQueued(let prefix):
-            return "\(prefix)は確定処理の順番待ちか実行中です"
         }
     }
 }
@@ -77,7 +74,7 @@ actor FinalizeQueue {
         }
         guard running?.prefix != job.prefix, !pending.contains(where: { $0.prefix == job.prefix }) else {
             if job.manual {
-                await dependencies.emit(.error("\(FinalizeQueueError.alreadyQueued(job.prefix))"))
+                await dependencies.emit(.error(ServeMessage.alreadyQueued(prefix: job.prefix)))
             }
             return
         }

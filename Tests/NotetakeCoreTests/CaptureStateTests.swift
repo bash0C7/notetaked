@@ -76,3 +76,22 @@ private func temporaryDirectory(_ name: String) -> URL {
     }
     #expect(watcher.poll() == nil)
 }
+
+@Test func actualStateCarriesTheOneShotNoticeWithItsTime() throws {
+    let actual = CaptureActualState(
+        pid: 42, prefix: "p",
+        sources: [.init(source: .system, state: .recording, notice: "最後の音声を書けません: x", noticeAtMS: 1_800_000_000_123)],
+        updated: 1)
+    let text = String(decoding: try JSONEncoder().encode(actual), as: UTF8.self)
+    #expect(text.contains("\"notice\":\"最後の音声を書けません: x\""))
+    #expect(text.contains("\"notice_at_ms\":1800000000123"))
+    #expect(try JSONDecoder().decode(CaptureActualState.self, from: Data(text.utf8)) == actual)
+}
+
+@Test func actualStateWrittenBeforeNoticesStillDecodes() throws {
+    let old = #"{"pid":1,"prefix":"p","updated":1,"sources":[{"source":"mic","state":"recording","fell_back_from_pinned":false,"last_error":"x"}]}"#
+    let actual = try JSONDecoder().decode(CaptureActualState.self, from: Data(old.utf8))
+    #expect(actual.sources[0].notice == nil)
+    #expect(actual.sources[0].noticeAtMS == nil)
+    #expect(actual.sources[0].lastError == "x")
+}

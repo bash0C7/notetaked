@@ -153,3 +153,76 @@ private func actual(
             lastError: "生音声を書けません")
     ])
 }
+
+private func noticed(
+    _ notice: String, atMS: Int64, updated: Int64, prefix: String = "p", source: Source = .mic
+) -> CaptureActualState {
+    actual(prefix: prefix, updated: updated, mic: .init(source: source, state: .recording, notice: notice, noticeAtMS: atMS))
+}
+
+@Test func actualWatcherEmitsEachNoticeOnceWhenItsTimeIsNewer() {
+    var watcher = CaptureActualWatcher(startedAtMS: 1_000)
+    let first = watcher.observe(
+        noticed("最後の音声を書けません: x", atMS: 10_000, updated: 10_000), prefix: "p", sources: [.mic], nowMS: 10_000)
+    #expect(first.notices == ["mic: 最後の音声を書けません: x"])
+    // 同じ実状態を読み直しても、同じ通知を重ねて伝えない
+    #expect(watcher.observe(
+        noticed("最後の音声を書けません: x", atMS: 10_000, updated: 11_000), prefix: "p", sources: [.mic], nowMS: 11_000
+    ).notices.isEmpty)
+    #expect(watcher.observe(
+        noticed("最後の音声を書けません: x", atMS: 12_000, updated: 12_000), prefix: "p", sources: [.mic], nowMS: 12_000
+    ).notices == ["mic: 最後の音声を書けません: x"])
+}
+
+@Test func actualWatcherEmitsANoticeFromARecreatedRecorderAfterAnEarlierOne() {
+    var watcher = CaptureActualWatcher(startedAtMS: 1_000)
+    _ = watcher.observe(noticed("a", atMS: 50_000, updated: 50_000), prefix: "p", sources: [.mic], nowMS: 50_000)
+    _ = watcher.observe(noticed("b", atMS: 60_000, updated: 60_000), prefix: "p", sources: [.mic], nowMS: 60_000)
+
+    // 録り直しなどでrecorderが作り直されても、通知の時刻は進み続けるので落とさない
+    let recreated = watcher.observe(
+        noticed("c", atMS: 70_000, updated: 70_000, prefix: "q"), prefix: "q", sources: [.mic], nowMS: 70_000)
+    #expect(recreated.notices == ["mic: c"])
+}
+
+@Test func actualWatcherDoesNotReplayANoticeOlderThanItsStart() {
+    var watcher = CaptureActualWatcher(startedAtMS: 20_000)
+    let old = noticed("a", atMS: 19_000, updated: 20_500)
+    #expect(watcher.observe(old, prefix: "p", sources: [.mic], nowMS: 20_500).notices.isEmpty)
+    let fresh = noticed("b", atMS: 21_000, updated: 21_000)
+    #expect(watcher.observe(fresh, prefix: "p", sources: [.mic], nowMS: 21_000).notices == ["mic: b"])
+}
+
+@Test func actualWatcherKeepsTheSeenNoticePerSourceAcrossRecordings() {
+    var watcher = CaptureActualWatcher(startedAtMS: 1_000)
+    let state = { (prefix: String, updated: Int64) in
+        actual(
+            prefix: prefix, updated: updated,
+            mic: .init(source: .mic, state: .recording, notice: "a", noticeAtMS: 5_000),
+            system: .init(source: .system, state: .recording, notice: "b", noticeAtMS: 6_000))
+    }
+    #expect(watcher.observe(state("p", 10_000), prefix: "p", sources: [.mic, .system], nowMS: 10_000).notices
+        == ["mic: a", "system: b"])
+
+    watcher.beginRecording(keepingSnapshot: false)
+
+    // 前の収録で伝えた通知は、実状態に残っていても繰り返さない
+    #expect(watcher.observe(state("q", 11_000), prefix: "q", sources: [.mic, .system], nowMS: 11_000).notices.isEmpty)
+}
+
+@Test func actualWatcherDoesNotEmitNoticesOfAnotherRecordingOrAStaleState() {
+    var watcher = CaptureActualWatcher(startedAtMS: 1_000)
+    let other = noticed("a", atMS: 10_000, updated: 10_000, prefix: "old")
+    #expect(watcher.observe(other, prefix: "new", sources: [.mic], nowMS: 10_000).notices.isEmpty)
+    #expect(watcher.observe(other, prefix: "new", sources: [.mic], nowMS: 20_000).notices.isEmpty)
+}
+
+@Test func noticeDoesNotChangeTheStatusSnapshot() {
+    var watcher = CaptureActualWatcher(startedAtMS: 1_000)
+    let plain = actual(mic: .init(source: .mic, state: .recording))
+    _ = watcher.observe(plain, prefix: "p", sources: [.mic], nowMS: 10_000)
+    let changes = watcher.observe(
+        noticed("a", atMS: 10_400, updated: 10_500), prefix: "p", sources: [.mic], nowMS: 10_500)
+    #expect(changes.snapshot == nil)
+    #expect(changes.notices == ["mic: a"])
+}

@@ -43,8 +43,14 @@ public struct CaptureActualState: Codable, Equatable, Sendable {
         public var input: InputDevice?
         /// 固定した入力機器が外れ、既定の入力で取り込んでいる
         public var fellBackFromPinned: Bool
-        /// 最後に起きた書き込みや変換の失敗
+        /// 続いている書き込みや変換の失敗。治れば消えるので、appはこれの有無で表示を出し入れする。
+        /// 実状態は1秒ごとにしか書かないため、その間に起きて治る失敗はここに出せない
         public var lastError: String?
+        /// 起きた時点で終わっている1度きりの失敗。治る条件が無いので`lastError`とは別に持つ
+        public var notice: String?
+        /// `notice`が起きた時刻（epoch ms）。読み手は前に伝えた時刻より新しい時だけ新しい通知と見なす。
+        /// 連番にしないのは、収録の終了や入力機器の切り替えでrecorderが作り直されると連番が0へ戻り、読み手が通知を落とすため
+        public var noticeAtMS: Int64?
 
         enum CodingKeys: String, CodingKey {
             case source
@@ -53,11 +59,13 @@ public struct CaptureActualState: Codable, Equatable, Sendable {
             case input
             case fellBackFromPinned = "fell_back_from_pinned"
             case lastError = "last_error"
+            case notice
+            case noticeAtMS = "notice_at_ms"
         }
 
         public init(
             source: Source, state: CaptureSourceState, reason: String? = nil, input: InputDevice? = nil,
-            fellBackFromPinned: Bool = false, lastError: String? = nil
+            fellBackFromPinned: Bool = false, lastError: String? = nil, notice: String? = nil, noticeAtMS: Int64? = nil
         ) {
             self.source = source
             self.state = state
@@ -65,6 +73,21 @@ public struct CaptureActualState: Codable, Equatable, Sendable {
             self.input = input
             self.fellBackFromPinned = fellBackFromPinned
             self.lastError = lastError
+            self.notice = notice
+            self.noticeAtMS = noticeAtMS
+        }
+
+        /// 通知を足す前のcapture-daemonが書いた実状態も読めるよう、`notice_at_ms`は無くてもよい
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            source = try container.decode(Source.self, forKey: .source)
+            state = try container.decode(CaptureSourceState.self, forKey: .state)
+            reason = try container.decodeIfPresent(String.self, forKey: .reason)
+            input = try container.decodeIfPresent(InputDevice.self, forKey: .input)
+            fellBackFromPinned = try container.decode(Bool.self, forKey: .fellBackFromPinned)
+            lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+            notice = try container.decodeIfPresent(String.self, forKey: .notice)
+            noticeAtMS = try container.decodeIfPresent(Int64.self, forKey: .noticeAtMS)
         }
     }
 

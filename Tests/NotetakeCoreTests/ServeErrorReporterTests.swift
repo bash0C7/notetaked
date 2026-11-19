@@ -63,3 +63,30 @@ import Testing
     #expect(reporter.succeeded(.finalize(prefix: "b")) == nil)
     #expect(reporter.succeeded(.finalize(prefix: "a")) == .resolved(key: "final.a"))
 }
+
+@Test func stoppingARecordingClearsTheErrorsOfItsProcessesOnly() {
+    let cleared = ServeOperation.clearedWhenRecordingStops(sources: [.mic, .system])
+    #expect(cleared == [.liveTranscription(.mic), .liveTranscription(.system), .appendLive])
+    #expect(!cleared.contains(.startRecording))
+    #expect(!cleared.contains(.desiredState))
+    #expect(!cleared.contains(.appendPeerOther))
+    #expect(!cleared.contains(.finalize(prefix: "a")))
+}
+
+@Test func stoppingARecordingResolvesOnlyTheErrorsThatWereActive() {
+    var reporter = ServeErrorReporter()
+    _ = reporter.failed(.liveTranscription(.mic), message: "x")
+    _ = reporter.failed(.finalize(prefix: "a"), message: "y")
+    let events = ServeOperation.clearedWhenRecordingStops(sources: [.mic, .system]).compactMap {
+        reporter.succeeded($0)
+    }
+    #expect(events == [.resolved(key: "live.mic")])
+    #expect(reporter.succeeded(.finalize(prefix: "a")) == .resolved(key: "final.a"))
+}
+
+@Test func keylessServeErrorsAreJapanese() {
+    #expect(ServeMessage.alreadyRecording == "既に収録中です")
+    #expect(ServeMessage.notRecording == "収録していません")
+    #expect(ServeMessage.invalidCommand(line: "{oops") == "解釈できない指示です: {oops")
+    #expect(ServeMessage.alreadyQueued(prefix: "2026-11-19_100000") == "2026-11-19_100000は既に確定の順番待ちです")
+}

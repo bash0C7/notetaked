@@ -43,14 +43,23 @@ public struct CaptureActualWatcher: Sendable {
         public var snapshot: Snapshot?
         /// 固定した入力機器から既定の入力へ戻った
         public var inputReset = false
+        /// 新しく起きた1度きりの失敗の通知。`<source>: <通知>`の形で、同じ通知は1度しか入らない
+        public var notices: [String] = []
     }
 
     private var last: Snapshot?
     private var fellBack = false
     /// 実状態のprefixが収録中の収録と食い違い始めた時刻
     private var mismatchSince: Int64?
+    /// この時刻以前の通知は伝えない。serveの再起動で、前のserveが伝えた通知を繰り返さないため。
+    /// 収録の開始では上げない。収録を切り替える時にcapture-daemonが書き込み先を閉じる失敗が、開始の直前に起きうる
+    private let noticesAfterMS: Int64
+    /// sourceごとに、伝え終えた通知の時刻
+    private var emittedNoticeAtMS: [Source: Int64] = [:]
 
-    public init() {}
+    public init(startedAtMS: Int64 = 0) {
+        noticesAfterMS = startedAtMS
+    }
 
     /// 新しい収録を始める。食い違いの計時は消す。入力機器の固定が外れたかは収録をまたいで続くため残す。
     /// `keepingSnapshot`がtrueなら（区切り）前回のsnapshotを残し、同じ表示を重ねて伝えない。
@@ -94,6 +103,15 @@ public struct CaptureActualWatcher: Sendable {
                         lastError: status?.lastError)
                 },
                 micInput: mic?.input)
+            for source in sources {
+                guard let status = actual.sources.first(where: { $0.source == source }) else { continue }
+                if let notice = status.notice, let at = status.noticeAtMS,
+                    at > max(noticesAfterMS, emittedNoticeAtMS[source, default: 0])
+                {
+                    emittedNoticeAtMS[source] = at
+                    changes.notices.append("\(source.rawValue): \(notice)")
+                }
+            }
             let micFellBack = mic?.fellBackFromPinned ?? false
             changes.inputReset = micFellBack && !fellBack
             fellBack = micFellBack

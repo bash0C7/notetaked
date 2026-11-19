@@ -353,7 +353,7 @@ final class AppModel {
             daemonRunning = true
             daemonStartedAt = Date()
             newClient.send(.pairCode(pairingCode))
-            AppErrorRules.serveStarted(&errorBook)
+            AppErrorRules.serveStarted(&errorBook, nowMS: Self.currentMS())
         } catch {
             errorBook.set(
                 key: AppErrorKey.daemon, message: "daemonの起動に失敗しました: \(error.localizedDescription)",

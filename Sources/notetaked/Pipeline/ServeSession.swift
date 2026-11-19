@@ -65,7 +65,7 @@ actor ServeSession {
     /// 直前に使ったprefix。同じ秒の中で開始と区切りが重なってもprefixが衝突しないよう、開始時刻をずらすのに使う
     private var lastPrefix: String?
     /// serveの寿命で1つ。収録ごとの記憶は`beginRecording`で消す
-    private var captureWatcher = CaptureActualWatcher()
+    private var captureWatcher = CaptureActualWatcher(startedAtMS: ServeSession.ms(Date()))
     /// 望む状態を停止へ書けなかった。書けるまで1秒ごとに書き直す
     private var desiredStopPending = false
     /// 直前に読めなかった実状態の失敗。同じ失敗はlogへ1度だけ出す
@@ -189,7 +189,7 @@ actor ServeSession {
 
     private func start() async {
         guard !recording else {
-            await control.send(.error("already recording"))
+            await control.send(.error(ServeMessage.alreadyRecording))
             return
         }
         if await startNewRecording(keepingCapture: false) {
@@ -215,6 +215,7 @@ actor ServeSession {
                 .device(
                     DeviceRecord(
                         device: device.id, deviceName: device.name, owner: owner, platform: .mac, offsetMS: 0)))
+            await recovered(.appendLive)
             try JSONFile.write(
                 CaptureSessionInfo(
                     outputDirectory: outputDirectory.path, device: device.id, deviceName: device.name,
@@ -424,6 +425,9 @@ actor ServeSession {
         if changes.inputReset {
             await control.send(.inputReset)
         }
+        for notice in changes.notices {
+            await control.send(.error(notice))
+        }
     }
 
     private func statusEvent() -> StatusEvent {
@@ -489,7 +493,7 @@ actor ServeSession {
 
     private func stop() async {
         guard recording else {
-            await control.send(.error("not recording"))
+            await control.send(.error(ServeMessage.notRecording))
             return
         }
         let ended = await finishRecording()
@@ -519,6 +523,10 @@ actor ServeSession {
         }
         currentPrefix = nil
         recording = false
+        // 終えた収録のprocessの失敗は、収録とともに意味を失う。残すと、直す手段の無い表示が続く
+        for operation in ServeOperation.clearedWhenRecordingStops(sources: sourceOption.sources.map(\.source)) {
+            await recovered(operation)
+        }
         return prefix
     }
 
@@ -528,7 +536,7 @@ actor ServeSession {
     /// 中間の`recording:false`のstatusは出さない
     private func rotate() async {
         guard recording, let oldPrefix = currentPrefix else {
-            await control.send(.error("not recording"))
+            await control.send(.error(ServeMessage.notRecording))
             return
         }
         await finishRecording()
