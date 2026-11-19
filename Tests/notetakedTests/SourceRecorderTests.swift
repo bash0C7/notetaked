@@ -295,6 +295,20 @@ private func feed(
     #expect(recorder.snapshot().lastError == "system音声のbufferを取り出せません")
 }
 
+@Test func recorderForgetsTheErrorOnceItWritesAudioAgain() throws {
+    let directory = temporaryDirectory("recorder")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let clock = TestClock(start)
+    let recorder = SourceRecorder(source: .system, now: { clock.now })
+    recorder.open(directory: directory)
+    recorder.noteError("生音声を書けません: No space left on device")
+    #expect(recorder.snapshot().lastError != nil)
+    feed(recorder, clock: clock, from: start, count: 3)
+    #expect(recorder.snapshot().lastError == nil)
+    recorder.close()
+}
+
 @Test func recorderWritesAnchorsOnlyForSamplesInTheFile() throws {
     let directory = temporaryDirectory("recorder")
     defer { try? FileManager.default.removeItem(at: directory) }

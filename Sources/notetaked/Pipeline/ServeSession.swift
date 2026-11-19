@@ -84,6 +84,8 @@ actor ServeSession {
     private let receivedCursorStore = ReceivedCursor.default()
     /// 進行中の収録で既にDeviceRecordを書いたdevice id集合。新しいprefixで開始するたびリセットする
     private var recordedPeerDevices: Set<String> = []
+    /// keyを付けて伝えたエラーと、回復の時に送る`resolved`の判断。keyの対応はCoreの`ServeOperation`が持つ
+    private var errors = ServeErrorReporter()
 
     init(
         outputDirectory: URL, owner: String, sourceOption: SourceOption, locale: Locale,
@@ -108,9 +110,10 @@ actor ServeSession {
         do {
             desired = try JSONFile.read(CaptureDesiredState.self, from: CaptureStatePaths.captureDesiredURL)
         } catch {
-            await control.send(.error("failed to read capture desired state: \(error)"))
+            await fail(.desiredState, "failed to read capture desired state: \(error)")
             return
         }
+        await recovered(.desiredState)
         guard let recording = desired?.recording else { return }
         let records: [Record]
         do {
@@ -118,7 +121,7 @@ actor ServeSession {
             records = try await archive.readRecords(prefix: recording.prefix, in: outputDirectory)
             try restoreSessionInfoIfMissing(sessionDirectory: URL(fileURLWithPath: recording.directory))
         } catch {
-            await control.send(.error("failed to resume \(recording.prefix): \(error)"))
+            await fail(.startRecording, "failed to resume \(recording.prefix): \(error)")
             await writeDesiredStopped()
             return
         }
@@ -172,6 +175,16 @@ actor ServeSession {
         }
     }
 
+    private func fail(_ operation: ServeOperation, _ message: String) async {
+        await control.send(errors.failed(operation, message: message))
+    }
+
+    private func recovered(_ operation: ServeOperation) async {
+        if let event = errors.succeeded(operation) {
+            await control.send(event)
+        }
+    }
+
     // MARK: - start
 
     private func start() async {
@@ -212,9 +225,10 @@ actor ServeSession {
             try JSONFile.write(
                 desiredState(.init(prefix: prefix, directory: sessionDirectory.path)),
                 to: CaptureStatePaths.captureDesiredURL)
+            await recovered(.desiredState)
         } catch {
             await archive.abandonCurrent()
-            await control.send(.error("failed to start session: \(error)"))
+            await fail(.startRecording, "failed to start session: \(error)")
             await writeDesiredStopped()
             return false
         }
@@ -250,7 +264,7 @@ actor ServeSession {
                     await item.transcription.stop()
                 }
                 await archive.abandonCurrent()
-                await control.send(.error("failed to start live transcription: \(error)"))
+                await fail(.startRecording, "failed to start live transcription: \(error)")
                 return false
             }
         }
@@ -277,6 +291,10 @@ actor ServeSession {
             return LiveStream(source: source, transcription: item.transcription, consumer: consumer)
         }
         ensureCaptureWatch()
+        await recovered(.startRecording)
+        for item in started {
+            await recovered(.liveTranscription(item.source))
+        }
         return true
     }
 
@@ -287,11 +305,12 @@ actor ServeSession {
         case .volatile(let text):
             await control.send(.volatile(source: source, text: text))
         case .final(let piece):
+            await recovered(.liveTranscription(source))
             await handleFinal(piece, source: source, owner: owner)
         case .log(let message):
             await control.send(.log(message))
         case .error(let message):
-            await control.send(.error(message))
+            await fail(.liveTranscription(source), message)
         }
     }
 
@@ -322,9 +341,10 @@ actor ServeSession {
         do {
             try await archive.appendLive(.segment(segment))
         } catch {
-            await control.send(.error("failed to append segment: \(error)"))
+            await fail(.appendLive, "failed to append segment: \(error)")
             return
         }
+        await recovered(.appendLive)
         for utterance in reconciler.apply(.segment(segment)) {
             await control.send(.utterance(utterance))
         }
@@ -343,10 +363,11 @@ actor ServeSession {
         do {
             try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
             desiredStopPending = false
+            await recovered(.desiredState)
         } catch {
             desiredStopPending = true
             ensureCaptureWatch()
-            await control.send(.error("failed to write capture desired state: \(error)"))
+            await fail(.desiredState, "failed to write capture desired state: \(error)")
         }
     }
 
@@ -354,6 +375,7 @@ actor ServeSession {
         do {
             try JSONFile.write(desiredState(nil), to: CaptureStatePaths.captureDesiredURL)
             desiredStopPending = false
+            await recovered(.desiredState)
             await control.send(.log("capture desired stateを停止へ書き直しました"))
         } catch {
             // 失敗は書いた時に伝えてある。書けるまで1秒ごとに続ける
@@ -421,7 +443,9 @@ actor ServeSession {
         change: (SessionArchive, URL, String) async throws -> FinalizedEvent
     ) async {
         do {
-            await control.send(.finalized(try await change(archive, outputDirectory, device.id)))
+            let event = try await change(archive, outputDirectory, device.id)
+            await control.send(.finalized(event))
+            await finalizer.reportRecovery(event.prefix)
         } catch let error as SessionArchiveError {
             await control.send(.error(Self.message(for: error)))
         } catch {
@@ -491,7 +515,7 @@ actor ServeSession {
         do {
             try await archive.endCurrent(endedMS: Self.ms(Date()))
         } catch {
-            await control.send(.error("failed to write final: \(error)"))
+            await finalizer.reportFailure(prefix, "failed to write final: \(error)")
         }
         currentPrefix = nil
         recording = false
@@ -568,9 +592,10 @@ actor ServeSession {
         do {
             try await listener.start()
             peerListener = listener
+            await recovered(.startPeerListener)
             await control.send(.log("peer listener started"))
         } catch {
-            await control.send(.error("failed to start peer listener: \(error)"))
+            await fail(.startPeerListener, "failed to start peer listener: \(error)")
         }
     }
 
@@ -675,8 +700,9 @@ actor ServeSession {
         do {
             try await archive.appendLive(.device(record))
             recordedPeerDevices.insert(hello.device)
+            await recovered(.appendLive)
         } catch {
-            await control.send(.error("failed to append device record: \(error)"))
+            await fail(.appendLive, "failed to append device record: \(error)")
         }
     }
 
@@ -710,25 +736,28 @@ actor ServeSession {
                 for utterance in reconciler.apply(.segment(seg)) {
                     await control.send(.utterance(utterance))
                 }
+                await recovered(.appendLive)
             } catch {
-                await control.send(.error("failed to append peer segment: \(error)"))
+                await fail(.appendLive, "failed to append peer segment: \(error)")
             }
         } else if let matchedPrefix {
             outcome = .other
             do {
                 try await archive.appendAndRender([.segment(seg)], prefix: matchedPrefix, in: outputDirectory)
+                await recovered(.appendPeerOther)
                 await control.send(.log("appended peer seg to \(matchedPrefix), final.md regenerated"))
             } catch {
-                await control.send(.error("failed to append peer seg to \(matchedPrefix): \(error)"))
+                await fail(.appendPeerOther, "failed to append peer seg to \(matchedPrefix): \(error)")
             }
         } else {
             outcome = .orphan
             do {
                 try await archive.appendOrphan(seg, in: outputDirectory)
+                await recovered(.appendOrphan)
                 await control.send(
                     .log("no matching session for peer seg from \(seg.device), appended to orphans.jsonl"))
             } catch {
-                await control.send(.error("failed to append orphan seg: \(error)"))
+                await fail(.appendOrphan, "failed to append orphan seg: \(error)")
             }
         }
 

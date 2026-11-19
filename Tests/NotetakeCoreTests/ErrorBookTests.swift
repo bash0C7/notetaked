@@ -19,6 +19,21 @@ private let enospc = #"system: 生音声を書けません: Error Domain=NSCocoa
             == "mic: 生音声を書けません（ディスクの空きがありません）")
 }
 
+@Test func summaryNamesTheCauseFromThePosixCodeAlone() {
+    #expect(
+        ErrorText.summary(#"mic: 生音声を書けません: Error Domain=NSPOSIXErrorDomain Code=28 "x""#)
+            == "mic: 生音声を書けません（ディスクの空きがありません）")
+}
+
+@Test func summaryDoesNotMistakeALongerCodeForTheCocoaCode() {
+    #expect(
+        ErrorText.summary(#"mic: 生音声を書けません: Error Domain=NSCocoaErrorDomain Code=6400 "x""#)
+            == "mic: 生音声を書けません")
+    #expect(
+        ErrorText.summary(#"mic: 生音声を書けません: Error Domain=NSPOSIXErrorDomain Code=280 "x""#)
+            == "mic: 生音声を書けません")
+}
+
 @Test func setKeepsTheFirstTime() {
     var book = ErrorBook()
     book.set(key: "capture.system", message: enospc, nowMS: 1_000)

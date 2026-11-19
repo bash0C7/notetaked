@@ -167,6 +167,8 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
             return
         }
         writtenSamples += Int64(samples.count)
+        // 書けた事実が回復の証拠。時間で消すと、空きが戻っていないのに消えてしまう
+        status.lastError = nil
         // sampleを書いてから、そのanchorとdeviceの行を書く。間で落ちても、書いていないsampleを指すanchorが残って
         // 再起動後の時刻を誤らせることが無い
         if let anchor {

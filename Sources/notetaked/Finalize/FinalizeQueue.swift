@@ -56,6 +56,8 @@ actor FinalizeQueue {
     private var worker: Task<Void, Never>?
     private var lastProgressPercent: [String: Int] = [:]
     private var shuttingDown = false
+    /// keyを付けて伝えたエラーと、回復の時に送る`resolved`の判断。keyの対応はCoreの`ServeOperation`が持つ
+    private var errors = ServeErrorReporter()
 
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
@@ -181,6 +183,7 @@ actor FinalizeQueue {
             await report(outcome, prefix: job.prefix)
             FinalizeAttempts.clear(sessionDirectory: sessionDirectory)
             await dependencies.emit(.finalized(outcome.event))
+            await reportRecovery(job.prefix)
             await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
         } catch {
             await fail(job, error: error)
@@ -226,7 +229,7 @@ actor FinalizeQueue {
         let sessionDirectory = CaptureSessionPaths.sessionDirectory(
             prefix: job.prefix, baseTemporaryDirectory: dependencies.rawBase)
         if job.manual {
-            await dependencies.emit(.error("\(job.prefix): 確定し直しに失敗しました: \(message)"))
+            await reportFailure(job.prefix, "\(job.prefix): 確定し直しに失敗しました: \(message)")
             if let run = await latestFinalizedRun(prefix: job.prefix) {
                 await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
             } else {
@@ -244,10 +247,10 @@ actor FinalizeQueue {
         do {
             try FinalizeAttempts.write(failures, sessionDirectory: sessionDirectory)
         } catch {
-            await dependencies.emit(.error("\(job.prefix): 失敗の回数を書けません: \(error)"))
+            await reportFailure(job.prefix, "\(job.prefix): 失敗の回数を書けません: \(error)")
         }
         guard let delay = FinalizeRetryPolicy.delay(afterFailureCount: failures) else {
-            await dependencies.emit(.error("\(job.prefix): 確定処理を諦めました（自動の再試行を使い切りました）: \(message)"))
+            await reportFailure(job.prefix, "\(job.prefix): 確定処理を諦めました（自動の再試行を使い切りました）: \(message)")
             await setState(FinalizeStateEvent(prefix: job.prefix, phase: .gaveUp, detail: message))
             return
         }
@@ -295,13 +298,25 @@ actor FinalizeQueue {
                 prefix: prefix, in: URL(fileURLWithPath: info.outputDirectory), device: info.device)
             {
                 await dependencies.emit(.finalized(event))
+                await reportRecovery(prefix)
             }
         } catch {
-            await dependencies.emit(.error("\(prefix): final.mdを書き直せません: \(error)"))
+            await reportFailure(prefix, "\(prefix): final.mdを書き直せません: \(error)")
         }
     }
 
     // MARK: - 補助
+
+    /// `final.<prefix>`のkeyはここだけが覚える。ServeSessionの`failed to write final`も、確定の成功で消えるようここを通す
+    func reportFailure(_ prefix: String, _ message: String) async {
+        await dependencies.emit(errors.failed(.finalize(prefix: prefix), message: message))
+    }
+
+    func reportRecovery(_ prefix: String) async {
+        if let event = errors.succeeded(.finalize(prefix: prefix)) {
+            await dependencies.emit(event)
+        }
+    }
 
     private func readInfo(prefix: String) throws -> CaptureSessionInfo {
         let directory = CaptureSessionPaths.sessionDirectory(

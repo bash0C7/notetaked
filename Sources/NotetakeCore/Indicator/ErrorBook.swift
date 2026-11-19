@@ -72,9 +72,16 @@ public enum ErrorText {
     public static func summary(_ message: String) -> String {
         guard let range = message.range(of: ": Error Domain=") else { return message }
         var text = String(message[..<range.lowerBound])
-        if message.contains("No space left on device") || message.contains("Code=640") {
+        if isOutOfSpace(message) {
             text += "（ディスクの空きがありません）"
         }
         return text
+    }
+
+    /// 文言は環境の言語で変わるので、コードでも見る。Code=6400のように桁が続くものは別のエラー
+    private static func isOutOfSpace(_ message: String) -> Bool {
+        message.contains("No space left on device")
+            || message.range(of: #"NSPOSIXErrorDomain Code=28(?![0-9])"#, options: .regularExpression) != nil
+            || message.range(of: #"Code=640(?![0-9])"#, options: .regularExpression) != nil
     }
 }
