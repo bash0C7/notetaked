@@ -431,6 +431,17 @@ private final class Counter: @unchecked Sendable {
     #expect(try SpeakersFile.read(from: SpeakersFile.url(prefix: "p1", directory: harness.output))?.run == 1)
 }
 
+@Test func recoverReportsGaveUpPrefixesAsErrors() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    let queue = harness.queue()
+
+    await queue.recover(actions: [], gaveUp: ["p"])
+
+    #expect(harness.log.errorKeys() == ["final.p"])
+    #expect(harness.log.errors() == ["p: 確定処理を諦めました（自動の再試行を使い切りました）"])
+}
+
 @Test func recoveryRenderRewritesTheFinalOfAFinalizedSession() async throws {
     let harness = Harness()
     defer { harness.cleanUp() }

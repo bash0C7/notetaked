@@ -276,6 +276,8 @@ actor FinalizeQueue {
     /// 起動時に、確定していない収録を順番待ちへ入れる。`render`は`final.md`だけ書き直す
     func recover(actions: [RecoveryAction], gaveUp: [String]) async {
         for prefix in gaveUp {
+            // 再起動で前のserveのエラーは消えるので、確定していないままの収録は報告し直す
+            await reportFailure(prefix, "\(prefix): 確定処理を諦めました（自動の再試行を使い切りました）")
             await setState(
                 FinalizeStateEvent(prefix: prefix, phase: .gaveUp, detail: "自動の再試行を使い切りました"))
         }
