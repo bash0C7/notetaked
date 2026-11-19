@@ -83,3 +83,39 @@ private func status(recording: Bool = true, capture: [CaptureStatus]? = nil) -> 
     #expect(AppErrorKey.capture(.mic) == "capture.mic")
     #expect(AppErrorKey.serve("final.p") == "serve:final.p")
 }
+
+@Test func serveBannerAbsorbsTheDaemonEntryAsItsReason() {
+    var book = ErrorBook()
+    book.set(key: AppErrorKey.daemon, message: "daemonが予期せず終了しました (signal 9)", nowMS: 0)
+    book.set(key: AppErrorKey.polish, message: "整形に失敗", nowMS: 0)
+    let serve = IndicatorMessage(severity: .alert, text: "serveが動いていません（signal 9）。3秒後に再起動します")
+
+    let banners = AppErrorRules.banners(serve: serve, entries: book.active(nowMS: 0))
+
+    #expect(
+        banners.serve == ServeBanner(text: serve.text, reason: "daemonが予期せず終了しました (signal 9)"))
+    #expect(banners.entries.map(\.key) == [AppErrorKey.polish])
+}
+
+@Test func daemonEntryStandsAloneWhenServeIsUp() {
+    var book = ErrorBook()
+    book.set(key: AppErrorKey.daemon, message: "daemonが予期せず終了しました (signal 9)", nowMS: 0)
+    let entries = book.active(nowMS: 0)
+
+    let banners = AppErrorRules.banners(serve: nil, entries: entries)
+
+    #expect(banners.serve == nil)
+    #expect(banners.entries == entries)
+}
+
+@Test func serveBannerAloneWhenThereIsNoDaemonEntry() {
+    var book = ErrorBook()
+    book.set(key: AppErrorKey.polish, message: "整形に失敗", nowMS: 0)
+    let entries = book.active(nowMS: 0)
+    let serve = IndicatorMessage(severity: .alert, text: "serveが動いていません")
+
+    let banners = AppErrorRules.banners(serve: serve, entries: entries)
+
+    #expect(banners.serve == ServeBanner(text: serve.text, reason: nil))
+    #expect(banners.entries == entries)
+}

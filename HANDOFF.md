@@ -6,6 +6,7 @@
 - **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`not recording`など）は10秒の一時表示。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
 - **作り（`make verify`通過: 703テスト・Swift警告0・iOS/watchOSコンパイル）**: Coreの`ErrorBook`（keyごと、最初の時刻を保つ、一時表示は10秒）/ `AppErrorRules`（eventからErrorBookへの規則）/ `ServeOperation`・`ServeErrorReporter`（serveの操作とkey、エラー中の時だけ`resolved`を送る）。`CaptureStatus.lastError`でcaptureのエラーを実状態として運び、capture-daemonは生音声を書けたら消す。`Event.error`に`key`、新しい`Event.resolved`。appはアイコン（`exclamationmark.triangle` / `waveform`）・メニューの1行「エラーあり — ライブパネルで確認」・ライブパネルの赤い帯（要約・開始時刻・灰色の詳細）。ENOSPCは「ディスクの空きがありません」と言い換える
 - **テストで固定していないこと**: ServeSession・AppModelの呼び出し箇所（どの操作として報告するか、回復をどこで呼ぶか）。ServeSessionを組み立てるテストが無いため、reviewで全箇所を目視確認した
+- **serveの帯とdaemonの帯を1本に（userの指示）**: serveが落ちている間は「serveが動いていません…N秒後に再起動します」の帯1本にし、daemonの失敗（応答しない・予期せず終了など）はその2行目に灰色で畳む（`AppErrorRules.banners`、テストで固定。`make verify`通過: 706テスト）。`/Applications`のappはこの変更の前の版のまま
 - **既知の挙動**: 確定を諦めた収録が生音声ごと残っている間は、確定し直すまでアイコンが警告のまま（回復していないため）/ serveが動いていない間（初回起動・出力先未設定を含む）もアイコンは警告
 - **実機で確認済み（2026-11-20 00:29、`make install-app`後、userの了承あり）**: 平常時のアイコンは`waveform`で、旧版の10:01の赤字は消えた / serveを`kill -9`で5回続けて落として再起動の待ちを伸ばすと、アイコンが`exclamationmark.triangle`になり、メニューに「エラーあり — ライブパネルで確認」が出た / serveが戻ると`waveform`に戻り、その行も消えた。**未確認**: ライブパネルの赤い帯の見た目、ディスク満杯からの回復（実機で再現していない）
 - spec: `docs/superpowers/specs/2026-11-19-error-indicator-design.md`、plan: `docs/superpowers/plans/2026-11-19-error-indicator.md`（git管理外）
