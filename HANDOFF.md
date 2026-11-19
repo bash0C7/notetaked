@@ -1,6 +1,6 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`、未merge）。`make verify`通過（733テスト）。`/Applications`のappは`31996c0`より前の版
+## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`、未merge）。`make verify`通過（733テスト）。`/Applications`は`31996c0`の版（2026-11-20 01:13に`make install-app`）
 
 - **発端**: メニューの赤字（`10:01 system: 生音声を書けません: … No space left on device`）が長い英語の1行で読めず、ディスクの空きが戻っても消えなかった
 - **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`収録していません`など）は10秒の一時表示。収録を止めたら、その収録の処理のエラー（ライブの文字起こし・収録の記録）は消す。serveのエラーはkeyごとの日本語の要約を出し、英語の原文は詳細に回す。serveが落ちている間の帯は1本にまとめる。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
@@ -12,7 +12,7 @@
 - **テストで固定していないこと**: ServeSession・AppModelの呼び出し箇所（どの操作として報告するか、回復・停止での解消・通知の送出をどこで呼ぶか）、整形とログイン項目の回復（AppModelにだけある）。ServeSessionを組み立てるテストが無いため、Opusの全体reviewと修正後のreviewで目視確認した
 - **既知の挙動・見送り**: 確定を諦めた収録が生音声ごと残っている間は、確定し直すまでアイコンが警告のまま / serveが動いていない間（初回起動・出力先未設定を含む）もアイコンは警告 / 置き換えたserveのeventはエラー以外も捨てる / 手動の確定し直しの失敗はserveの再起動で消える / 1秒以内に別の通知が2件出ると先の1件を失う
 - **実機で確認済み（2026-11-20 00:29〜00:45、`make install-app`後、userの了承あり。`5fd8ac1`の版）**: 平常時は`waveform` / serveを`kill -9`で5回続けて落とすと`exclamationmark.triangle`とメニューの「エラーあり — ライブパネルで確認」、ライブパネルに赤い帯1本（1行目「serveが動いていません（signal 9）。14秒後に再起動します」、2行目に灰色で「daemonが予期せず終了しました (signal 9)」）/ serveが戻るとすべて消えた
-- **実機で未確認**: `31996c0`の修正（全体reviewの後の修正）は未install / ErrorBookの帯（capture・serveのkey付き・一時表示）の見た目 / ディスク満杯からの回復（実機で再現していない）
+- **実機で未確認**: `31996c0`の版の画面（install後にserveを5回落としたが、画面がロック中で撮影が真っ黒。復帰後のメニューはエラーの行が無く平常）/ ErrorBookの帯（capture・serveのkey付き・一時表示）の見た目 / ディスク満杯からの回復（実機で再現していない）
 - spec: `docs/superpowers/specs/2026-11-19-error-indicator-design.md`（末尾に実装で決めたこと）、plan: `docs/superpowers/plans/2026-11-19-error-indicator.md`（git管理外。planのTask 5の記述は古く、specの追記が正）、ledger: `.superpowers/sdd/2026-11-19-error-indicator/progress.md`
 
 ## 状態（2026-10-23 朝）— serveが落ちたまま戻らない問題の修正（branch `serve-recovery`）。`make verify`通過、実機で確認済み
