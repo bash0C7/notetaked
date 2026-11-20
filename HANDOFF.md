@@ -1,6 +1,6 @@
 # HANDOFF — Notetake / notetaked
 
-## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`、未merge）。`make verify`通過（743テスト）。`/Applications`は`ff5e35d`の版（2026-11-20に`make install-app`）
+## 状態（2026-11-20）— エラー表示をアイコン + ライブパネルにし、回復したら消す（branch `error-indicator`、`main`へmerge済み `cb2ab11`。merge後の`main`で`make verify`通過: 743テスト）。`/Applications`は`ff5e35d`の版（2026-11-20に`make install-app`）
 
 - **発端**: メニューの赤字（`10:01 system: 生音声を書けません: … No space left on device`）が長い英語の1行で読めず、ディスクの空きが戻っても消えなかった
 - **user決定**: エラーはアイコンで示し、詳細はライブパネル。**エラーの状態が回復したら消す（全エラー）**。操作を断ったエラー（`収録していません`など）は10秒の一時表示。収録を止めたら、その収録の処理のエラー（ライブの文字起こし・収録の記録）は消す。serveのエラーはkeyごとの日本語の要約を出し、英語の原文は詳細に回す。serveが落ちている間の帯は1本にまとめる。実機で全ケースは確かめず、**回復の対応はコードとテストで保証する**
