@@ -22,11 +22,16 @@ struct StatusArea: View {
 
     private func content(nowMS: Int64) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let serve = appModel.serveIndicator {
-                DaemonBannerRow(message: serve)
+            let banners = AppErrorRules.banners(
+                serve: appModel.serveIndicator, entries: appModel.errorBook.active(nowMS: nowMS))
+            if let serve = banners.serve {
+                ServeBannerRow(banner: serve)
             }
             if let daemon = appModel.daemonIndicator(nowMS: nowMS) {
                 DaemonBannerRow(message: daemon)
+            }
+            ForEach(banners.entries, id: \.key) { entry in
+                ErrorEntryRow(entry: entry)
             }
             SourceLevelRow(
                 label: "mic",
@@ -86,6 +91,52 @@ private struct DaemonBannerRow: View {
             .padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.red, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// serveが動いていない時の赤い帯。daemonの失敗の要約は同じ帯の2行目に畳む
+private struct ServeBannerRow: View {
+    let banner: ServeBanner
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(banner.text)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.white)
+            if let reason = banner.reason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(Color(white: 0.85))
+            }
+        }
+        .textSelection(.enabled)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// ErrorBookの1件の赤い帯。何時から続いているかと、要約から省いた詳細を出す
+private struct ErrorEntryRow: View {
+    let entry: ErrorEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(entry.summary)（\(StatusClockText.text(atMS: entry.sinceMS))から）")
+                .fontWeight(.semibold)
+                .foregroundStyle(Color.white)
+            if let detail = entry.detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(Color(white: 0.85))
+            }
+        }
+        .textSelection(.enabled)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red, in: RoundedRectangle(cornerRadius: 4))
     }
 }
 

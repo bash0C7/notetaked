@@ -53,9 +53,24 @@ private final class Log: @unchecked Sendable {
         }
     }
 
+    /// keyを付けたエラーのkeyだけ（keyの無い一時表示は含めない）
+    func errorKeys() -> [String] {
+        events.compactMap { event in
+            if case .error(_, let key?) = event { return key }
+            return nil
+        }
+    }
+
+    func resolvedKeys() -> [String] {
+        events.compactMap { event in
+            if case .resolved(let key) = event { return key }
+            return nil
+        }
+    }
+
     func errors() -> [String] {
         events.compactMap { event in
-            if case .error(let message) = event { return message }
+            if case .error(let message, _) = event { return message }
             return nil
         }
     }
@@ -265,6 +280,8 @@ private func text(_ url: URL) throws -> String {
     #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 4)
     #expect(log.states(of: "p1").filter { $0 == .failed }.count == 3)
     #expect(log.errors().contains { $0.contains("諦めました") })
+    #expect(log.errorKeys().contains("final.p1"))
+    #expect(log.resolvedKeys().isEmpty)
     #expect(await queue.state(of: "p1")?.detail?.contains("model") == true)
 }
 
@@ -336,6 +353,55 @@ private final class Counter: @unchecked Sendable {
     #expect(await queue.state(of: "p1")?.run == 1)
     #expect(try FinalizeAttempts.read(sessionDirectory: harness.sessionDirectory("p1")) == 0)
     #expect(log.delays.filter { $0 >= 60 }.isEmpty)
+    #expect(log.errorKeys() == ["final.p1"])
+}
+
+@Test func finalRecoversAfterASuccessfulRefinalize() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let calls = Counter()
+    let log = harness.log
+    let queue = harness.queue(runChild: { prefix, run, _, _ in
+        // 自動の4回(最初と3回の再試行)は失敗し、5回目の手動の確定し直しだけ成功する
+        if calls.next() <= 4 { throw FinalizeProcessError.exited(status: 1, stderrTail: "model") }
+        try harness.writeResult(prefix: prefix, run: run)
+    })
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .gaveUp }
+    #expect(log.errorKeys() == ["final.p1"])
+    #expect(log.resolvedKeys().isEmpty)
+
+    await queue.refinalize(prefix: "p1", speakers: nil)
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(log.resolvedKeys() == ["final.p1"])
+}
+
+@Test func finalErrorReportedBySessionClearsWhenTheQueueFinalizesThePrefix() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let queue = harness.queue()
+    await queue.reportFailure("p1", "failed to write final: x")
+    #expect(harness.log.errorKeys() == ["final.p1"])
+
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(harness.log.resolvedKeys() == ["final.p1"])
+}
+
+@Test func successWithoutAFailureSendsNoResolved() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    try await harness.seedSession("p1")
+    let queue = harness.queue()
+
+    await queue.enqueue(.init(prefix: "p1", speakers: nil))
+    await waitUntil { await queue.state(of: "p1")?.phase == .finalized }
+
+    #expect(harness.log.resolvedKeys().isEmpty)
 }
 
 @Test func refinalizeWithoutRawAudioReportsAnError() async throws {
@@ -346,6 +412,7 @@ private final class Counter: @unchecked Sendable {
     await queue.refinalize(prefix: "gone", speakers: nil)
 
     #expect(harness.log.errors().contains { $0.contains("生音声が残っていません") })
+    #expect(harness.log.errorKeys().isEmpty)
     #expect(await queue.state(of: "gone") == nil)
 }
 
@@ -362,6 +429,17 @@ private final class Counter: @unchecked Sendable {
     #expect(harness.log.runs.isEmpty)
     #expect(await queue.state(of: "p0")?.phase == .gaveUp)
     #expect(try SpeakersFile.read(from: SpeakersFile.url(prefix: "p1", directory: harness.output))?.run == 1)
+}
+
+@Test func recoverReportsGaveUpPrefixesAsErrors() async throws {
+    let harness = Harness()
+    defer { harness.cleanUp() }
+    let queue = harness.queue()
+
+    await queue.recover(actions: [], gaveUp: ["p"])
+
+    #expect(harness.log.errorKeys() == ["final.p"])
+    #expect(harness.log.errors() == ["p: 確定処理を諦めました（自動の再試行を使い切りました）"])
 }
 
 @Test func recoveryRenderRewritesTheFinalOfAFinalizedSession() async throws {

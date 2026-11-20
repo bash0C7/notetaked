@@ -4,7 +4,7 @@ public enum Platform: String, Codable, Sendable {
     case mac, ios, watchos
 }
 
-public enum Source: String, Codable, Sendable {
+public enum Source: String, Codable, Sendable, CaseIterable {
     case mic, system, watch
 }
 

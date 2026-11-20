@@ -22,17 +22,38 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     /// いまの`.meta.jsonl`へ最後に書いた状態。再試行のたびに同じ行を足さないために使う
     private var lastStateLine: StateLine?
     private var status: CaptureActualState.SourceStatus
+    /// 続いている失敗。それぞれ自分の成功でだけ消すため、種類ごとに分けて持つ
+    private var failures: [Failure: String] = [:]
+    private var lastNoticeAt: Date?
+    private let faults: Faults
 
-    private static let openFailurePrefix = "書き込み先を開けません"
+    /// 続いている失敗の種類。宣言の順が、`lastError`に1つだけ出す時の優先順になる
+    private enum Failure: CaseIterable {
+        case pcm
+        case open
+        case meta
+        case convert
+    }
+
+    /// テストが書き込みや変換の失敗を起こすための差し込み口。各処理の直前に呼び、投げたらその処理が失敗した扱いにする
+    struct Faults: Sendable {
+        var pcmWrite: @Sendable () throws -> Void = {}
+        var metaWrite: @Sendable () throws -> Void = {}
+        var convert: @Sendable () throws -> Void = {}
+    }
+
+    /// 同じ通知を繰り返し数えない間隔。callbackのたびに失敗する時、appの10秒の一時表示を毎秒積まないため
+    private static let noticeRepeatSuppressSeconds: TimeInterval = 10
 
     private struct StateLine: Equatable {
         let state: CaptureSourceState
         let reason: String?
     }
 
-    init(source: Source, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(source: Source, now: @escaping @Sendable () -> Date = { Date() }, faults: Faults = Faults()) {
         self.source = source
         self.now = now
+        self.faults = faults
         queue = DispatchQueue(label: "io.github.bash0c7.notetaked.recorder.\(source.rawValue)")
         status = CaptureActualState.SourceStatus(source: source, state: .off)
     }
@@ -44,7 +65,7 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         let receivedAt = now()
         guard let chunk = CapturedChunk(buffer: buffer, receivedAt: receivedAt) else {
             let description = "\(buffer.format)"
-            queue.async { self.recordError("Float32でない音声は書けません: \(description)") }
+            queue.async { self.recordNotice("Float32でない音声は書けません: \(description)", at: receivedAt) }
             return
         }
         queue.async { self.write(chunk) }
@@ -72,7 +93,8 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     }
 
     func noteError(_ message: String) {
-        queue.async { self.recordError(message) }
+        let at = now()
+        queue.async { self.recordNotice(message, at: at) }
     }
 
     // MARK: - control
@@ -82,7 +104,8 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
     /// `lastError`は開いた収録の失敗だけを表すよう空に戻してから、前の収録を閉じる
     func open(directory: URL) {
         queue.sync {
-            status.lastError = nil
+            failures = [:]
+            refreshLastError()
             closeFiles()
             self.directory = directory
             openFiles(at: now())
@@ -125,11 +148,9 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
             anchorClock.reset()
             deviceLinePending = input != nil
             lastStateLine = nil
-            if status.lastError?.hasPrefix(Self.openFailurePrefix) == true {
-                status.lastError = nil
-            }
+            clearFailure(.open)
         } catch {
-            recordError("\(Self.openFailurePrefix): \(error)")
+            fail(.open, "書き込み先を開けません: \(error)")
         }
     }
 
@@ -143,37 +164,42 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
         let firstSample = writtenSamples + Int64(resampler.pendingSamples)
         let samples: [Float]
         do {
+            try faults.convert()
             samples = try resampler.convert(chunk)
         } catch {
-            recordError("16kHzへ変換できません: \(error)")
+            fail(.convert, "16kHzへ変換できません: \(error)")
             return
         }
+        clearFailure(.convert)
         guard !samples.isEmpty else { return }
         let durationMS = Int64((Double(chunk.frameCount) / chunk.sampleRate * 1000).rounded())
         let startMS = Self.ms(chunk.receivedAt) - durationMS
         let anchor = anchorClock.anchor(forBufferStartingAt: firstSample, wallClockMS: startMS)
         do {
+            try faults.pcmWrite()
             try pcm.write(contentsOf: CapturePCM.encode(samples))
         } catch {
-            recordError("生音声を書けません: \(error)")
+            fail(.pcm, "生音声を書けません: \(error)")
             // 書きかけの端数を残すと、以後のsample番号がファイルの位置とずれる
             do {
                 try pcm.truncate(atOffset: UInt64(writtenSamples) * UInt64(CapturePCM.bytesPerSample))
             } catch {
-                recordError("書きかけの生音声を切り詰められません: \(error)")
+                fail(.pcm, "書きかけの生音声を切り詰められません: \(error)")
             }
             // 書けなかった区間の後は、次に書けたbufferにanchorを付ける
             anchorClock.reset()
             return
         }
         writtenSamples += Int64(samples.count)
+        // 書けた事実が回復の証拠。時間で消すと、空きが戻っていないのに消えてしまう。
+        // 時刻情報や変換の失敗は別の成功で消すので、ここでは音声の書き込みの失敗だけを消す
+        clearFailure(.pcm)
         // sampleを書いてから、そのanchorとdeviceの行を書く。間で落ちても、書いていないsampleを指すanchorが残って
         // 再起動後の時刻を誤らせることが無い
         if let anchor {
             appendMeta(.anchor(anchor))
         }
-        if deviceLinePending, let input {
-            appendMeta(.device(sample: firstSample, device: input))
+        if deviceLinePending, let input, appendMeta(.device(sample: firstSample, device: input)) {
             deviceLinePending = false
         }
     }
@@ -187,36 +213,71 @@ final class SourceRecorder: CaptureSink, @unchecked Sendable {
                     writtenSamples += Int64(tail.count)
                 }
             } catch {
-                recordError("最後の音声を書けません: \(error)")
+                recordNotice("最後の音声を書けません: \(error)", at: now())
             }
         }
         for handle in [pcm, meta].compactMap({ $0 }) {
             do {
                 try handle.close()
             } catch {
-                recordError("ファイルを閉じられません: \(error)")
+                recordNotice("ファイルを閉じられません: \(error)", at: now())
             }
         }
         pcm = nil
         meta = nil
     }
 
-    private func appendMeta(_ line: CaptureMetaLine) {
-        guard let meta else { return }
+    /// 書けたかを返す。書けなかった時は、次のbufferでanchorとdeviceの行を書き直す。
+    /// 書く機会が来ないと、書けるようになっても失敗が収録の終わりまで残る
+    @discardableResult
+    private func appendMeta(_ line: CaptureMetaLine) -> Bool {
+        guard let meta else { return false }
         do {
+            try faults.metaWrite()
             try meta.write(contentsOf: Data((try line.encodedLine() + "\n").utf8))
+            clearFailure(.meta)
+            return true
         } catch {
-            recordError("時刻情報を書けません: \(error)")
+            fail(.meta, "時刻情報を書けません: \(error)")
+            anchorClock.reset()
+            return false
         }
     }
 
-    /// 失敗を実状態の`lastError`に残す。直前と同じ失敗は`.meta.jsonl`へ書き直さない
-    private func recordError(_ message: String) {
-        guard status.lastError != message else { return }
-        status.lastError = message
+    /// 続いている失敗を残す。直前と同じ失敗は`.meta.jsonl`へ書き直さない
+    private func fail(_ failure: Failure, _ message: String) {
+        guard failures[failure] != message else { return }
+        failures[failure] = message
+        refreshLastError()
+        writeFailureLine(message)
+    }
+
+    private func clearFailure(_ failure: Failure) {
+        guard failures.removeValue(forKey: failure) != nil else { return }
+        refreshLastError()
+    }
+
+    /// 実状態の`lastError`は1つしか持てないので、続いている失敗のうち優先順の先頭を出す
+    private func refreshLastError() {
+        status.lastError = Failure.allCases.lazy.compactMap { self.failures[$0] }.first
+    }
+
+    /// 1度きりの失敗を`notice`へ残す。`lastError`には入れない。実状態は1秒ごとにしか書かないので、
+    /// 治る失敗として扱うと、書かれる前に消えてappへ届かない
+    private func recordNotice(_ message: String, at: Date) {
+        if status.notice == message, let lastNoticeAt, at.timeIntervalSince(lastNoticeAt) < Self.noticeRepeatSuppressSeconds {
+            return
+        }
+        status.notice = message
+        status.noticeAtMS = Self.ms(at)
+        lastNoticeAt = at
+        writeFailureLine(message)
+    }
+
+    private func writeFailureLine(_ message: String) {
         guard let meta else { return }
         let line = CaptureMetaLine.state(sample: writtenSamples, ms: Self.ms(now()), state: status.state, reason: message)
-        // この行を書けなくても、失敗は`lastError`で実状態に出る
+        // この行を書けなくても、失敗は実状態に出る
         if let text = try? line.encodedLine() {
             try? meta.write(contentsOf: Data((text + "\n").utf8))
         }

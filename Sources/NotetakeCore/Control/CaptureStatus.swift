@@ -6,11 +6,21 @@ public struct CaptureStatus: Codable, Sendable, Equatable {
     public var state: CaptureSourceState
     /// `retrying`の理由
     public var reason: String?
+    /// 実状態にある直近の書き込みや変換の失敗。治れば消えるので、appはこれの有無で表示を出し入れする
+    public var lastError: String?
 
-    public init(source: Source, state: CaptureSourceState, reason: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case source
+        case state
+        case reason
+        case lastError = "last_error"
+    }
+
+    public init(source: Source, state: CaptureSourceState, reason: String? = nil, lastError: String? = nil) {
         self.source = source
         self.state = state
         self.reason = reason
+        self.lastError = lastError
     }
 }
 
@@ -33,23 +43,28 @@ public struct CaptureActualWatcher: Sendable {
         public var snapshot: Snapshot?
         /// 固定した入力機器から既定の入力へ戻った
         public var inputReset = false
-        /// sourceごとの新しい書き込みや変換の失敗
-        public var errors: [String] = []
+        /// 新しく起きた1度きりの失敗の通知。`<source>: <通知>`の形で、同じ通知は1度しか入らない
+        public var notices: [String] = []
     }
 
     private var last: Snapshot?
     private var fellBack = false
-    private var reportedErrors: [Source: String] = [:]
     /// 実状態のprefixが収録中の収録と食い違い始めた時刻
     private var mismatchSince: Int64?
+    /// この時刻以前の通知は伝えない。serveの再起動で、前のserveが伝えた通知を繰り返さないため。
+    /// 収録の開始では上げない。収録を切り替える時にcapture-daemonが書き込み先を閉じる失敗が、開始の直前に起きうる
+    private let noticesAfterMS: Int64
+    /// sourceごとに、伝え終えた通知の時刻
+    private var emittedNoticeAtMS: [Source: Int64] = [:]
 
-    public init() {}
+    public init(startedAtMS: Int64 = 0) {
+        noticesAfterMS = startedAtMS
+    }
 
-    /// 新しい収録を始める。失敗の記憶と食い違いの計時は消す。入力機器の固定が外れたかは収録をまたいで続くため残す。
+    /// 新しい収録を始める。食い違いの計時は消す。入力機器の固定が外れたかは収録をまたいで続くため残す。
     /// `keepingSnapshot`がtrueなら（区切り）前回のsnapshotを残し、同じ表示を重ねて伝えない。
     /// falseなら（開始と引き継ぎ）最初の実状態を必ず伝える
     public mutating func beginRecording(keepingSnapshot: Bool) {
-        reportedErrors = [:]
         mismatchSince = nil
         if !keepingSnapshot {
             last = nil
@@ -72,7 +87,9 @@ public struct CaptureActualWatcher: Sendable {
                 return onlyChanges(
                     replacing: Snapshot(
                         statuses: sources.map {
-                            CaptureStatus(source: $0, state: .retrying, reason: Self.notSwitchedReason)
+                            CaptureStatus(
+                                source: $0, state: .retrying, reason: Self.notSwitchedReason,
+                                lastError: lastError(of: $0))
                         },
                         micInput: last?.micInput))
             }
@@ -81,22 +98,29 @@ public struct CaptureActualWatcher: Sendable {
             snapshot = Snapshot(
                 statuses: sources.map { source in
                     let status = actual.sources.first { $0.source == source }
-                    return CaptureStatus(source: source, state: status?.state ?? .off, reason: status?.reason)
+                    return CaptureStatus(
+                        source: source, state: status?.state ?? .off, reason: status?.reason,
+                        lastError: status?.lastError)
                 },
                 micInput: mic?.input)
+            for source in sources {
+                guard let status = actual.sources.first(where: { $0.source == source }) else { continue }
+                if let notice = status.notice, let at = status.noticeAtMS,
+                    at > max(noticesAfterMS, emittedNoticeAtMS[source, default: 0])
+                {
+                    emittedNoticeAtMS[source] = at
+                    changes.notices.append("\(source.rawValue): \(notice)")
+                }
+            }
             let micFellBack = mic?.fellBackFromPinned ?? false
             changes.inputReset = micFellBack && !fellBack
             fellBack = micFellBack
-            for status in actual.sources {
-                guard let error = status.lastError, reportedErrors[status.source] != error else { continue }
-                reportedErrors[status.source] = error
-                changes.errors.append("\(status.source.rawValue): \(error)")
-            }
         } else {
             mismatchSince = nil
             snapshot = Snapshot(
                 statuses: sources.map {
-                    CaptureStatus(source: $0, state: .retrying, reason: Self.unresponsiveReason)
+                    CaptureStatus(
+                        source: $0, state: .retrying, reason: Self.unresponsiveReason, lastError: lastError(of: $0))
                 },
                 micInput: last?.micInput)
         }
@@ -105,6 +129,11 @@ public struct CaptureActualWatcher: Sendable {
             last = snapshot
         }
         return changes
+    }
+
+    /// 実状態が読めない間は、失敗が治ったのか分からない。治ったと見せないよう前回の失敗を残す
+    private func lastError(of source: Source) -> String? {
+        last?.statuses.first { $0.source == source }?.lastError
     }
 
     private mutating func onlyChanges(replacing snapshot: Snapshot) -> Changes {

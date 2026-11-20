@@ -193,6 +193,21 @@ import Testing
     #expect(try Event.decode(line: line) == .log("x"))
 }
 
+@Test func errorEventCarriesAnOptionalKey() throws {
+    let keyed = Event.error("failed to append segment: x", key: "archive.live")
+    #expect(try Event.decode(line: keyed.encodedLine()) == keyed)
+    #expect(try keyed.encodedLine().contains("\"key\":\"archive.live\""))
+    #expect(try Event.error("already recording").encodedLine() == "{\"ev\":\"error\",\"message\":\"already recording\"}")
+    let legacy = try Event.decode(line: #"{"ev":"error","message":"already recording"}"#)
+    #expect(legacy == .error("already recording", key: nil))
+}
+
+@Test func resolvedEventRoundTrips() throws {
+    let event = Event.resolved(key: "archive.live")
+    #expect(try Event.decode(line: event.encodedLine()) == event)
+    #expect(try event.encodedLine() == "{\"ev\":\"resolved\",\"key\":\"archive.live\"}")
+}
+
 @Test func everyEventKindCarriesSendTime() throws {
     let events: [Event] = [
         .inputReset, .error("e"), .log("l"), .volatile(source: .mic, text: "t"),

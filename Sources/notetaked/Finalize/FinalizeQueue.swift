@@ -4,7 +4,6 @@ import NotetakeCore
 enum FinalizeQueueError: Error, CustomStringConvertible {
     case rawAudioMissing(String)
     case resultMismatch(expected: Int, actual: Int?)
-    case alreadyQueued(String)
 
     var description: String {
         switch self {
@@ -12,8 +11,6 @@ enum FinalizeQueueError: Error, CustomStringConvertible {
             return "\(prefix)の生音声が残っていません"
         case .resultMismatch(let expected, let actual):
             return "確定処理の結果の回が合いません（期待 \(expected)、結果 \(actual.map(String.init) ?? "なし")）"
-        case .alreadyQueued(let prefix):
-            return "\(prefix)は確定処理の順番待ちか実行中です"
         }
     }
 }
@@ -56,6 +53,8 @@ actor FinalizeQueue {
     private var worker: Task<Void, Never>?
     private var lastProgressPercent: [String: Int] = [:]
     private var shuttingDown = false
+    /// keyを付けて伝えたエラーと、回復の時に送る`resolved`の判断。keyの対応はCoreの`ServeOperation`が持つ
+    private var errors = ServeErrorReporter()
 
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
@@ -75,7 +74,7 @@ actor FinalizeQueue {
         }
         guard running?.prefix != job.prefix, !pending.contains(where: { $0.prefix == job.prefix }) else {
             if job.manual {
-                await dependencies.emit(.error("\(FinalizeQueueError.alreadyQueued(job.prefix))"))
+                await dependencies.emit(.error(ServeMessage.alreadyQueued(prefix: job.prefix)))
             }
             return
         }
@@ -181,6 +180,7 @@ actor FinalizeQueue {
             await report(outcome, prefix: job.prefix)
             FinalizeAttempts.clear(sessionDirectory: sessionDirectory)
             await dependencies.emit(.finalized(outcome.event))
+            await reportRecovery(job.prefix)
             await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
         } catch {
             await fail(job, error: error)
@@ -226,7 +226,7 @@ actor FinalizeQueue {
         let sessionDirectory = CaptureSessionPaths.sessionDirectory(
             prefix: job.prefix, baseTemporaryDirectory: dependencies.rawBase)
         if job.manual {
-            await dependencies.emit(.error("\(job.prefix): 確定し直しに失敗しました: \(message)"))
+            await reportFailure(job.prefix, "\(job.prefix): 確定し直しに失敗しました: \(message)")
             if let run = await latestFinalizedRun(prefix: job.prefix) {
                 await setState(FinalizeStateEvent(prefix: job.prefix, phase: .finalized, run: run))
             } else {
@@ -244,10 +244,10 @@ actor FinalizeQueue {
         do {
             try FinalizeAttempts.write(failures, sessionDirectory: sessionDirectory)
         } catch {
-            await dependencies.emit(.error("\(job.prefix): 失敗の回数を書けません: \(error)"))
+            await reportFailure(job.prefix, "\(job.prefix): 失敗の回数を書けません: \(error)")
         }
         guard let delay = FinalizeRetryPolicy.delay(afterFailureCount: failures) else {
-            await dependencies.emit(.error("\(job.prefix): 確定処理を諦めました（自動の再試行を使い切りました）: \(message)"))
+            await reportFailure(job.prefix, "\(job.prefix): 確定処理を諦めました（自動の再試行を使い切りました）: \(message)")
             await setState(FinalizeStateEvent(prefix: job.prefix, phase: .gaveUp, detail: message))
             return
         }
@@ -273,6 +273,8 @@ actor FinalizeQueue {
     /// 起動時に、確定していない収録を順番待ちへ入れる。`render`は`final.md`だけ書き直す
     func recover(actions: [RecoveryAction], gaveUp: [String]) async {
         for prefix in gaveUp {
+            // 再起動で前のserveのエラーは消えるので、確定していないままの収録は報告し直す
+            await reportFailure(prefix, "\(prefix): 確定処理を諦めました（自動の再試行を使い切りました）")
             await setState(
                 FinalizeStateEvent(prefix: prefix, phase: .gaveUp, detail: "自動の再試行を使い切りました"))
         }
@@ -295,13 +297,25 @@ actor FinalizeQueue {
                 prefix: prefix, in: URL(fileURLWithPath: info.outputDirectory), device: info.device)
             {
                 await dependencies.emit(.finalized(event))
+                await reportRecovery(prefix)
             }
         } catch {
-            await dependencies.emit(.error("\(prefix): final.mdを書き直せません: \(error)"))
+            await reportFailure(prefix, "\(prefix): final.mdを書き直せません: \(error)")
         }
     }
 
     // MARK: - 補助
+
+    /// `final.<prefix>`のkeyはここだけが覚える。ServeSessionの`failed to write final`も、確定の成功で消えるようここを通す
+    func reportFailure(_ prefix: String, _ message: String) async {
+        await dependencies.emit(errors.failed(.finalize(prefix: prefix), message: message))
+    }
+
+    func reportRecovery(_ prefix: String) async {
+        if let event = errors.succeeded(.finalize(prefix: prefix)) {
+            await dependencies.emit(event)
+        }
+    }
 
     private func readInfo(prefix: String) throws -> CaptureSessionInfo {
         let directory = CaptureSessionPaths.sessionDirectory(

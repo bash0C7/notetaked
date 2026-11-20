@@ -13,7 +13,7 @@ actor StdioControl {
                 do {
                     continuation.yield(try Command.decode(line: line))
                 } catch {
-                    await send(.error("invalid command: \(line)"))
+                    await send(.error(ServeMessage.invalidCommand(line: line)))
                 }
             }
             continuation.finish()

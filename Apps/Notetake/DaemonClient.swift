@@ -8,7 +8,8 @@ final class DaemonClient {
     private let stdinPipe = Pipe()
     private let stdoutPipe = Pipe()
     private let stderrPipe = Pipe()
-    private let onEvent: @MainActor (Event) -> Void
+    /// eventを出したclient自身を第一引数で渡す。`onExit`と同じく、呼び出し側が現在のclientかを識別できるようにするため
+    private let onEvent: @MainActor (DaemonClient, Event) -> Void
     /// 終了したclient自身を第一引数で渡す。呼び出し側（AppModel）が「自分が現在保持しているclientか」を
     /// 識別してexitを取り扱うかどうか判断できるようにするため（置き換え済み/意図的終了させたclientのexitと、
     /// 現在稼働中clientの予期せぬexitを取り違えないようにする）。
@@ -19,7 +20,7 @@ final class DaemonClient {
     init(
         executable: URL,
         arguments: [String],
-        onEvent: @escaping @MainActor (Event) -> Void,
+        onEvent: @escaping @MainActor (DaemonClient, Event) -> Void,
         onExit: @escaping @MainActor (DaemonClient, Int32, Process.TerminationReason) -> Void
     ) {
         self.onEvent = onEvent
@@ -78,7 +79,7 @@ final class DaemonClient {
             guard let line = String(data: lineData, encoding: .utf8), !line.isEmpty else { continue }
             do {
                 let event = try Event.decode(line: line)
-                onEvent(event)
+                onEvent(self, event)
             } catch {
                 let message = "DaemonClient: failed to decode line: \(line) (\(error))\n"
                 FileHandle.standardError.write(Data(message.utf8))

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import NotetakeCore
+import ServiceManagement
 
 /// メニューバーアプリ全体の状態と、daemonプロセスのsupervision（起動・再起動・設定反映）を担う。
 /// 収録中は「自動で区切る」タイマー（`rotationIntervalHours`）も管理し、期限が来ると`rotate`を送る。
@@ -72,7 +73,13 @@ final class AppModel {
     /// 現在の収録の入力機材（daemonの`status.input_name`）。停止中はnil
     var inputName: String?
     var inputSpatial: Bool?
-    var lastError: String?
+    /// 原因ごとのエラーの集まり。出し入れの規則はNotetakeCoreの`AppErrorRules`に置き、ここでは
+    /// 失敗・成功の地点で`AppErrorKey`のkeyを`set` / `resolve`するだけにする。変わるたびに期限切れの予約を張り直す
+    private(set) var errorBook = ErrorBook() {
+        didSet {
+            if oldValue != errorBook { scheduleErrorExpiry() }
+        }
+    }
     /// 自動区切りの予定時刻。表示用。自動区切りが無効（間隔0、または未収録）ならnil。
     var nextRotationAt: Date?
     /// daemonから届いた直近の`.log`（話者分離モデルの取得進捗など）。表示用。
@@ -138,6 +145,15 @@ final class AppModel {
     private var levelReader: RecordingLevelReader?
     /// 蓋とdaemonの更新時刻を1秒ごとに読み直すTask。ライブwindowが開いている間だけ動く
     private var environmentRefreshTask: Task<Void, Never>?
+    /// 一時表示のエラーが期限を迎える時刻に`prune`するTask。パネルが閉じていてもアイコンが戻るように、appが持つ
+    private var errorExpiryTask: Task<Void, Never>?
+    /// `retrying`が続き始めた時刻。10秒続いたかの判定は`AppErrorRules`が持ち、ここは持ち回って予約を張るだけ
+    private var retryTracker = CaptureRetryTracker() {
+        didSet {
+            if oldValue != retryTracker { scheduleRetryingCheck() }
+        }
+    }
+    private var retryingCheckTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -194,6 +210,7 @@ final class AppModel {
             while let self, !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !self.isShuttingDown else { continue }
+                self.checkLoginItem(register: false)
                 if let lastWakeAt = self.lastWakeAt, Date().timeIntervalSince(lastWakeAt) < Self.wakeGrace {
                     continue
                 }
@@ -208,7 +225,9 @@ final class AppModel {
                 if Heartbeat.currentStatus(of: CaptureStatePaths.processHeartbeatURL, threshold: 15) == .stale,
                    self.daemonRunning,
                    Date().timeIntervalSince(self.daemonStartedAt ?? .distantPast) >= 30 {
-                    self.lastError = "serveが応答しないため、止めて起動し直します"
+                    self.errorBook.set(
+                        key: AppErrorKey.daemon, message: "serveが応答しないため、止めて起動し直します",
+                        nowMS: Self.currentMS())
                     await self.client?.forceKill()
                     // forceKill()で止めた後も、handleExit()のprocess.terminationHandler経由の
                     // 到達を待たずここで確実にリセットする（ensureDaemon()の早期returnガードが
@@ -265,7 +284,7 @@ final class AppModel {
     /// 保存先が設定されていればdaemonを起動する。既に起動中で設定（引数）が変わっていなければ何もしない。
     /// 引数が変わっていれば旧daemonを終了して新daemonを起動するが、次のいずれかの場合は延期し、
     /// `restartPending`を立てて後で再度`ensureDaemon()`が呼ばれた時に適用する:
-    /// - 録音中（`handle(_:)`の`.status`で`recording == false`を受け取った時に自動適用）
+    /// - 録音中（`handle(_:from:)`の`.status`で`recording == false`を受け取った時に自動適用）
     /// - 既に再起動処理が進行中（`performRestart()`完了時に自動適用）
     /// 再起動が実際に走る時点の設定を反映するため、引数は要求時ではなく起動直前（`launchLatest()`内）で
     /// 都度計算し直す。
@@ -325,13 +344,14 @@ final class AppModel {
             .deletingLastPathComponent()
             .appendingPathComponent("notetaked")
         else {
-            lastError = "notetakedの実行ファイルが見つかりません"
+            errorBook.set(
+                key: AppErrorKey.daemon, message: "notetakedの実行ファイルが見つかりません", nowMS: Self.currentMS())
             return
         }
         let newClient = DaemonClient(
             executable: executable,
             arguments: arguments,
-            onEvent: { [weak self] event in self?.handle(event) },
+            onEvent: { [weak self] eventClient, event in self?.handle(event, from: eventClient) },
             onExit: { [weak self] exitedClient, code, reason in self?.handleExit(exitedClient, code, reason) }
         )
         do {
@@ -340,8 +360,11 @@ final class AppModel {
             daemonRunning = true
             daemonStartedAt = Date()
             newClient.send(.pairCode(pairingCode))
+            AppErrorRules.serveStarted(&errorBook, nowMS: Self.currentMS())
         } catch {
-            lastError = "daemonの起動に失敗しました: \(error.localizedDescription)"
+            errorBook.set(
+                key: AppErrorKey.daemon, message: "daemonの起動に失敗しました: \(error.localizedDescription)",
+                nowMS: Self.currentMS())
             daemonRunning = false
             // 起動できなかった場合も待ち時間を伸ばす（生存秒は無いので数え上げるだけ）
             consecutiveServeFailures += 1
@@ -361,7 +384,8 @@ final class AppModel {
         recordServeFailure()
         resetRecordingUIState()
         if code != 0 || reason == .uncaughtSignal {
-            lastError = "daemonが予期せず終了しました (\(exitText))"
+            errorBook.set(
+                key: AppErrorKey.daemon, message: "daemonが予期せず終了しました (\(exitText))", nowMS: Self.currentMS())
         }
         scheduleRestart()
     }
@@ -400,12 +424,6 @@ final class AppModel {
             }
             self.killOrphanServes()
             self.resetRecordingUIState()
-            // 古い終了・起動失敗の文言を残さない。起動に失敗すれば`startClient`が改めて書く
-            if let error = self.lastError,
-               error.hasPrefix("daemonが予期せず終了") || error.hasPrefix("daemonの起動に失敗")
-            {
-                self.lastError = nil
-            }
             self.ensureDaemon()
         }
     }
@@ -496,6 +514,75 @@ final class AppModel {
         self.client = nil
         await client.terminate(wasRecording: isRecording)
         daemonRunning = false
+    }
+
+    // MARK: - Errors
+
+    private static func currentMS() -> Int64 {
+        Int64((Date().timeIntervalSince1970 * 1000).rounded())
+    }
+
+    /// メニューバーのアイコンを警告に替える条件。期限切れの一時表示は含めない
+    var hasError: Bool {
+        !errorBook.active(nowMS: Self.currentMS()).isEmpty || serveIndicator != nil
+    }
+
+    /// 一時表示の期限に`prune`する。`prune`で消えれば`errorBook`の変化で再び呼ばれ、残りがあれば次の期限へ張り直る
+    private func scheduleErrorExpiry() {
+        errorExpiryTask?.cancel()
+        errorExpiryTask = nil
+        guard let expiryMS = errorBook.nextExpiryMS else { return }
+        errorExpiryTask = Task { @MainActor [weak self] in
+            let delayMS = max(0, expiryMS - Self.currentMS())
+            try? await Task.sleep(nanoseconds: UInt64(delayMS) * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.errorBook.prune(nowMS: Self.currentMS())
+            // sleepが早く戻って何も消えなかった時は`errorBook`が変わらずdidSetが走らないので、ここで張り直す
+            self.scheduleErrorExpiry()
+        }
+    }
+
+    /// `retrying`が10秒に届く時刻にエラーへ昇格させる。statusは変化した時にしか届かないので、時刻で見直す
+    private func scheduleRetryingCheck() {
+        retryingCheckTask?.cancel()
+        retryingCheckTask = nil
+        guard let deadlineMS = AppErrorRules.nextRetryingDeadlineMS(tracker: retryTracker, nowMS: Self.currentMS())
+        else { return }
+        retryingCheckTask = Task { @MainActor [weak self] in
+            let delayMS = max(0, deadlineMS - Self.currentMS())
+            try? await Task.sleep(nanoseconds: UInt64(delayMS) * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+            AppErrorRules.promoteRetrying(&self.errorBook, tracker: self.retryTracker, nowMS: Self.currentMS())
+            // sleepが早く戻った時や、別のsourceの期限が残る時のために張り直す
+            self.scheduleRetryingCheck()
+        }
+    }
+
+    /// Notetake.app自身をログイン項目に登録する。登録済み、または承認待ちなら登録し直さない。
+    /// `register()`は繰り返すとシステムのログイン項目の通知が出るので、試すのは起動時（`register: true`）だけにする。
+    /// 5秒ごとの監視（`register: false`）は状態を読むだけで、承認や登録が済んだ時にエラーを消す。新しいエラーは作らない
+    func checkLoginItem(register: Bool) {
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .enabled, .requiresApproval:
+            errorBook.resolve(key: AppErrorKey.loginItem)
+        case .notRegistered, .notFound:
+            guard register else { return }
+            do {
+                try service.register()
+                errorBook.resolve(key: AppErrorKey.loginItem)
+            } catch {
+                errorBook.set(
+                    key: AppErrorKey.loginItem,
+                    message: "ログイン時自動起動の登録に失敗しました: \(error.localizedDescription)",
+                    nowMS: Self.currentMS())
+            }
+        @unknown default:
+            guard register else { return }
+            errorBook.set(
+                key: AppErrorKey.loginItem, message: "ログイン時自動起動の状態を確認できませんでした",
+                nowMS: Self.currentMS())
+        }
     }
 
     // MARK: - Indicator
@@ -597,7 +684,6 @@ final class AppModel {
     // MARK: - Commands
 
     func startRecording() {
-        lastError = nil
         // capture-daemonがマイクを開く前に、モニターのAUHALを閉じ終えておく
         isStartPending = true
         micLevelMonitor.stop()
@@ -646,7 +732,6 @@ final class AppModel {
     }
 
     func rotateRecording() {
-        lastError = nil
         client?.send(.rotate)
     }
 
@@ -688,7 +773,8 @@ final class AppModel {
             .deletingLastPathComponent()
             .appendingPathComponent("notetaked")
         else {
-            lastError = "notetakedの実行ファイルが見つかりません"
+            errorBook.set(
+                key: AppErrorKey.polish, message: "notetakedの実行ファイルが見つかりません", nowMS: Self.currentMS())
             return
         }
         let inputPath = outputDirectory.appendingPathComponent("\(prefix).timed.jsonl").path
@@ -711,13 +797,16 @@ final class AppModel {
                 self.isPolishing = false
                 if status == 0 {
                     self.lastLog = "整形完了: \(prefix).polished.md"
+                    self.errorBook.resolve(key: AppErrorKey.polish)
                 } else {
                     let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
                     let lastLine = stderrText
                         .split(separator: "\n", omittingEmptySubsequences: true)
                         .last
                         .map(String.init) ?? ""
-                    self.lastError = "整形に失敗しました (code \(status)): \(lastLine)"
+                    self.errorBook.set(
+                        key: AppErrorKey.polish, message: "整形に失敗しました (code \(status)): \(lastLine)",
+                        nowMS: Self.currentMS())
                 }
             }
         }
@@ -726,7 +815,9 @@ final class AppModel {
             isPolishing = true
             lastLog = "整形中: \(prefix)"
         } catch {
-            lastError = "整形の起動に失敗しました: \(error.localizedDescription)"
+            errorBook.set(
+                key: AppErrorKey.polish, message: "整形の起動に失敗しました: \(error.localizedDescription)",
+                nowMS: Self.currentMS())
         }
     }
 
@@ -765,7 +856,11 @@ final class AppModel {
 
     // MARK: - Event handling
 
-    private func handle(_ event: Event) {
+    /// 置き換え済み・強制終了済みのserveが最後に出したeventは捨てる。受け取ると、そのserveの失敗で立てた
+    /// `daemon`のエラーを、生きている証拠として誤って消してしまう（`handleExit`と同じ識別）
+    private func handle(_ event: Event, from eventClient: DaemonClient) {
+        guard eventClient === client else { return }
+        AppErrorRules.apply(event: event, to: &errorBook, tracker: &retryTracker, nowMS: Self.currentMS())
         switch event {
         case .status(let status):
             let previousPrefix = prefix
@@ -773,9 +868,6 @@ final class AppModel {
             if isNewRecording {
                 utterances = []
                 volatile = [:]
-            }
-            if isNewRecording {
-                lastError = nil
             }
             if !status.recording {
                 volatile = [:]
@@ -816,9 +908,10 @@ final class AppModel {
             utterances.sort { $0.start < $1.start }
         case .volatile(let source, let text):
             volatile[source] = text
-        case .error(let message):
-            lastError = "\(Date().formatted(date: .omitted, time: .shortened)) \(message)"
+        case .error(let message, _):
             FileHandle.standardError.write(Data("notetaked error: \(message)\n".utf8))
+        case .resolved:
+            break
         case .log(let message):
             lastLog = message
             FileHandle.standardError.write(Data("notetaked log: \(message)\n".utf8))

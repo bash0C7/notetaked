@@ -1,31 +1,12 @@
 import SwiftUI
-import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appModel = AppModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        registerForLogin()
+        appModel.checkLoginItem(register: true)
         appModel.ensureDaemon()
-    }
-
-    /// Notetake.app itselfをmacOSのログイン項目に登録する。
-    /// 登録済み、またはユーザーの承認待ちなら状態を変えず、未登録の場合だけ登録する。
-    private func registerForLogin() {
-        let service = SMAppService.mainApp
-        switch service.status {
-        case .enabled, .requiresApproval:
-            return
-        case .notRegistered, .notFound:
-            do {
-                try service.register()
-            } catch {
-                appModel.lastError = "ログイン時自動起動の登録に失敗しました: \(error.localizedDescription)"
-            }
-        @unknown default:
-            appModel.lastError = "ログイン時自動起動の状態を確認できませんでした"
-        }
     }
 
     /// daemonへの`quit`送信〜最大2秒の終了待ちはmainスレッドをブロックできないため、
@@ -44,8 +25,11 @@ struct NotetakeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Notetake", systemImage: "waveform") {
+        MenuBarExtra {
             MenuContent(appModel: appDelegate.appModel)
+        } label: {
+            Image(systemName: appDelegate.appModel.hasError ? "exclamationmark.triangle" : "waveform")
+                .accessibilityLabel("Notetake")
         }
         Settings {
             SettingsView(appModel: appDelegate.appModel)

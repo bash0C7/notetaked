@@ -33,13 +33,8 @@ struct MenuContent: View {
             Text(lastLog)
                 .foregroundStyle(.secondary)
         }
-        if let serve = appModel.serveIndicator {
-            Text(serve.text)
-                .foregroundStyle(.red)
-        }
-        if let lastError = appModel.lastError {
-            Text(lastError)
-                .foregroundStyle(.red)
+        if appModel.hasError {
+            Text("エラーあり — ライブパネルで確認")
         }
         ForEach(FinalizeStatusLabel.menuLines(states: appModel.finalizeStates), id: \.self) { line in
             Text(line)
