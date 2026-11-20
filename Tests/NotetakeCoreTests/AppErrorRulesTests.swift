@@ -245,3 +245,120 @@ private func status(recording: Bool = true, capture: [CaptureStatus]? = nil) -> 
     #expect(entries.map(\.key) == [AppErrorKey.captureDaemon])
     #expect(entries[0].sinceMS == 1_000)
 }
+
+// MARK: - 取り込みが続けて再試行になっている
+
+private func retrying(_ source: Source = .system, reason: String? = "TCC denied") -> Event {
+    status(capture: [CaptureStatus(source: source, state: .retrying, reason: reason)])
+}
+
+private func retryingEntries(_ book: ErrorBook, nowMS: Int64) -> [ErrorEntry] {
+    book.active(nowMS: nowMS).filter { $0.key == AppErrorKey.captureRetrying(.system) }
+}
+
+@Test func retryingUnderTheThresholdIsNotAnError() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 1_000)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 1_000 + AppErrorRules.retryingAlertMS - 1)
+    #expect(book.active(nowMS: 1_000).isEmpty)
+}
+
+@Test func retryingForTheThresholdBecomesAnErrorSinceItStarted() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 1_000)
+    let at = 1_000 + AppErrorRules.retryingAlertMS
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: at)
+    let entries = retryingEntries(book, nowMS: at)
+    #expect(entries.count == 1)
+    #expect(entries[0].summary == "system: 取り込めていません（TCC denied）")
+    #expect(entries[0].sinceMS == 1_000)
+}
+
+@Test func retryingWithoutAReasonOmitsTheParenthesis() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(reason: nil), to: &book, tracker: &tracker, nowMS: 0)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: AppErrorRules.retryingAlertMS)
+    #expect(retryingEntries(book, nowMS: AppErrorRules.retryingAlertMS).map(\.summary) == ["system: 取り込めていません"])
+}
+
+@Test func repeatedRetryingStatusesDoNotRestartTheCount() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 1_000)
+    AppErrorRules.apply(event: retrying(reason: "別の理由"), to: &book, tracker: &tracker, nowMS: 8_000)
+    let at = 1_000 + AppErrorRules.retryingAlertMS
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: at)
+    let entries = retryingEntries(book, nowMS: at)
+    #expect(entries[0].sinceMS == 1_000)
+    #expect(entries[0].summary == "system: 取り込めていません（別の理由）")
+}
+
+@Test func retryingErrorResolvesWhenTheSourceRecordsAgain() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 0)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 20_000)
+    #expect(!retryingEntries(book, nowMS: 20_000).isEmpty)
+
+    let recovered = status(capture: [CaptureStatus(source: .system, state: .recording)])
+    AppErrorRules.apply(event: recovered, to: &book, tracker: &tracker, nowMS: 21_000)
+    #expect(book.active(nowMS: 21_000).isEmpty)
+    #expect(tracker.isEmpty)
+}
+
+@Test func recoveryBeforeTheThresholdCancelsThePromotion() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 0)
+    let recovered = status(capture: [CaptureStatus(source: .system, state: .recording)])
+    AppErrorRules.apply(event: recovered, to: &book, tracker: &tracker, nowMS: 5_000)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 30_000)
+    #expect(book.active(nowMS: 30_000).isEmpty)
+}
+
+@Test func retryingErrorAndTrackerClearWhenRecordingStops() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 0)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 20_000)
+    AppErrorRules.apply(event: status(recording: false), to: &book, tracker: &tracker, nowMS: 21_000)
+    #expect(book.active(nowMS: 21_000).isEmpty)
+    #expect(tracker.isEmpty)
+}
+
+@Test func retryingStateSurvivesARecordingStatusWithoutCaptureInfo() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    AppErrorRules.apply(event: retrying(), to: &book, tracker: &tracker, nowMS: 0)
+    AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 20_000)
+    AppErrorRules.apply(event: status(capture: nil), to: &book, tracker: &tracker, nowMS: 21_000)
+    #expect(!retryingEntries(book, nowMS: 21_000).isEmpty)
+    #expect(!tracker.isEmpty)
+}
+
+@Test func daemonUnresponsiveRetryingIsNotReportedPerSource() {
+    for reason in [CaptureActualWatcher.unresponsiveReason, CaptureActualWatcher.notSwitchedReason] {
+        var book = ErrorBook()
+        var tracker = CaptureRetryTracker()
+        AppErrorRules.apply(event: retrying(reason: reason), to: &book, tracker: &tracker, nowMS: 0)
+        AppErrorRules.promoteRetrying(&book, tracker: tracker, nowMS: 60_000)
+        #expect(book.active(nowMS: 60_000).map(\.key) == [AppErrorKey.captureDaemon])
+        #expect(tracker.isEmpty)
+    }
+}
+
+@Test func nextRetryingDeadlineIsTheEarliestStartPlusTheThreshold() {
+    var book = ErrorBook()
+    var tracker = CaptureRetryTracker()
+    #expect(AppErrorRules.nextRetryingDeadlineMS(tracker: tracker, nowMS: 0) == nil)
+
+    AppErrorRules.apply(event: retrying(.system), to: &book, tracker: &tracker, nowMS: 3_000)
+    AppErrorRules.apply(event: retrying(.mic), to: &book, tracker: &tracker, nowMS: 5_000)
+    #expect(AppErrorRules.nextRetryingDeadlineMS(tracker: tracker, nowMS: 6_000) == 3_000 + AppErrorRules.retryingAlertMS)
+    // 期限を過ぎたものは数えない。数えると同じ時刻で予約を繰り返す
+    #expect(AppErrorRules.nextRetryingDeadlineMS(tracker: tracker, nowMS: 14_000) == 5_000 + AppErrorRules.retryingAlertMS)
+    #expect(AppErrorRules.nextRetryingDeadlineMS(tracker: tracker, nowMS: 15_000) == nil)
+}

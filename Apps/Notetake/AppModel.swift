@@ -147,6 +147,13 @@ final class AppModel {
     private var environmentRefreshTask: Task<Void, Never>?
     /// 一時表示のエラーが期限を迎える時刻に`prune`するTask。パネルが閉じていてもアイコンが戻るように、appが持つ
     private var errorExpiryTask: Task<Void, Never>?
+    /// `retrying`が続き始めた時刻。10秒続いたかの判定は`AppErrorRules`が持ち、ここは持ち回って予約を張るだけ
+    private var retryTracker = CaptureRetryTracker() {
+        didSet {
+            if oldValue != retryTracker { scheduleRetryingCheck() }
+        }
+    }
+    private var retryingCheckTask: Task<Void, Never>?
 
     init() {
         let defaults = UserDefaults.standard
@@ -535,6 +542,22 @@ final class AppModel {
         }
     }
 
+    /// `retrying`が10秒に届く時刻にエラーへ昇格させる。statusは変化した時にしか届かないので、時刻で見直す
+    private func scheduleRetryingCheck() {
+        retryingCheckTask?.cancel()
+        retryingCheckTask = nil
+        guard let deadlineMS = AppErrorRules.nextRetryingDeadlineMS(tracker: retryTracker, nowMS: Self.currentMS())
+        else { return }
+        retryingCheckTask = Task { @MainActor [weak self] in
+            let delayMS = max(0, deadlineMS - Self.currentMS())
+            try? await Task.sleep(nanoseconds: UInt64(delayMS) * 1_000_000)
+            guard !Task.isCancelled, let self else { return }
+            AppErrorRules.promoteRetrying(&self.errorBook, tracker: self.retryTracker, nowMS: Self.currentMS())
+            // sleepが早く戻った時や、別のsourceの期限が残る時のために張り直す
+            self.scheduleRetryingCheck()
+        }
+    }
+
     /// Notetake.app自身をログイン項目に登録する。登録済み、または承認待ちなら登録し直さない。
     /// `register()`は繰り返すとシステムのログイン項目の通知が出るので、試すのは起動時（`register: true`）だけにする。
     /// 5秒ごとの監視（`register: false`）は状態を読むだけで、承認や登録が済んだ時にエラーを消す。新しいエラーは作らない
@@ -837,7 +860,7 @@ final class AppModel {
     /// `daemon`のエラーを、生きている証拠として誤って消してしまう（`handleExit`と同じ識別）
     private func handle(_ event: Event, from eventClient: DaemonClient) {
         guard eventClient === client else { return }
-        AppErrorRules.apply(event: event, to: &errorBook, nowMS: Self.currentMS())
+        AppErrorRules.apply(event: event, to: &errorBook, tracker: &retryTracker, nowMS: Self.currentMS())
         switch event {
         case .status(let status):
             let previousPrefix = prefix
